@@ -6,6 +6,10 @@ site/
 /Scenic_Byways.*
 /shapes_red_mtn.gpkg
 /route_results.gpkg
+
+# QGIS projects
+*.qgz
+*.qgs
 docs/
 
 # Python

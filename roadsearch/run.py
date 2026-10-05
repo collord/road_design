@@ -15,7 +15,7 @@ import rasterio
 from pyproj import CRS
 from scipy import ndimage
 
-from .exclusion import ExclusionError, normalize_spec
+from .exclusion import ExclusionError, normalize_spec, split_spec
 from .explore import write_corridor_tree
 from .masshaul import TrueCost, true_cost
 from .outputs import write_field_rasters, write_params_json, write_vectors
@@ -152,6 +152,10 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
     inputs = {"dem": dem_info["path"], "start": start, "goal": goal, "exclude": exclude,
               "resolution": resolution, "clip": clip, "clip_margin": clip_margin,
               "coarse_res": coarse_res, "params": p.to_dict()}
+    if exclude:
+        # Zone files are identified by their contents too, so an edited file is a new run.
+        inputs["exclude_sha256"] = [hashlib.sha256(Path(split_spec(e)[0]).read_bytes()).hexdigest()[:16]
+                                    for e in exclude]
     run_id = run_id or make_run_id(inputs)
     run_dir = out / "runs" / run_id
     if reuse and (run_dir / "params.json").exists():
