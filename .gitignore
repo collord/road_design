@@ -4,6 +4,8 @@ out-*/
 site/
 /topo_redmtn.tif
 /Scenic_Byways.*
+/shapes_red_mtn.gpkg
+/route_results.gpkg
 docs/
 
 # Python

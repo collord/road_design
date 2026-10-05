@@ -224,6 +224,27 @@ def reference_data(path: str | Path, label: str, run_dirs: list[Path]) -> dict:
     }
 
 
+def zones_data(run_dirs: list[Path], labels: list[str]) -> list[dict]:
+    """Manual exclusion zones used by any of the runs, as outlines in the grid CRS, with the runs that used them."""
+    from .exclusion import split_spec
+
+    recs = [json.loads((d / "params.json").read_text(encoding="utf-8")) for d in run_dirs]
+    crs = recs[0]["grid"]["working_crs"]
+    out = {}
+    for rec, lab in zip(recs, labels):
+        for spec in rec["inputs"].get("exclude", []):
+            if spec not in out:
+                path, where = split_spec(spec)
+                gdf = gpd.read_file(path, where=where) if where else gpd.read_file(path)
+                rings = []
+                for g in gdf.to_crs(crs).geometry.simplify(2.0):
+                    for poly in getattr(g, "geoms", [g]):
+                        rings.append([[round(x, 1), round(y, 1)] for x, y, *_ in poly.exterior.coords])
+                out[spec] = {"file": Path(path).name, "where": where or "", "rings": rings, "runs": []}
+            out[spec]["runs"].append(lab)
+    return list(out.values())
+
+
 def _basemap(run_dirs: list[Path], res: float) -> dict:
     """Hillshade over the union of the runs' grids, from the DEM itself."""
     from .params import load_params
@@ -296,7 +317,8 @@ def write_viewer(run_ids: list[str], out_root: str | Path, dest: str | Path, lab
                    "Select it to watch the search.")
     manifest = {"runs": runs, "base": _basemap(run_dirs, runs[0]["res"]), "sweep": sweep, "heading": heading,
                 "column": column, "explain": explain,
-                "reference": reference_data(reference[0], reference[1], run_dirs) if reference else None}
+                "reference": reference_data(reference[0], reference[1], run_dirs) if reference else None,
+                "zones": zones_data(run_dirs, [r["label"] if r["factor"] is None else f"k={r['factor']:g}" for r in runs])}
     page = (TEMPLATE_PATH.read_text(encoding="utf-8")
             .replace("__TITLE__", html.escape(title)).replace("__HEADING__", html.escape(heading))
             .replace("__MANIFEST__", json.dumps(manifest, separators=(",", ":")))

@@ -15,7 +15,7 @@ import rasterio
 from pyproj import CRS
 from scipy import ndimage
 
-from .exclusion import ExclusionError
+from .exclusion import ExclusionError, normalize_spec
 from .explore import write_corridor_tree
 from .masshaul import TrueCost, true_cost
 from .outputs import write_field_rasters, write_params_json, write_vectors
@@ -148,7 +148,7 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
     pt_crs = CRS.from_user_input(endpoint_crs) if endpoint_crs else dem_crs
     start = parse_point(start_txt, pt_crs, wcrs)
     goal = parse_point(goal_txt, pt_crs, wcrs)
-    exclude = [str(Path(e).resolve()) for e in exclude]
+    exclude = [normalize_spec(e) for e in exclude]
     inputs = {"dem": dem_info["path"], "start": start, "goal": goal, "exclude": exclude,
               "resolution": resolution, "clip": clip, "clip_margin": clip_margin,
               "coarse_res": coarse_res, "params": p.to_dict()}

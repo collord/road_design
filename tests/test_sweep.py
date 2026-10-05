@@ -66,6 +66,14 @@ def test_merge_combines_separate_output_roots(tmp_path):
     s = gpd.read_parquet(tmp_path / "m" / "route_summary.parquet")
     assert s["run_id"].nunique() == 2 and len(list((tmp_path / "m" / "runs").iterdir())) == 2
     assert main(["sweep", *common[:-1], "--k", "0,10", "--out", str(tmp_path / "m")]) == 0     # reuses both
+    # ...and the merged runs export to a GeoPackage.
+    import pyogrio
+    gp = tmp_path / "r.gpkg"
+    assert main(["export", str(gp), "--out-root", str(tmp_path / "m"), "--prefix", "t"]) == 0
+    assert {n for n, _ in pyogrio.list_layers(gp)} == {"t_routes", "t_segments", "t_features"}
+    r = gpd.read_file(gp, layer="t_routes")
+    assert r["run_id"].nunique() == 2 and r.geometry.has_z.all() and (r["self_overlaps"] == 0).all()
+    assert set(r["label"]) == {"C_travel 0, C_vertical 0", "C_travel 10, C_vertical 200"}
     assert (tmp_path / "m" / "viewer" / "index.html").exists()
 
 
@@ -108,19 +116,28 @@ def test_extra_runs_and_a_reference_line(tmp_path):
     (sx, sy), (gx, gy) = g.xy(8, 8), g.xy(50, 48)
     ref = tmp_path / "ref.geojson"
     gpd.GeoDataFrame(geometry=[LineString([(gx, gy), ((sx + gx) / 2 + 30, (sy + gy) / 2), (sx, sy)])], crs=UTM).to_file(ref)
+    from shapely.geometry import LineString as LS, Polygon, box
+    zones = tmp_path / "zones.gpkg"           # one zone to avoid, one to ignore (filtered out by type)
+    cx, cy = (sx + gx) / 2, (sy + gy) / 2
+    gpd.GeoDataFrame({"type": ["avoid", "keep"]}, geometry=[box(cx - 20, cy - 20, cx + 20, cy + 20),
+                     box(sx + 30, sy - 60, sx + 60, sy - 30)], crs=UTM).to_file(zones)
     out = tmp_path / "out"
     assert main(["sweep", "--dem", str(path), "--start", f"{sx},{sy}", "--goal", f"{gx},{gy}", "--out", str(out),
                  "--clip", "none", "--K_alt", "1", "--vary", "R_min=20", "--vary-unit", "m",
-                 "--extra", "20 m, 12% grade|R_min=20,g_max=0.12", "--reference", str(ref),
+                 "--extra", "20 m, 12% grade|R_min=20,g_max=0.12",
+                 "--extra", f"avoid|R_min=20|exclude={zones}|type='avoid'", "--reference", str(ref),
                  "--reference-label", "As built"]) == 0
     page = (out / "viewer" / "index.html").read_text(encoding="utf-8")
     m = json.loads(page.split('<script id="manifest" type="application/json">')[1].split("</script>")[0])
-    assert [r["label"] for r in m["runs"]] == ["20 m", "20 m, 12% grade"]
+    assert [r["label"] for r in m["runs"]] == ["20 m", "20 m, 12% grade", "avoid"]
+    assert len(m["zones"]) == 1 and m["zones"][0]["runs"] == ["avoid"] and m["zones"][0]["where"] == "type='avoid'"
+    av = [x for x in m["runs"] if x["label"] == "avoid"][0]["routes"][0]["xy"]
+    assert not LS(av).intersects(Polygon(m["zones"][0]["rings"][0]))        # kept out of the zone
     # Just the extra run (as a CI job runs it): an empty --vary list with --extra.
     assert main(["sweep", "--dem", str(path), "--start", f"{sx},{sy}", "--goal", f"{gx},{gy}", "--out", str(out),
                  "--clip", "none", "--K_alt", "1", "--vary", "R_min=", "--no-viewer",
                  "--extra", "20 m, 12% grade|R_min=20,g_max=0.12"]) == 0
-    assert [r["params"]["g_max"] for r in m["runs"]] == [0.1, 0.12]
+    assert [r["params"]["g_max"] for r in m["runs"]] == [0.1, 0.12, 0.1]
     r = m["reference"]
     assert r["label"] == "As built" and set(r["runs"]) == {x["run_id"] for x in m["runs"]}
     assert r["xy"][0] == [round(sx, 1), round(sy, 1)]                 # turned to run from the start

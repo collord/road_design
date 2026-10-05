@@ -10,6 +10,7 @@
     python -m roadsearch merge SRC [SRC ...] --out DEST
     python -m roadsearch example NAME [--k K] [--out DIR]     (examples.toml)
     python -m roadsearch site [--dest site]
+    python -m roadsearch export OUT.gpkg --out-root DIR --prefix NAME [--run-ids ...] [--labels ...]
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from pathlib import Path
 import rasterio
 from pyproj import CRS
 
-from .exclusion import ExclusionError
+from .exclusion import ExclusionError, normalize_spec
 from .params import add_param_arguments, params_from_args
 from .preprocess import ConnectivityError, EndpointError, preprocess
 from .run import make_run_id, run
@@ -49,7 +50,7 @@ def cmd_preprocess(args) -> int:
 
     inputs = {
         "dem": dem_info["path"], "start": start, "goal": goal,
-        "exclude": [str(Path(e).resolve()) for e in args.exclude],
+        "exclude": [normalize_spec(e) for e in args.exclude],
         "resolution": grid.res, "params": p.to_dict(),
     }
     run_id = args.run_id or make_run_id(inputs)
@@ -94,7 +95,7 @@ def cmd_sweep(args) -> int:
             raise SystemExit(f"--vary needs NAME=v1,v2,... with NAME a parameter, got {args.vary!r}")
         unit = f" {args.vary_unit}" if args.vary_unit else ""
         for v in (float(x) for x in vals.split(",") if x):
-            variants.append((dataclasses.replace(p, **{name: v}), f"{v:g}{unit}", v))
+            variants.append((dataclasses.replace(p, **{name: v}), f"{v:g}{unit}", v, []))
     else:
         ks = [float(v) for v in args.k.split(",") if v]
         if p.C_travel == 0 and p.C_vertical == 0 and any(k != 0 for k in ks):
@@ -103,18 +104,21 @@ def cmd_sweep(args) -> int:
         for k in ks:
             # Rounded so that k x the unit cost hashes like the same value typed on the command line.
             variants.append((dataclasses.replace(p, C_travel=float(f"{k * p.C_travel:.12g}"),
-                                                 C_vertical=float(f"{k * p.C_vertical:.12g}")), f"k={k:g}", k))
+                                                 C_vertical=float(f"{k * p.C_vertical:.12g}")), f"k={k:g}", k, []))
     for spec in args.extra:
-        # "LABEL|NAME=V,NAME=V": one more run beside the sweep, e.g. "20 m, 8% grade|R_min=20,g_max=0.08".
-        lab, _, sets = spec.partition("|")
+        # "LABEL|NAME=V,NAME=V[|exclude=FILE[|WHERE]]": one more run beside the sweep, e.g.
+        # "20 m, 8% grade|R_min=20,g_max=0.08", optionally with more exclusion zones.
+        lab, _, rest = spec.partition("|")
+        sets, _, excl = rest.partition("|exclude=")
         over = dict(kv.split("=", 1) for kv in sets.split(",") if kv)
-        variants.append((dataclasses.replace(p, **{k: float(v) for k, v in over.items()}), lab, None))
+        variants.append((dataclasses.replace(p, **{k: float(v) for k, v in over.items()}), lab, None,
+                         [excl] if excl else []))
     if not variants:
         raise SystemExit("nothing to run: give --k or --vary values, or --extra")
     ids, labels, values = [], [], []
-    for pv, lab, v in variants:
+    for pv, lab, v, excl in variants:
         print(f"{lab}: running")
-        rec = run(args.dem, args.start, args.goal, pv, args.exclude, args.out, args.resolution, args.clip,
+        rec = run(args.dem, args.start, args.goal, pv, list(args.exclude) + excl, args.out, args.resolution, args.clip,
                   args.clip_margin, args.coarse_res, None, args.endpoint_crs, reuse=True)
         if "error" in rec:
             print(f"{lab}: {rec['error']}", file=sys.stderr)
@@ -187,6 +191,15 @@ def cmd_site(args) -> int:
     return status
 
 
+def cmd_export(args) -> int:
+    from .export import export_runs
+
+    labels = args.labels.split(";") if args.labels else None
+    n = export_runs(args.out_root, args.gpkg, args.prefix, args.run_ids or None, labels)
+    print(f"wrote {args.gpkg}: " + ", ".join(f"{k} ({v} rows)" for k, v in n.items()))
+    return 0
+
+
 def cmd_burn(args) -> int:
     from .burn import burn_route
 
@@ -206,7 +219,7 @@ def add_run_arguments(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--goal", required=True, help="x,y")
     sp.add_argument("--endpoint-crs", default=None,
                     help="CRS of --start/--goal (default: the DEM's CRS; EPSG:4326 for lon,lat)")
-    sp.add_argument("--exclude", action="append", default=[], help="polygon file; repeatable")
+    sp.add_argument("--exclude", action="append", default=[], help="polygon file to keep out of, optionally filtered as 'FILE|WHERE' (e.g. \"zones.gpkg|type='avoid'\"); repeatable")
     sp.add_argument("--resolution", type=float, default=None,
                     help="working resolution (m); default fits max_states over the (clipped) grid")
     sp.add_argument("--clip", choices=["none", "box", "auto"], default="auto",
@@ -236,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--goal", required=True, help="x,y")
     sp.add_argument("--endpoint-crs", default=None,
                     help="CRS of --start/--goal (default: the DEM's CRS; EPSG:4326 for lon,lat)")
-    sp.add_argument("--exclude", action="append", default=[], help="polygon file; repeatable")
+    sp.add_argument("--exclude", action="append", default=[], help="polygon file to keep out of, optionally filtered as 'FILE|WHERE' (e.g. \"zones.gpkg|type='avoid'\"); repeatable")
     sp.add_argument("--resolution", type=float, default=None, help="working resolution (m)")
     sp.add_argument("--out", default="out")
     sp.add_argument("--run-id", default=None)
@@ -302,6 +315,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dest", default="site")
     sp.add_argument("--repo-url", default="", help="link to the source repository, shown on the landing page")
     sp.set_defaults(func=cmd_site)
+
+    sp = sub.add_parser("export", help="write runs' routes, segments and features to a GeoPackage")
+    sp.add_argument("gpkg")
+    sp.add_argument("--out-root", default="out", help="the output root holding the runs")
+    sp.add_argument("--prefix", default="runs", help="layer name prefix, e.g. red_mountain")
+    sp.add_argument("--run-ids", nargs="*", default=None, help="these runs, in this order (default: all in the root)")
+    sp.add_argument("--labels", default=None, help="';'-separated label per run (default: from the parameters that differ)")
+    sp.set_defaults(func=cmd_export)
 
     sp = sub.add_parser("burn", help="burn a route into the DEM: design surface and cut/fill rasters")
     sp.add_argument("run_id")

@@ -33,8 +33,8 @@ def sweep_argv(name: str, ex: dict, k: str | None = None, out: str | None = None
     elif k is not None:
         extras = []
     for e in extras:
-        sets = ",".join(f"{n}={v:g}" for n, v in e.items() if n != "label")
-        argv += ["--extra", f"{e['label']}|{sets}"]
+        sets = ",".join(f"{n}={v:g}" for n, v in e.items() if n not in ("label", "exclude"))
+        argv += ["--extra", f"{e['label']}|{sets}" + (f"|exclude={e['exclude']}" if e.get("exclude") else "")]
     if "reference" in ex:
         argv += ["--reference", ex["reference"]["file"], "--reference-label", ex["reference"]["label"]]
     if "vary" in ex:

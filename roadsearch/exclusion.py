@@ -59,9 +59,28 @@ def _polygonal(geom):
     return None
 
 
+def split_spec(spec: str | Path) -> tuple[str, str | None]:
+    """'zones.gpkg|type='avoid'' -> ('zones.gpkg', "type='avoid'"): a file and an optional
+    SQL WHERE filter on its attributes."""
+    path, _, where = str(spec).partition("|")
+    return path, (where.strip() or None)
+
+
+def normalize_spec(spec: str | Path) -> str:
+    """The spec with its file made absolute (the filter kept as written)."""
+    path, where = split_spec(spec)
+    path = str(Path(path).resolve())
+    return f"{path}|{where}" if where else path
+
+
 def load_zone_file(path: str | Path, grid: Grid, buffer_m: float) -> ZoneFile:
+    """Polygons from a vector file, optionally filtered: 'FILE|WHERE' (see split_spec)."""
     path = str(path)
-    gdf = gpd.read_file(path)
+    file, where = split_spec(path)
+    try:
+        gdf = gpd.read_file(file, where=where) if where else gpd.read_file(file)
+    except Exception as exc:
+        raise ExclusionError(f"could not read exclusion zones from {path}: {exc}") from exc
     if gdf.crs is None:
         raise ExclusionError(
             f"exclusion file {path} has no CRS; define one (e.g. a .prj next to a shapefile) and retry"

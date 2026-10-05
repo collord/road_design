@@ -21,6 +21,7 @@
   --road: #b91c1c;       /* topo-map road red */
   --focus: #1d4ed8;
   --ref: #7c3aed;        /* the as-built reference line */
+  --zone: #9a3412;       /* exclusion (avoid) zones */
   --s0: #1d2421; --s1: #0f766e; --s2: #4d7c0f; --s3: #a16207; --s4: #c2410c; --s5: #9f1239; --s6: #6d28d9;
   --f-display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
   --f-body: "Barlow", "Helvetica Neue", Arial, sans-serif;
@@ -29,14 +30,14 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --paper: #121614; --sheet: #191e1b; --ink: #e4e9e5; --muted: #95a39b; --rule: #2d3531;
-    --fwd: #f97316; --bwd: #2dd4bf; --road: #f87171; --focus: #93c5fd; --ref: #c4b5fd;
+    --fwd: #f97316; --bwd: #2dd4bf; --road: #f87171; --focus: #93c5fd; --ref: #c4b5fd; --zone: #fb923c;
     --s0: #e4e9e5; --s1: #2dd4bf; --s2: #a3e635; --s3: #facc15; --s4: #fb923c; --s5: #fb7185; --s6: #c4b5fd;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --paper: #121614; --sheet: #191e1b; --ink: #e4e9e5; --muted: #95a39b; --rule: #2d3531;
-  --fwd: #f97316; --bwd: #2dd4bf; --road: #f87171; --focus: #93c5fd; --ref: #c4b5fd;
+  --fwd: #f97316; --bwd: #2dd4bf; --road: #f87171; --focus: #93c5fd; --ref: #c4b5fd; --zone: #fb923c;
   --s0: #e4e9e5; --s1: #2dd4bf; --s2: #a3e635; --s3: #facc15; --s4: #fb923c; --s5: #fb7185; --s6: #c4b5fd;
   color-scheme: dark;
 }
@@ -179,6 +180,7 @@ textarea.geo { width: 100%; min-height: 90px; font: 400 0.72rem var(--f-data); b
 .mid { background: rgba(255,255,255,0.8); border: 1.5px solid #111; border-radius: 50%; box-sizing: border-box; }
 .warn { font: 600 0.68rem var(--f-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--road);
         border: 1px solid var(--road); padding: 0 4px; margin-left: 6px; }
+.sw.zone { background: repeating-linear-gradient(135deg, var(--zone) 0 2px, transparent 2px 6px); border-color: var(--zone); }
 .sw.ref { height: 0; border: 0; border-top: 3px dashed var(--ref); }
 #rows tr.refrow { cursor: default; font-style: italic; }
 #rows tr.refrow:hover { background: none; }
@@ -435,6 +437,12 @@ __METHOD__
   const REF = M.reference;
   const refLayer = () => casedLine(REF.xy, css("--ref"), 2.6, { dashArray: "7 5", lineCap: "butt" })
 
+  // Exclusion zones the runs kept out of (manual polygons), outlined and lightly filled.
+  const ZONES = M.zones || [];
+  const zoneText = z => "Kept out of: " + z.file + (z.where ? " where " + z.where : "") + " (" + z.runs.join("; ") + ")";
+  const zoneLayer = () => L.layerGroup(ZONES.map(z => L.polygon(z.rings.map(r => r.map(ll)),
+    { color: css("--zone"), weight: 1.6, dashArray: "5 4", fillColor: css("--zone"), fillOpacity: 0.12 }).bindTooltip(zoneText(z), { sticky: true })));
+
   // ------------------------------------------------------------ compare view
   const B = M.base;
   B._hill = b64(B.hill);
@@ -444,6 +452,7 @@ __METHOD__
     if (cm) return;
     cm = makeMap($("cmapL"), B);
     raster({ w: B.w, h: B.h, res: B.res, x0: B.x0, y0: B.y0, hill: B._hill, flags: null }).addTo(cm);
+    if (ZONES.length) zoneLayer().addTo(cm);
     M.runs.forEach((r, i) => {
       cLayers.runs[i] = r.routes.map((rt, k) => {
         const g = casedLine(rt.xy, runColor(i), k ? 1.8 : 2.6, k ? { dashArray: "6 4" } : {});
@@ -475,7 +484,8 @@ __METHOD__
   }
   document.getElementById("clegend").innerHTML = M.runs.map((r, i) =>
     '<div class="key"><div class="sw" style="background:' + runColor(i) + '"></div><span>' + label(r) + "</span></div>").join("") +
-    (REF ? '<div class="key"><div class="sw ref"></div><span>' + REF.label + "</span></div>" : "");
+    (REF ? '<div class="key"><div class="sw ref"></div><span>' + REF.label + "</span></div>" : "") +
+    ZONES.map(z => '<div class="key"><div class="sw zone"></div><span>' + zoneText(z) + "</span></div>").join("");
   const rows = document.getElementById("rows");
   M.runs.forEach((r, i) => {
     const b = r.routes[0] || {};
