@@ -33,7 +33,7 @@ roadsearch = "roadsearch.cli:main"
 packages = ["roadsearch"]
 
 [tool.setuptools.package-data]
-roadsearch = ["*.html", "*.md", "*.svg", "*.js"]
+roadsearch = ["*.html", "*.md", "*.svg", "*.js", "vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

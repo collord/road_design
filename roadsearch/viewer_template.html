@@ -3,6 +3,10 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+/*__LEAFLET_CSS__*/
+</style>
 <style>
 /* Layout: a map sheet with a margin. The map takes the width; the margin column
    carries the run table or the animation controls, as on a printed topo sheet. */
@@ -160,6 +164,19 @@ table.cmp td.pos { color: var(--road); }
 textarea.geo { width: 100%; min-height: 90px; font: 400 0.72rem var(--f-data); background: var(--sheet); color: var(--ink);
                border: 1px solid var(--rule); box-sizing: border-box; }
 .status { font: 400 0.85rem var(--f-data); color: var(--muted); }
+/* Leaflet maps, in the run's own coordinates (meters): drag to pan, wheel or +/- to zoom. */
+.lmap { height: clamp(360px, 74vh, 860px); width: 100%; background: var(--paper); }
+.lmap.draw { cursor: crosshair; }
+.leaflet-container { font: 400 0.8rem var(--f-body); background: var(--paper); }
+.leaflet-container:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.leaflet-bar a, .leaflet-bar a:hover { background: var(--sheet); color: var(--ink); border-color: var(--rule); }
+.leaflet-control-scale-line { background: color-mix(in srgb, var(--sheet) 85%, transparent); color: var(--ink);
+                              border-color: var(--ink); font: 400 0.7rem var(--f-data); }
+.leaflet-tooltip { font: 400 0.78rem var(--f-body); background: var(--sheet); color: var(--ink); border-color: var(--rule); }
+.leaflet-tooltip.pinlabel { font: 600 0.8rem var(--f-display); letter-spacing: 0.05em; padding: 1px 5px; box-shadow: none; }
+.vtx { background: #fff; border: 2px solid #111; border-radius: 50%; box-sizing: border-box; }
+.vtx.sel { background: var(--focus); }
+.mid { background: rgba(255,255,255,0.8); border: 1.5px solid #111; border-radius: 50%; box-sizing: border-box; }
 .warn { font: 600 0.68rem var(--f-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--road);
         border: 1px solid var(--road); padding: 0 4px; margin-left: 6px; }
 .sw.ref { height: 0; border: 0; border-top: 3px dashed var(--ref); }
@@ -192,15 +209,14 @@ textarea.geo { width: 100%; min-height: 90px; font: 400 0.72rem var(--f-data); b
   <!-- Compare view -->
   <section id="compare" class="sheet" aria-label="Best routes of every run">
     <div class="map">
-      <canvas id="cmap" class="base" aria-label="Hillshade with the best route of each run"></canvas>
-      <canvas id="cover" class="over" aria-hidden="true"></canvas>
+      <div id="cmapL" class="lmap" aria-label="Map of the best route of each run: drag to pan, scroll or use + and − to zoom"></div>
     </div>
     <div class="margin">
       <p class="explain" id="cexplain">Each run adds lifetime truck costs at a different weight k: a cost per meter driven and per meter
       of rise and fall. k = 1 is one truck's fuel for five years. Maintenance, tires, brakes and a bigger fleet all scale with
       these costs, so they push k up. Hover a row to pick out its route; select it to watch that search.</p>
       <div class="legend" id="clegend"></div>
-      <div class="scale"><div class="bar" id="cscalebar"></div><span id="cscaletext"></span></div>
+      <p class="note">Drag to pan; scroll, pinch or use + and − to zoom. Hover a route for its cost.</p>
     </div>
   </section>
 
@@ -257,9 +273,8 @@ textarea.geo { width: 100%; min-height: 90px; font: 400 0.72rem var(--f-data); b
   <div id="v-draw" role="tabpanel" aria-labelledby="t-draw" class="stack" hidden>
     <section class="sheet" aria-label="Draw a route and cost it">
       <div class="map">
-        <canvas id="dmap" class="base" aria-label="Hillshade of the run's terrain"></canvas>
-        <canvas id="dover" class="over draw" tabindex="0"
-                aria-label="Drawing surface. Click to add a point, drag a point to move it, Delete removes the selected point."></canvas>
+        <div id="dmapL" class="lmap draw"
+             aria-label="Drawing map. Click to add a point, drag a point to move it, Delete removes the selected point."></div>
       </div>
       <div class="margin">
         <div class="runpick"><p class="eyebrow">Terrain and costs from</p><select id="drawsel" aria-label="Run"></select></div>
@@ -283,7 +298,6 @@ textarea.geo { width: 100%; min-height: 90px; font: 400 0.72rem var(--f-data); b
         <div><p class="eyebrow">Your route against the optimum</p><table class="cmp" id="dcmp"></table></div>
         <div><p class="eyebrow">Checks</p><ul class="issues" id="dissues"></ul></div>
         <div><p class="eyebrow">Legend</p><div class="legend" id="dlegend"></div></div>
-        <div class="scale"><div class="bar" id="dscalebar"></div><span id="dscaletext"></span></div>
         <p class="status" id="dstatus" role="status"></p>
         <textarea class="geo" id="dgeo" readonly hidden aria-label="GeoJSON of the drawn route"></textarea>
       </div>
@@ -353,47 +367,111 @@ __METHOD__
     ctx.setLineDash([]);
   }
 
-  // A reference centerline (the as-built road), drawn dashed in violet over a white casing.
-  const REF = M.reference;
-  function strokeRef(ctx, pts, lw) {
-    ctx.beginPath();
-    pts.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-    ctx.lineJoin = "round"; ctx.lineCap = "butt"; ctx.setLineDash([]);
-    ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 4.6 * lw; ctx.stroke();
-    ctx.strokeStyle = css("--ref"); ctx.lineWidth = 2.6 * lw; ctx.setLineDash([7 * lw, 4 * lw]); ctx.stroke();
-    ctx.setLineDash([]);
+  // ------------------------------------------------------------ Leaflet maps
+  // Coordinates are the runs' own (meters), so L.CRS.Simple: latlng = [y, x].
+  const $ = id => document.getElementById(id);
+  const ll = ([x, y]) => [y, x];
+  const xyOf = a => [a.lng, a.lat];
+  const extent = src => [[src.y0 - src.h * src.res, src.x0], [src.y0, src.x0 + src.w * src.res]];
+  // Hillshade tiles drawn in the browser from a grid's hillshade (bilinear) and flags (nearest):
+  // bit 1 excluded, 2 stream channel, 4 outside the searched corridor.
+  const RasterLayer = L.GridLayer.extend({
+    createTile(coords) {
+      const size = this.getTileSize(), t = document.createElement("canvas");
+      t.width = size.x; t.height = size.y;
+      const src = this.options.src, map = this._map;
+      const nw = map.unproject(coords.scaleBy(size), coords.z), se = map.unproject(coords.add([1, 1]).scaleBy(size), coords.z);
+      const dx = (se.lng - nw.lng) / size.x, dy = (nw.lat - se.lat) / size.y;
+      const ctx = t.getContext("2d"), img = ctx.createImageData(size.x, size.y), px = img.data;
+      const W = src.w, H = src.h, hill = src.hill, flags = src.flags;
+      for (let j = 0; j < size.y; j++) {
+        const fr = (src.y0 - (nw.lat - (j + 0.5) * dy)) / src.res - 0.5;
+        if (fr < -0.5 || fr > H - 0.5) continue;
+        const r0 = Math.max(0, Math.min(H - 2, Math.floor(fr))), wr = Math.max(0, Math.min(1, fr - r0));
+        const rn = Math.max(0, Math.min(H - 1, Math.round(fr)));
+        for (let i = 0; i < size.x; i++) {
+          const fc = (nw.lng + (i + 0.5) * dx - src.x0) / src.res - 0.5;
+          if (fc < -0.5 || fc > W - 0.5) continue;
+          const c0 = Math.max(0, Math.min(W - 2, Math.floor(fc))), wc = Math.max(0, Math.min(1, fc - c0));
+          const k = r0 * W + c0;
+          const hv = (1 - wr) * ((1 - wc) * hill[k] + wc * hill[k + 1]) + wr * ((1 - wc) * hill[k + W] + wc * hill[k + W + 1]);
+          let g = 70 + hv * 0.72, r = g, gg = g, b = g;
+          const f = flags ? flags[rn * W + Math.max(0, Math.min(W - 1, Math.round(fc)))] : 0;
+          if (f & 4) { r = gg = b = 150 + hv * 0.35; }
+          if (f & 1) { r = r * 0.7 + 80; gg = gg * 0.7 + 35; b = b * 0.7 + 35; }
+          if (f & 2) { r = r * 0.45 + 20; gg = gg * 0.45 + 90; b = b * 0.45 + 150; }
+          const o = (j * size.x + i) * 4;
+          px[o] = r; px[o + 1] = gg; px[o + 2] = b; px[o + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      return t;
+    },
+  });
+  function makeMap(el, src) {
+    const b = extent(src);
+    const m = L.map(el, { crs: L.CRS.Simple, minZoom: -8, maxZoom: 4, zoomSnap: 0.25, zoomDelta: 0.5,
+                          wheelPxPerZoomLevel: 90, attributionControl: false, preferCanvas: true,
+                          maxBounds: L.latLngBounds(b).pad(0.25) });
+    m.fitBounds(b);
+    L.control.scale({ imperial: false, maxWidth: 140 }).addTo(m);
+    return m;
+  }
+  const raster = src => new RasterLayer({ src, bounds: L.latLngBounds(extent(src)), minZoom: -8, maxZoom: 4, keepBuffer: 3 });
+  function casedLine(xy, color, weight, opts) {      // a line over a white casing, as one layer group
+    const pts = xy.map(ll);
+    const casing = L.polyline(pts, { color: "#fff", weight: weight + 2.4, opacity: 0.85, interactive: false, lineJoin: "round" });
+    const line = L.polyline(pts, Object.assign({ color, weight, lineJoin: "round" }, opts || {}));
+    const g = L.layerGroup([casing, line]);
+    g.line = line; g.casing = casing;
+    return g;
+  }
+  function pinMarker(xy, text, color) {
+    return L.circleMarker(ll(xy), { radius: 6, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1, interactive: false })
+      .bindTooltip(text, { permanent: true, direction: "right", offset: [8, 0], className: "pinlabel" });
   }
 
+  // A reference centerline (the as-built road), drawn dashed in violet over a white casing.
+  const REF = M.reference;
+  const refLayer = () => casedLine(REF.xy, css("--ref"), 2.6, { dashArray: "7 5", lineCap: "butt" })
+
   // ------------------------------------------------------------ compare view
-  const B = M.base, cmap = document.getElementById("cmap"), cover = document.getElementById("cover");
-  cmap.width = B.w; cmap.height = B.h;
-  {
-    const hill = b64(B.hill), img = cmap.getContext("2d").createImageData(B.w, B.h), px = img.data;
-    for (let i = 0; i < B.w * B.h; i++) { const g = 70 + hill[i] * 0.72; px[i * 4] = g; px[i * 4 + 1] = g; px[i * 4 + 2] = g; px[i * 4 + 3] = 255; }
-    cmap.getContext("2d").putImageData(img, 0, 0);
-  }
-  const toBase = ([x, y]) => [(x - B.x0) / B.res, (B.y0 - y) / B.res];
-  let hot = -1;
-  function drawCompare() {
-    const dpr = sizeOverlay(cmap, cover), k = cmap.clientWidth / B.w, ctx = cover.getContext("2d");
-    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
-    const lw = 1 / k;
+  const B = M.base;
+  B._hill = b64(B.hill);
+  let cm = null, hot = -1;
+  const cLayers = { runs: [], ref: null, pins: [] };
+  function initCompare() {
+    if (cm) return;
+    cm = makeMap($("cmapL"), B);
+    raster({ w: B.w, h: B.h, res: B.res, x0: B.x0, y0: B.y0, hill: B._hill, flags: null }).addTo(cm);
     M.runs.forEach((r, i) => {
-      if (!r.routes.length || i === hot) return;
-      const faded = hot >= 0;
-      ctx.globalAlpha = faded ? 0.35 : 1;
-      strokeRoute(ctx, r.routes[0].xy.map(toBase), runColor(i), lw, 2.4, false);
+      cLayers.runs[i] = r.routes.map((rt, k) => {
+        const g = casedLine(rt.xy, runColor(i), k ? 1.8 : 2.6, k ? { dashArray: "6 4" } : {});
+        g.line.bindTooltip(label(r) + (k ? ", alternative " + (k + 1) : "") + ": " + fmt(rt.cost) + ", " + km(rt.length),
+                           { sticky: true });
+        g.line.on("mouseover", () => { hot = i; drawCompare(); });
+        g.line.on("mouseout", () => { hot = -1; drawCompare(); });
+        g.line.on("click", () => openRun(i));
+        return g;
+      });
     });
-    ctx.globalAlpha = 1;
-    if (hot >= 0 && M.runs[hot].routes.length) {
-      const r = M.runs[hot];
-      r.routes.slice(1).forEach(a => strokeRoute(ctx, a.xy.map(toBase), runColor(hot), lw, 1.8, true));
-      strokeRoute(ctx, r.routes[0].xy.map(toBase), runColor(hot), lw, 4, false);
-    }
-    if (REF) strokeRef(ctx, REF.xy.map(toBase), lw);
-    const [sx, sy] = toBase(B.start), [gx, gy] = toBase(B.goal);
-    pin(ctx, sx, sy, "START", css("--fwd"), lw); pin(ctx, gx, gy, "GOAL", css("--bwd"), lw);
-    scaleBar(document.getElementById("cscalebar"), document.getElementById("cscaletext"), cmap, B.w * B.res);
+    if (REF) { cLayers.ref = refLayer().addTo(cm); cLayers.ref.line.bindTooltip(REF.label, { sticky: true }); }
+    cLayers.pins = [pinMarker(B.start, "START", css("--fwd")).addTo(cm), pinMarker(B.goal, "GOAL", css("--bwd")).addTo(cm)];
+  }
+  function drawCompare() {
+    initCompare();
+    cm.invalidateSize();
+    M.runs.forEach((r, i) => cLayers.runs[i].forEach((g, k) => {
+      const on = k === 0 || i === hot;
+      if (on && !cm.hasLayer(g)) g.addTo(cm);
+      if (!on && cm.hasLayer(g)) cm.removeLayer(g);
+      const faded = hot >= 0 && i !== hot;
+      g.line.setStyle({ color: runColor(i), weight: i === hot && k === 0 ? 4.2 : k ? 1.8 : 2.6, opacity: faded ? 0.35 : 1 });
+      g.casing.setStyle({ opacity: faded ? 0.3 : 0.85, weight: (i === hot && k === 0 ? 4.2 : k ? 1.8 : 2.6) + 2.4 });
+    }));
+    if (hot >= 0) cLayers.runs[hot].forEach(g => { g.casing.bringToFront(); g.line.bringToFront(); });
+    if (cLayers.ref) { cLayers.ref.line.setStyle({ color: css("--ref") }); cLayers.ref.casing.bringToFront(); cLayers.ref.line.bringToFront(); }
+    cLayers.pins[0].setStyle({ fillColor: css("--fwd") }); cLayers.pins[1].setStyle({ fillColor: css("--bwd") });
   }
   document.getElementById("clegend").innerHTML = M.runs.map((r, i) =>
     '<div class="key"><div class="sw" style="background:' + runColor(i) + '"></div><span>' + label(r) + "</span></div>").join("") +
@@ -496,6 +574,7 @@ __METHOD__
     });
     try { history.replaceState(null, "", "#" + v); } catch (e) { /* the frame may refuse; the view still changes */ }
     if (v === "compare") { document.getElementById("title").textContent = TITLE; drawCompare(); }
+    if (v === "draw" && dm) dm.invalidateSize();
     if (v === "method") document.getElementById("title").textContent = "How the search works";
     if (v === "search") { if (cur < 0) openRun(0); else draw(); }
     if (v === "draw") openDraw(dcur < 0 ? Math.max(cur, 0) : dcur);
@@ -680,11 +759,11 @@ __METHOD__
 
 
   // ------------------------------------------------------------ draw view
-  const RE = window.RoadEval, $ = id => document.getElementById(id);
-  const dmap = $("dmap"), dover = $("dover"), dprof = $("dprof"), drawsel = $("drawsel"), dstatus = $("dstatus");
+  const RE = window.RoadEval;
+  const dprof = $("dprof"), drawsel = $("drawsel"), dstatus = $("dstatus");
   M.runs.forEach((r, i) => { const o = document.createElement("option"); o.value = i; o.textContent = label(r); drawsel.appendChild(o); });
   const KEY = "roadsearch-draw-v1";
-  let DD = null, dcur = -1, mode = "draw", ctrl = [], sel = -1, undoStack = [], R = null, drag = null;
+  let DD = null, dcur = -1, mode = "draw", ctrl = [], sel = -1, undoStack = [], R = null, dragging = false;
   let hoverVia = null, pinVia = null, profK = -1, pending = false;
   try { const v = JSON.parse(localStorage.getItem(KEY) || "[]"); if (Array.isArray(v)) ctrl = v.filter(p => Array.isArray(p) && p.length === 2); } catch (e) { /* no storage */ }
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(ctrl)); } catch (e) { /* no storage */ } };
@@ -715,8 +794,8 @@ __METHOD__
         d._bestProf = { st: sp.samples.map(q => q.station), z: sp.samples.map(q => RE.bilinear(d._T.zs, d.w, d.h, q.fr, q.fc)), length: sp.length };
       }
     }
-    dmap.width = d.w; dmap.height = d.h;
-    dmap.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(d._base), d.w, d.h), 0, 0);
+    if (!d._hill) d._hill = b64(d.hill);
+    initDrawMap(d);
     hoverVia = pinVia = null;
     document.getElementById("title").textContent = "Draw a route: " + label(M.runs[i]);
     if (mode === "explore") await getTree(d);
@@ -732,130 +811,122 @@ __METHOD__
   }
   const schedule = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; evaluate(); }); };
 
-  // --- map
-  const pxOf = ([x, y]) => [(x - DD.x0) / DD.res, (DD.y0 - y) / DD.res];
-  function drawDraw() {
-    if (!DD || view !== "draw") return;
-    const dpr = sizeOverlay(dmap, dover), k = dmap.clientWidth / DD.w, ctx = dover.getContext("2d");
-    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
-    const lw = 1 / k;
+  // --- map (Leaflet)
+  let dm = null, dRaster = null, dGrid = null;
+  const dl = {};
+  function initDrawMap(d) {
+    if (!dm) {
+      dm = makeMap($("dmapL"), d);
+      ["best", "ref", "via", "route", "marks", "handles", "pins"].forEach(k => { dl[k] = L.layerGroup().addTo(dm); });
+      dm.on("click", e => {
+        if (!DD) return;
+        if (mode === "explore") { pinVia = viaAt(xyOf(e.latlng)); panel(); drawDraw(); return; }
+        pushUndo(); ctrl.push(xyOf(e.latlng)); sel = ctrl.length - 1; save(); drawHandles(); schedule();
+      });
+      dm.on("mousemove", e => {
+        if (!DD || mode !== "explore") return;
+        const v = viaAt(xyOf(e.latlng));
+        if ((v && v.key) !== (hoverVia && hoverVia.key)) { hoverVia = v; drawDraw(); }
+        if (!pinVia) showVia(v);
+      });
+      dm.on("mouseout", () => { if (mode === "explore" && hoverVia) { hoverVia = null; drawDraw(); if (!pinVia) showVia(null); } });
+      dm.getContainer().addEventListener("keydown", e => {
+        if ((e.key === "Delete" || e.key === "Backspace") && sel >= 0) { e.preventDefault(); removeSel(); }
+        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+      });
+    }
+    const key = [d.w, d.h, d.res, d.x0, d.y0].join();
+    if (dRaster) dm.removeLayer(dRaster);
+    dRaster = raster({ w: d.w, h: d.h, res: d.res, x0: d.x0, y0: d.y0, hill: d._hill, flags: d._flags }).addTo(dm);
+    dRaster.bringToBack();
+    dm.invalidateSize();
+    if (key !== dGrid) { dm.fitBounds(extent(d)); dGrid = key; }
+    dl.best.clearLayers();
     const best = M.runs[dcur].routes[0];
-    if (best) strokeRoute(ctx, best.xy.map(pxOf), css("--ink"), lw, 1.8, true);
-    if (REF) strokeRef(ctx, REF.xy.map(pxOf), lw);
-    const via = pinVia || hoverVia;
-    if (via && via.px) {
-      strokeRoute(ctx, via.px, css("--focus"), lw, pinVia ? 2.6 : 2, !pinVia);
-      const [x, y] = pxOf(via.viaXY);
-      ctx.beginPath(); ctx.arc(x, y, 5 * lw, 0, Math.PI * 2); ctx.fillStyle = css("--focus"); ctx.fill();
-      ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#fff"; ctx.stroke();
-    }
-    if (R) {
-      const P = R.pts.map(pxOf);
-      ctx.beginPath(); P.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-      ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 6.4 * lw; ctx.stroke();
-      const q = R.per, n = q.station.length;
-      ctx.lineWidth = 4 * lw;
-      for (let j = 0; j < n; j++) {
-        const a = j ? pxOf([q.x[j - 1], q.y[j - 1]]) : pxOf(R.pts[0]);
-        const b = j + 1 < n ? pxOf([q.x[j + 1], q.y[j + 1]]) : pxOf(R.pts[R.pts.length - 1]);
-        const m = pxOf([q.x[j], q.y[j]]);
-        ctx.beginPath(); ctx.moveTo((a[0] + m[0]) / 2, (a[1] + m[1]) / 2); ctx.lineTo(m[0], m[1]); ctx.lineTo((b[0] + m[0]) / 2, (b[1] + m[1]) / 2);
-        ctx.strokeStyle = q.flag[j] || !Number.isFinite(q.cpm[j]) ? VIOL : ramp(cpmT(q.cpm[j]));
-        ctx.stroke();
-      }
-      R.corners.filter(c => c.tight).forEach(c => {
-        const [x, y] = pxOf(c.i === 0 ? B.start : ctrl[c.i - 1]);
-        ctx.beginPath(); ctx.arc(x, y, 11 * lw, 0, Math.PI * 2); ctx.strokeStyle = VIOL; ctx.lineWidth = 2 * lw; ctx.stroke();
-      });
-      if (profK >= 0) {
-        const [x, y] = pxOf([q.x[profK], q.y[profK]]);
-        ctx.beginPath(); ctx.arc(x, y, 6 * lw, 0, Math.PI * 2); ctx.fillStyle = css("--focus"); ctx.fill();
-        ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#fff"; ctx.stroke();
-      }
-    }
-    if (mode === "draw") {
-      const full = [B.start].concat(ctrl, [B.goal]);
-      for (let j = 0; j + 1 < full.length; j++) {
-        const [x, y] = pxOf([(full[j][0] + full[j + 1][0]) / 2, (full[j][1] + full[j + 1][1]) / 2]);
-        ctx.beginPath(); ctx.arc(x, y, 3.5 * lw, 0, Math.PI * 2); ctx.fillStyle = "rgba(255,255,255,0.75)"; ctx.fill();
-        ctx.lineWidth = 1.2 * lw; ctx.strokeStyle = "#111"; ctx.stroke();
-      }
-      ctrl.forEach((p, j) => {
-        const [x, y] = pxOf(p);
-        ctx.beginPath(); ctx.arc(x, y, 5.5 * lw, 0, Math.PI * 2); ctx.fillStyle = j === sel ? css("--focus") : "#fff"; ctx.fill();
-        ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#111"; ctx.stroke();
-      });
-    }
-    const [sx, sy] = pxOf(B.start), [gx, gy] = pxOf(B.goal);
-    pin(ctx, sx, sy, "START", css("--fwd"), lw); pin(ctx, gx, gy, "GOAL", css("--bwd"), lw);
-    scaleBar($("dscalebar"), $("dscaletext"), dmap, DD.w * DD.res);
+    if (best) casedLine(best.xy, css("--ink"), 1.8, { dashArray: "6 4", interactive: false }).addTo(dl.best);
+    dl.ref.clearLayers();
+    if (REF) refLayer().addTo(dl.ref);
+    dl.pins.clearLayers();
+    pinMarker(B.start, "START", css("--fwd")).addTo(dl.pins); pinMarker(B.goal, "GOAL", css("--bwd")).addTo(dl.pins);
+    drawHandles();
   }
 
-  // --- pointer
-  function evPt(e) {
-    const r = dover.getBoundingClientRect();
-    const cx = (e.clientX - r.left) / r.width * DD.w, cy = (e.clientY - r.top) / r.height * DD.h;
-    return { cx, cy, xy: [DD.x0 + cx * DD.res, DD.y0 - cy * DD.res], tol: 11 / (r.width / DD.w) };
-  }
-  function nearestVertex(p) {
-    let bi = -1, bd = p.tol;
-    ctrl.forEach((q, j) => { const [x, y] = pxOf(q), d = Math.hypot(x - p.cx, y - p.cy); if (d < bd) { bd = d; bi = j; } });
-    return bi;
-  }
-  function nearestMid(p) {
-    const full = [B.start].concat(ctrl, [B.goal]);
-    let bi = -1, bd = p.tol * 0.8;
-    for (let j = 0; j + 1 < full.length; j++) {
-      const [x, y] = pxOf([(full[j][0] + full[j + 1][0]) / 2, (full[j][1] + full[j + 1][1]) / 2]), d = Math.hypot(x - p.cx, y - p.cy);
-      if (d < bd) { bd = d; bi = j; }
+  function drawDraw() {
+    if (!DD || !dm || view !== "draw") return;
+    dl.via.clearLayers();
+    const via = pinVia || hoverVia;
+    if (via && via.xy) {
+      casedLine(via.xy, css("--focus"), pinVia ? 2.6 : 2, Object.assign({ interactive: false }, pinVia ? {} : { dashArray: "6 4" })).addTo(dl.via);
+      L.circleMarker(ll(via.viaXY), { radius: 5, color: "#fff", weight: 2, fillColor: css("--focus"), fillOpacity: 1, interactive: false }).addTo(dl.via);
     }
-    return bi;
+    dl.route.clearLayers(); dl.marks.clearLayers();
+    if (!R) return;
+    L.polyline(R.pts.map(ll), { color: "#fff", weight: 6.4, opacity: 0.9, interactive: false, lineJoin: "round" }).addTo(dl.route);
+    // Colored by cost per meter, one polyline per run of samples of the same color.
+    const q = R.per, n = q.station.length, mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const at = j => [q.x[j], q.y[j]];
+    const colorOf = j => q.flag[j] || !Number.isFinite(q.cpm[j]) ? VIOL : ramp(Math.round(cpmT(q.cpm[j]) * 24) / 24);
+    let run = null, col = null;
+    for (let j = 0; j < n; j++) {
+      const a = j ? mid(at(j - 1), at(j)) : R.pts[0], b = j + 1 < n ? mid(at(j), at(j + 1)) : R.pts[R.pts.length - 1];
+      const c = colorOf(j);
+      if (c !== col) {
+        if (run) L.polyline(run.map(ll), { color: col, weight: 4, interactive: false, lineJoin: "round" }).addTo(dl.route);
+        run = [a]; col = c;
+      }
+      run.push(at(j), b);
+    }
+    if (run) L.polyline(run.map(ll), { color: col, weight: 4, interactive: false, lineJoin: "round" }).addTo(dl.route);
+    R.corners.filter(c => c.tight).forEach(c => {
+      L.circleMarker(ll(c.i === 0 ? B.start : ctrl[c.i - 1]), { radius: 11, color: VIOL, weight: 2, fill: false, interactive: false }).addTo(dl.marks);
+    });
+    if (profK >= 0) {
+      L.circleMarker(ll(at(profK)), { radius: 6, color: "#fff", weight: 2, fillColor: css("--focus"), fillOpacity: 1, interactive: false }).addTo(dl.marks);
+    }
   }
-  dover.addEventListener("pointerdown", e => {
-    if (!DD || e.button > 0) return;
-    const p = evPt(e);
-    dover.focus({ preventScroll: true });
-    if (mode === "explore") { pinVia = viaAt(p); panel(); drawDraw(); return; }
-    let i = nearestVertex(p);
-    pushUndo();
-    if (i < 0) { const m = nearestMid(p); if (m >= 0) { ctrl.splice(m, 0, p.xy); i = m; } }
-    if (i < 0) { ctrl.push(p.xy); i = ctrl.length - 1; }
-    sel = i; drag = { i, id: e.pointerId };
-    try { dover.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-    schedule();
-  });
-  dover.addEventListener("pointermove", e => {
-    if (!DD) return;
-    const p = evPt(e);
-    if (drag) { ctrl[drag.i] = p.xy; schedule(); return; }
-    if (mode === "explore") {
-      const v = viaAt(p);
-      if ((v && v.key) !== (hoverVia && hoverVia.key)) { hoverVia = v; drawDraw(); }
-      if (!pinVia) showVia(v, p);
-    } else dover.style.cursor = nearestVertex(p) >= 0 || nearestMid(p) >= 0 ? "grab" : "crosshair";
-  });
-  const endDrag = () => { if (drag) { drag = null; save(); schedule(); } };
-  dover.addEventListener("pointerup", endDrag);
-  dover.addEventListener("pointercancel", endDrag);
-  dover.addEventListener("pointerleave", () => { if (mode === "explore" && hoverVia) { hoverVia = null; drawDraw(); if (!pinVia) showVia(null); } });
-  dover.addEventListener("keydown", e => {
-    if ((e.key === "Delete" || e.key === "Backspace") && sel >= 0) { e.preventDefault(); removeSel(); }
-    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
-  });
-  function removeSel() { if (sel < 0 || sel >= ctrl.length) return; pushUndo(); ctrl.splice(sel, 1); sel = Math.min(sel, ctrl.length - 1); save(); schedule(); }
-  function undo() { if (!undoStack.length) return; ctrl = JSON.parse(undoStack.pop()); sel = -1; save(); schedule(); }
+
+  // --- handles: a draggable marker per point, and a small one mid-leg to add a point there.
+  const vIcon = on => L.divIcon({ className: "vtx" + (on ? " sel" : ""), iconSize: [13, 13] });
+  const mIcon = L.divIcon({ className: "mid", iconSize: [9, 9] });
+  function drawHandles() {
+    if (!dm || dragging) return;
+    dl.handles.clearLayers();
+    if (mode !== "draw") return;
+    const full = [B.start].concat(ctrl, [B.goal]);
+    for (let j = 0; j + 1 < full.length; j++) {
+      const m = L.marker(ll([(full[j][0] + full[j + 1][0]) / 2, (full[j][1] + full[j + 1][1]) / 2]),
+                         { icon: mIcon, draggable: true, keyboard: false, title: "Drag to add a point here" });
+      let idx = -1;
+      const insert = () => { if (idx < 0) { pushUndo(); idx = j; ctrl.splice(j, 0, xyOf(m.getLatLng())); sel = j; } };
+      m.on("dragstart", () => { dragging = true; insert(); });
+      m.on("drag", () => { ctrl[idx] = xyOf(m.getLatLng()); schedule(); });
+      m.on("dragend", () => { dragging = false; save(); drawHandles(); schedule(); });
+      m.on("click", () => { insert(); save(); drawHandles(); schedule(); });
+      m.addTo(dl.handles);
+    }
+    ctrl.forEach((pt, j) => {
+      const m = L.marker(ll(pt), { icon: vIcon(j === sel), draggable: true, keyboard: false, title: "Drag to move; select and press Delete to remove" });
+      m.on("dragstart", () => { dragging = true; pushUndo(); sel = j; });
+      m.on("drag", () => { ctrl[j] = xyOf(m.getLatLng()); schedule(); });
+      m.on("dragend", () => { dragging = false; save(); drawHandles(); schedule(); });
+      m.on("click", () => { sel = j; drawHandles(); panel(); });
+      m.addTo(dl.handles);
+    });
+  }
+  function removeSel() { if (sel < 0 || sel >= ctrl.length) return; pushUndo(); ctrl.splice(sel, 1); sel = Math.min(sel, ctrl.length - 1); save(); drawHandles(); schedule(); }
+  function undo() { if (!undoStack.length) return; ctrl = JSON.parse(undoStack.pop()); sel = -1; save(); drawHandles(); schedule(); }
   $("d-undo").addEventListener("click", undo);
   $("d-del").addEventListener("click", removeSel);
-  $("d-clear").addEventListener("click", () => { if (!ctrl.length) return; pushUndo(); ctrl = []; sel = -1; save(); schedule(); });
+  $("d-clear").addEventListener("click", () => { if (!ctrl.length) return; pushUndo(); ctrl = []; sel = -1; save(); drawHandles(); schedule(); });
 
   // --- modes
   function setMode(m) {
     mode = m;
     $("m-draw").setAttribute("aria-pressed", m === "draw" ? "true" : "false");
     $("m-explore").setAttribute("aria-pressed", m === "explore" ? "true" : "false");
-    dover.style.cursor = "crosshair";
     if (m === "draw") { hoverVia = null; }
     else if (DD) getTree(DD).then(() => panel());
+    drawHandles();
     panel(); drawDraw();
   }
   $("m-draw").addEventListener("click", () => setMode("draw"));
@@ -903,9 +974,9 @@ __METHOD__
     }
     return out;
   }
-  function viaAt(p) {
+  function viaAt([x, y]) {
     const d = DD, t = d._tree;
-    const r = Math.floor(p.cy), c = Math.floor(p.cx);
+    const r = Math.floor((d.y0 - y) / d.res), c = Math.floor((x - d.x0) / d.res);
     if (r < 0 || c < 0 || r >= d.h || c >= d.w) return null;
     const cell = r * d.w + c, v = d._corr[cell];
     const out = { key: cell, rel: v === NEVER ? Infinity : v / 65534 * d.rel_max };
@@ -928,13 +999,12 @@ __METHOD__
     if (fi < 0 || bi < 0) return out;
     const head = chainUp(t.fwd, fi).reverse(), tail = chainUp(t.bwd, bi).slice(1);
     const rcs = head.concat(tail);
-    out.px = rcs.map(([rr, cc]) => [cc + 0.5, rr + 0.5]);
     out.xy = rcs.map(([rr, cc]) => [d.x0 + (cc + 0.5) * d.res, d.y0 - (rr + 0.5) * d.res]);
     out.length = out.xy.reduce((a, p, j) => j ? a + Math.hypot(p[0] - out.xy[j - 1][0], p[1] - out.xy[j - 1][1]) : 0, 0);
     out.viaXY = [d.x0 + (via % d.w + 0.5) * d.res, d.y0 - (Math.floor(via / d.w) + 0.5) * d.res];
     return out;
   }
-  function showVia(v, p) {
+  function showVia(v) {
     const el = $("dvia");
     if (mode !== "explore") { el.hidden = true; return; }
     el.hidden = false;
@@ -944,14 +1014,14 @@ __METHOD__
     if (!Number.isFinite(v.rel)) { el.textContent = "No route through this point within twice the best cost."; return; }
     el.innerHTML = (pinVia ? "<strong>Pinned:</strong> " : "") + "best route through this point costs <strong>" + short(v.cost) +
       "</strong>, <strong>+" + (100 * v.rel).toFixed(1) + "%</strong> over the best." +
-      (v.px ? " Drawn through the nearest saved via point (" + short(v.viaCost) + ", " + km(v.length) + ")."
+      (v.xy ? " Drawn through the nearest saved via point (" + short(v.viaCost) + ", " + km(v.length) + ")."
             : " (Route not drawn: no saved search tree here.)");
   }
   $("d-ref").addEventListener("click", () => {
     if (!REF) return;
     pushUndo();
     ctrl = simplify(REF.xy, DD.res * 0.6).slice(1, -1);
-    sel = -1; save(); schedule();
+    sel = -1; save(); drawHandles(); schedule();
   });
   $("d-use").addEventListener("click", () => {
     if (!pinVia || !pinVia.xy) return;

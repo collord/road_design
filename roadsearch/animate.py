@@ -37,6 +37,7 @@ NEVER = 65535
 TEMPLATE_PATH = Path(__file__).with_name("viewer_template.html")
 REFERENCE_PATH = Path(__file__).with_name("reference.md")
 EVALUATOR_PATH = Path(__file__).with_name("evaluator.js")
+LEAFLET_CSS_PATH = Path(__file__).parent / "vendor" / "leaflet.css"
 FIGURES = {f.stem[len("reference_"):]: f for f in Path(__file__).parent.glob("reference_*.svg")}
 
 
@@ -58,8 +59,12 @@ def _quantize(v: np.ndarray, vmax: float) -> np.ndarray:
 
 
 def _hillshade(z: np.ndarray, res: float) -> np.ndarray:
+    """Hillshade (light from the northwest), stretched between its 1st and 99th percentiles
+    so that hillsides facing mostly one way still show their detail."""
     zfill = np.where(np.isfinite(z), z, np.nanmin(z))
-    return np.round(LightSource(315, 45).hillshade(zfill, dx=res, dy=res) * 255).astype(np.uint8)
+    hs = LightSource(315, 45).hillshade(zfill, dx=res, dy=res)
+    lo, hi = np.percentile(hs, [1, 99])
+    return np.round(np.clip((hs - lo) / max(hi - lo, 1e-6), 0, 1) * 255).astype(np.uint8)
 
 
 def _routes(run_id: str, out_root: Path, F_min: float, width: float = 0.0) -> list[dict]:
@@ -162,7 +167,9 @@ def run_data(run_dir: str | Path, out_root: str | Path) -> dict:
         "n_corridor": int((np.nan_to_num(F_rel, nan=np.inf) <= p["eps_alt"]).sum()),
         "params": {k: p[k] for k in ("w", "g_max", "R_min", "R_hp", "N_theta", "C_base", "C_travel", "C_vertical")
                    if k in p},
-        "hill": _b64(_hillshade(zs, res)), "flags": _b64(flags),
+        # Shaded from the unsmoothed working DEM: the search reads the smoothed one, but the map
+        # should show the ground's detail when zoomed in.
+        "hill": _b64(_hillshade(_read(run_dir / "dem_working.tif")[0], res)), "flags": _b64(flags),
         "astar": _b64(_quantize(f_ast - f0, f_goal - f0)),
         "fwd": _b64(_quantize(g_f, g_max)), "bwd": _b64(_quantize(g_b, g_max)),
         "corr": _b64(_quantize(F_rel, rel_max)),
@@ -220,7 +227,6 @@ def reference_data(path: str | Path, label: str, run_dirs: list[Path]) -> dict:
 def _basemap(run_dirs: list[Path], res: float) -> dict:
     """Hillshade over the union of the runs' grids, from the DEM itself."""
     from .params import load_params
-    from .preprocess import smooth_dem
     from .terrain import load_grid
 
     recs = [json.loads((d / "params.json").read_text(encoding="utf-8")) for d in run_dirs]
@@ -228,7 +234,7 @@ def _basemap(run_dirs: list[Path], res: float) -> dict:
     box = (bounds[:, 0].min(), bounds[:, 1].min(), bounds[:, 2].max(), bounds[:, 3].max())
     p = load_params(overrides=recs[0]["params"])
     grid, _ = load_grid(recs[0]["inputs"]["dem"], p, res, box)
-    zs = smooth_dem(grid.z, p.sigma_m / res)
+    zs = grid.z                            # unsmoothed: the map shows the ground's detail
     pre = recs[0]["preprocess"]
     with rasterio.open(run_dirs[0] / "dem_smoothed.tif") as ds:
         tr0 = ds.transform
@@ -295,6 +301,7 @@ def write_viewer(run_ids: list[str], out_root: str | Path, dest: str | Path, lab
             .replace("__TITLE__", html.escape(title)).replace("__HEADING__", html.escape(heading))
             .replace("__MANIFEST__", json.dumps(manifest, separators=(",", ":")))
             .replace("__METHOD__", reference_html())
-            .replace("/*__EVALUATOR__*/", EVALUATOR_PATH.read_text(encoding="utf-8")))
+            .replace("/*__EVALUATOR__*/", EVALUATOR_PATH.read_text(encoding="utf-8"))
+            .replace("/*__LEAFLET_CSS__*/", LEAFLET_CSS_PATH.read_text(encoding="utf-8")))
     (dest / "index.html").write_text(page, encoding="utf-8")
     return dest / "index.html"
