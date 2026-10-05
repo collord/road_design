@@ -16,7 +16,7 @@ k = [0, 0.1, 1, 10, 100]
 [red-mountain]
 title = "Red Mountain Road"
 heading = "Red Mountain Pass: a 9 m road against US 550 as built"
-description = "A 9 m road over Red Mountain Pass, construction cost only: minimum turn radii of 10, 20 and 30 m at 6% maximum grade, and 20 m at 8% and 9%, beside the as-built US 550."
+description = "A 9 m road over Red Mountain Pass, construction cost only: minimum turn radii of 10, 20 and 30 m at 6% maximum grade, 20 m at 8% and 9%, and 16 m at 10%, beside the as-built US 550."
 dem = "data/topo_redmtn.tif"     # USGS DEM; NAD83 / UTM 13N, meters
 start = "261281,4197514"
 goal = "265000,4202333"
@@ -27,5 +27,6 @@ vary = { param = "R_min", values = [10, 20, 30], label = "Minimum turn radius", 
 extra = [
     { label = "20 m, 8% grade", R_min = 20, g_max = 0.08 },
     { label = "20 m, 9% grade", R_min = 20, g_max = 0.09 },
+    { label = "16 m, 10% grade", R_min = 16, g_max = 0.10 },
 ]
 reference = { file = "data/us550_red_mountain.geojson", label = "As built: US 550" }

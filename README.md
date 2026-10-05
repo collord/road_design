@@ -30,7 +30,7 @@ Finished runs are reused, so `site` only runs what is missing. Opening `index.ht
 | Example | DEM | Road | Swept | Time on one machine |
 |---|---|---|---|---|
 | `haul-road` | `data/topo.tif`: x-y in US survey feet, z in meters | 20 m, 8% max grade, R_min 40 m | truck-cost weight k = 0, 0.1, 1, 10, 100 | about 4 hours |
-| `red-mountain` | `data/topo_redmtn.tif`: NAD83 / UTM 13N, meters | 9 m, 6% max grade, construction cost only | minimum turn radius R_min = 10, 20, 30 m, plus 20 m at 8% and 9% | about 1 hour per run |
+| `red-mountain` | `data/topo_redmtn.tif`: NAD83 / UTM 13N, meters | 9 m, 6% max grade, construction cost only | minimum turn radius R_min = 10, 20, 30 m, plus 20 m at 8% and 9% and 16 m at 10% | about 1 hour per run |
 
 `sweep --vary NAME=v1,v2,...` sweeps any parameter the same way, for example `--vary R_min=10,20,30`. Two more options:
 - `--extra "LABEL|NAME=V,..."` adds a run outside the sweep, for example `--extra "20 m, 8% grade|R_min=20,g_max=0.08"`.
