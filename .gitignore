@@ -1,0 +1,28 @@
+# Run outputs and the built site (rebuilt by the Site workflow), and local reference papers
+out/
+out-*/
+site/
+/topo_redmtn.tif
+/Scenic_Byways.*
+docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.nbi
+*.nbc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+.venv/
+venv/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# GDAL sidecar files
+*.aux.xml

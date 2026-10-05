@@ -1,0 +1,18 @@
+# Versions the tool was developed and tested with (Python 3.14). CI installs with
+#   pip install -c constraints.txt -e ".[test]"
+affine==3.0.1
+geopandas==1.1.4
+llvmlite==0.49.0
+matplotlib==3.11.0
+mistune==3.2.1
+numba==0.67.0
+numpy==2.4.6
+pandas==3.0.3
+pyarrow==24.0.0
+pyproj==3.7.2
+pysheds==0.5
+pytest==9.1.1
+rasterio==1.5.1
+scikit-image==0.26.0
+scipy==1.18.1
+shapely==2.1.2

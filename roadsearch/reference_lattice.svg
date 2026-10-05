@@ -1,0 +1,107 @@
+<svg class="fig" viewBox="0 0 566 316" role="img" aria-label="A state is a cell plus a heading; moves from it include straights, turns and binned straights, and a hairpin is one move">
+<defs><marker id="m-road" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path class="ah-road" d="M0 0L10 5L0 10z"/></marker><marker id="m-ink" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="4" markerHeight="4" orient="auto"><path class="ah-ink" d="M0 0L10 5L0 10z"/></marker><marker id="m-bwd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path class="ah-bwd" d="M0 0L10 5L0 10z"/></marker></defs>
+<circle class="dot" cx="30" cy="30" r="2.2"/>
+<circle class="dot" cx="30" cy="76" r="2.2"/>
+<circle class="dot" cx="30" cy="122" r="2.2"/>
+<circle class="dot" cx="30" cy="168" r="2.2"/>
+<circle class="dot" cx="30" cy="214" r="2.2"/>
+<circle class="dot" cx="30" cy="260" r="2.2"/>
+<circle class="dot" cx="30" cy="306" r="2.2"/>
+<circle class="dot" cx="76" cy="30" r="2.2"/>
+<circle class="dot" cx="76" cy="76" r="2.2"/>
+<circle class="dot" cx="76" cy="122" r="2.2"/>
+<circle class="dot" cx="76" cy="168" r="2.2"/>
+<circle class="dot" cx="76" cy="214" r="2.2"/>
+<circle class="dot" cx="76" cy="260" r="2.2"/>
+<circle class="dot" cx="76" cy="306" r="2.2"/>
+<circle class="dot" cx="122" cy="30" r="2.2"/>
+<circle class="dot" cx="122" cy="76" r="2.2"/>
+<circle class="dot" cx="122" cy="122" r="2.2"/>
+<circle class="dot" cx="122" cy="168" r="2.2"/>
+<circle class="dot" cx="122" cy="214" r="2.2"/>
+<circle class="dot" cx="122" cy="260" r="2.2"/>
+<circle class="dot" cx="122" cy="306" r="2.2"/>
+<circle class="dot" cx="168" cy="30" r="2.2"/>
+<circle class="dot" cx="168" cy="76" r="2.2"/>
+<circle class="dot" cx="168" cy="122" r="2.2"/>
+<circle class="dot" cx="168" cy="168" r="2.2"/>
+<circle class="dot" cx="168" cy="214" r="2.2"/>
+<circle class="dot" cx="168" cy="260" r="2.2"/>
+<circle class="dot" cx="168" cy="306" r="2.2"/>
+<circle class="dot" cx="214" cy="30" r="2.2"/>
+<circle class="dot" cx="214" cy="76" r="2.2"/>
+<circle class="dot" cx="214" cy="122" r="2.2"/>
+<circle class="dot" cx="214" cy="168" r="2.2"/>
+<circle class="dot" cx="214" cy="214" r="2.2"/>
+<circle class="dot" cx="214" cy="260" r="2.2"/>
+<circle class="dot" cx="214" cy="306" r="2.2"/>
+<circle class="dot" cx="260" cy="30" r="2.2"/>
+<circle class="dot" cx="260" cy="76" r="2.2"/>
+<circle class="dot" cx="260" cy="122" r="2.2"/>
+<circle class="dot" cx="260" cy="168" r="2.2"/>
+<circle class="dot" cx="260" cy="214" r="2.2"/>
+<circle class="dot" cx="260" cy="260" r="2.2"/>
+<circle class="dot" cx="260" cy="306" r="2.2"/>
+<circle class="dot" cx="306" cy="30" r="2.2"/>
+<circle class="dot" cx="306" cy="76" r="2.2"/>
+<circle class="dot" cx="306" cy="122" r="2.2"/>
+<circle class="dot" cx="306" cy="168" r="2.2"/>
+<circle class="dot" cx="306" cy="214" r="2.2"/>
+<circle class="dot" cx="306" cy="260" r="2.2"/>
+<circle class="dot" cx="306" cy="306" r="2.2"/>
+<circle class="dot" cx="352" cy="30" r="2.2"/>
+<circle class="dot" cx="352" cy="76" r="2.2"/>
+<circle class="dot" cx="352" cy="122" r="2.2"/>
+<circle class="dot" cx="352" cy="168" r="2.2"/>
+<circle class="dot" cx="352" cy="214" r="2.2"/>
+<circle class="dot" cx="352" cy="260" r="2.2"/>
+<circle class="dot" cx="352" cy="306" r="2.2"/>
+<circle class="dot" cx="398" cy="30" r="2.2"/>
+<circle class="dot" cx="398" cy="76" r="2.2"/>
+<circle class="dot" cx="398" cy="122" r="2.2"/>
+<circle class="dot" cx="398" cy="168" r="2.2"/>
+<circle class="dot" cx="398" cy="214" r="2.2"/>
+<circle class="dot" cx="398" cy="260" r="2.2"/>
+<circle class="dot" cx="398" cy="306" r="2.2"/>
+<circle class="dot" cx="444" cy="30" r="2.2"/>
+<circle class="dot" cx="444" cy="76" r="2.2"/>
+<circle class="dot" cx="444" cy="122" r="2.2"/>
+<circle class="dot" cx="444" cy="168" r="2.2"/>
+<circle class="dot" cx="444" cy="214" r="2.2"/>
+<circle class="dot" cx="444" cy="260" r="2.2"/>
+<circle class="dot" cx="444" cy="306" r="2.2"/>
+<circle class="dot" cx="490" cy="30" r="2.2"/>
+<circle class="dot" cx="490" cy="76" r="2.2"/>
+<circle class="dot" cx="490" cy="122" r="2.2"/>
+<circle class="dot" cx="490" cy="168" r="2.2"/>
+<circle class="dot" cx="490" cy="214" r="2.2"/>
+<circle class="dot" cx="490" cy="260" r="2.2"/>
+<circle class="dot" cx="490" cy="306" r="2.2"/>
+<circle class="dot" cx="536" cy="30" r="2.2"/>
+<circle class="dot" cx="536" cy="76" r="2.2"/>
+<circle class="dot" cx="536" cy="122" r="2.2"/>
+<circle class="dot" cx="536" cy="168" r="2.2"/>
+<circle class="dot" cx="536" cy="214" r="2.2"/>
+<circle class="dot" cx="536" cy="260" r="2.2"/>
+<circle class="dot" cx="536" cy="306" r="2.2"/>
+<line class="divider" x1="329.0" y1="30" x2="329.0" y2="306"/>
+<path class="move" d="M76 168L168 168" marker-end="url(#m-road)"/>
+<path class="move" d="M76 168Q126.6 168 168 122" marker-end="url(#m-road)"/>
+<path class="move" d="M76 168Q126.6 168 168 214" marker-end="url(#m-road)"/>
+<path class="move bin" d="M76 168L260 76" marker-end="url(#m-road)"/>
+<rect class="cell" x="53.0" y="145.0" width="46" height="46"/>
+<path class="heading" d="M64 168H90" marker-end="url(#m-ink)"/>
+<circle class="node end" cx="76" cy="168" r="4.5"/>
+<text class="body" x="180" y="172">straight</text>
+<text class="body" x="180" y="126">turn</text>
+<text class="body" x="180" y="218">turn, radius ≥ R_min</text>
+<text class="body" x="190" y="64">binned straight, between headings</text>
+<text class="lab" x="53.0" y="269.20000000000005">state = cell + heading</text>
+<text class="body" x="53.0" y="285.20000000000005">one of 32 directions; dots are cell centers, 10 m apart</text>
+<rect class="cell" x="352.0" y="191.0" width="46" height="46"/>
+<path class="heading" d="M363.0 214H389.0" marker-end="url(#m-ink)"/>
+<circle class="node end" cx="375.0" cy="214" r="4.5"/>
+<path class="move hp" d="M391.0 214H490A46 46 0 0 0 490 122H381.0" marker-end="url(#m-bwd)"/>
+<text class="lab" x="352" y="269.20000000000005">hairpin: one move</text>
+<text class="body" x="352" y="285.20000000000005">priced as a whole, before the search</text>
+</svg>

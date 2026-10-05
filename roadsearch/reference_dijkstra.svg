@@ -1,0 +1,39 @@
+<svg class="fig" viewBox="0 20 650 330" role="img" aria-label="Dijkstra on a small network: states are settled in order of cost, and the cheapest path S-B-A-C-G costs 11">
+<line class="edge" x1="70" y1="160" x2="230" y2="70"/>
+<text class="wt" x="157" y="132" text-anchor="middle">4</text>
+<line class="edge best" x1="70" y1="160" x2="230" y2="250"/>
+<text class="wt" x="143" y="222" text-anchor="middle">2</text>
+<line class="edge best" x1="230" y1="250" x2="230" y2="70"/>
+<text class="wt" x="244" y="165" text-anchor="middle">1</text>
+<line class="edge best" x1="230" y1="70" x2="420" y2="70"/>
+<text class="wt" x="325" y="89" text-anchor="middle">5</text>
+<line class="edge" x1="230" y1="250" x2="420" y2="250"/>
+<text class="wt" x="325" y="269" text-anchor="middle">8</text>
+<line class="edge" x1="420" y1="70" x2="420" y2="250"/>
+<text class="wt" x="434" y="165" text-anchor="middle">2</text>
+<line class="edge best" x1="420" y1="70" x2="580" y2="160"/>
+<text class="wt" x="493" y="132" text-anchor="middle">3</text>
+<line class="edge" x1="420" y1="250" x2="580" y2="160"/>
+<text class="wt" x="507" y="222" text-anchor="middle">6</text>
+<circle class="node end" cx="70" cy="160" r="20"/>
+<text class="nm" x="70" y="165" text-anchor="middle">S</text>
+<text class="body" x="70" y="128" text-anchor="middle">settled 1st · cost 0</text>
+<circle class="node" cx="230" cy="70" r="20"/>
+<text class="nm" x="230" y="75" text-anchor="middle">A</text>
+<text class="body" x="230" y="38" text-anchor="middle">settled 3rd · cost 3</text>
+<circle class="node" cx="230" cy="250" r="20"/>
+<text class="nm" x="230" y="255" text-anchor="middle">B</text>
+<text class="body" x="230" y="292" text-anchor="middle">settled 2nd · cost 2</text>
+<circle class="node" cx="420" cy="70" r="20"/>
+<text class="nm" x="420" y="75" text-anchor="middle">C</text>
+<text class="body" x="420" y="38" text-anchor="middle">settled 4th · cost 8</text>
+<circle class="node" cx="420" cy="250" r="20"/>
+<text class="nm" x="420" y="255" text-anchor="middle">D</text>
+<text class="body" x="420" y="292" text-anchor="middle">settled 5th · cost 10</text>
+<circle class="node end" cx="580" cy="160" r="20"/>
+<text class="nm" x="580" y="165" text-anchor="middle">G</text>
+<text class="body" x="580" y="128" text-anchor="middle">settled 6th · cost 11</text>
+<text class="body" x="230" y="320" text-anchor="middle">A was first reached at 4 (from S),</text>
+<text class="body" x="230" y="336" text-anchor="middle">then lowered to 3 by way of B</text>
+<text class="lab roadt" x="515" y="328" text-anchor="middle">cheapest path: S–B–A–C–G, cost 11</text>
+</svg>

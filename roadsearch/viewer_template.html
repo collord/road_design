@@ -1,0 +1,1122 @@
+<meta charset="utf-8">
+<title>__TITLE__</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:wght@400;500&family=JetBrains+Mono:wght@400&display=swap">
+<style>
+/* Layout: a map sheet with a margin. The map takes the width; the margin column
+   carries the run table or the animation controls, as on a printed topo sheet. */
+:root {
+  --paper: #eef0ec;
+  --sheet: #f8f9f6;
+  --ink: #1d2421;
+  --muted: #5b6660;
+  --rule: #c9cfc9;
+  --fwd: #c2410c;        /* survey-flag orange: front from the start */
+  --bwd: #0f766e;        /* glacier teal: front from the goal */
+  --road: #b91c1c;       /* topo-map road red */
+  --focus: #1d4ed8;
+  --ref: #7c3aed;        /* the as-built reference line */
+  --s0: #1d2421; --s1: #0f766e; --s2: #4d7c0f; --s3: #a16207; --s4: #c2410c; --s5: #9f1239; --s6: #6d28d9;
+  --f-display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --f-body: "Barlow", "Helvetica Neue", Arial, sans-serif;
+  --f-data: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #121614; --sheet: #191e1b; --ink: #e4e9e5; --muted: #95a39b; --rule: #2d3531;
+    --fwd: #f97316; --bwd: #2dd4bf; --road: #f87171; --focus: #93c5fd; --ref: #c4b5fd;
+    --s0: #e4e9e5; --s1: #2dd4bf; --s2: #a3e635; --s3: #facc15; --s4: #fb923c; --s5: #fb7185; --s6: #c4b5fd;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #121614; --sheet: #191e1b; --ink: #e4e9e5; --muted: #95a39b; --rule: #2d3531;
+  --fwd: #f97316; --bwd: #2dd4bf; --road: #f87171; --focus: #93c5fd; --ref: #c4b5fd;
+  --s0: #e4e9e5; --s1: #2dd4bf; --s2: #a3e635; --s3: #facc15; --s4: #fb923c; --s5: #fb7185; --s6: #c4b5fd;
+  color-scheme: dark;
+}
+[hidden] { display: none !important; }
+body { background: var(--paper); color: var(--ink); font: 15px/1.5 var(--f-body); }
+.wrap { max-width: 1280px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 32px; display: grid; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+h1 { font: 600 clamp(1.6rem, 3.2vw, 2.3rem)/1.05 var(--f-display); letter-spacing: 0.01em; margin: 0; text-wrap: balance; }
+.sub { color: var(--muted); font: 400 0.82rem var(--f-data); display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.views { display: flex; flex-wrap: wrap; gap: 0 4px; border-bottom: 1px solid var(--rule); }
+.views button { all: unset; cursor: pointer; padding: 8px 14px 9px; margin-bottom: -1px; border-bottom: 3px solid transparent;
+                font: 600 1.08rem var(--f-display); letter-spacing: 0.03em; color: var(--muted); }
+.views button:hover { color: var(--ink); }
+.views button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--road); }
+.views button:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.prose { background: var(--sheet); border: 1px solid var(--rule); padding: clamp(16px, 4vw, 40px); min-width: 0; }
+.prose > * { max-width: 72ch; }
+.prose h2 { font: 600 1.45rem/1.15 var(--f-display); letter-spacing: 0.01em; margin: 2em 0 0.5em; text-wrap: balance; }
+.prose h2:first-child { margin-top: 0; }
+.prose p, .prose ul, .prose ol { margin: 0 0 0.9em; }
+.prose li { margin-bottom: 0.35em; }
+.prose code { font: 400 0.84em var(--f-data); background: color-mix(in srgb, var(--ink) 7%, transparent); padding: 1px 4px; }
+.prose table { display: block; max-width: 100%; overflow-x: auto; margin: 0 0 1.2em; font: 400 0.86rem/1.4 var(--f-body); }
+.prose th, .prose td { text-align: left; white-space: normal; vertical-align: top; min-width: 9em; }
+.prose th { white-space: nowrap; min-width: 0; }
+.prose td code { white-space: nowrap; }
+.prose figure { margin: 1.4em 0; max-width: 660px; }
+.fig { width: 100%; height: auto; display: block; font-family: var(--f-body); }
+.fig path, .fig line { fill: none; }
+.fig .conn { stroke: var(--muted); stroke-width: 1.25; }
+.fig .arrowhead { fill: var(--muted); }
+.fig .box { fill: none; stroke: var(--muted); stroke-width: 1.25; }
+.fig .box.main { fill: color-mix(in srgb, var(--road) 12%, transparent); stroke: var(--road); stroke-width: 2; }
+.fig .step, .fig .nm { font-size: 13px; font-weight: 600; fill: var(--ink); }
+.fig .lab { font-size: 13px; fill: var(--ink); }
+.fig .body { font-size: 11.5px; fill: var(--muted); }
+.fig .wt { font: 600 13px var(--f-data); fill: var(--ink); }
+.fig .edge { stroke: var(--muted); stroke-width: 1.5; }
+.fig .edge.best { stroke: var(--road); stroke-width: 4; }
+.fig .node { fill: var(--sheet); stroke: var(--ink); stroke-width: 1.5; }
+.fig .node.end { fill: var(--ink); }
+.fig .node.end + text.nm { fill: var(--sheet); }
+.fig .node.via { fill: var(--focus); stroke: var(--sheet); stroke-width: 2; }
+.fig .dot { fill: var(--rule); }
+.fig .cell { fill: color-mix(in srgb, var(--ink) 8%, transparent); stroke: var(--ink); stroke-width: 1; }
+.fig .heading { stroke: var(--ink); stroke-width: 2.5; }
+.fig .move { stroke: var(--road); stroke-width: 2.2; }
+.fig .move.bin { stroke-dasharray: 5 4; }
+.fig .move.hp { stroke: var(--bwd); stroke-width: 2.4; }
+.fig .bestroute { stroke: var(--ink); stroke-width: 2; stroke-dasharray: 6 5; }
+.fig .fwdl { stroke: var(--fwd); stroke-width: 3.5; }
+.fig .bwdl { stroke: var(--bwd); stroke-width: 3.5; }
+.fig .fwdt { fill: var(--fwd); }
+.fig .roadt { fill: var(--road); font-weight: 600; }
+.fig .ah-road { fill: var(--road); }
+.fig .ah-ink { fill: var(--ink); }
+.fig .ah-bwd { fill: var(--bwd); }
+.fig .divider { stroke: var(--rule); stroke-width: 1; stroke-dasharray: 3 4; }
+.fig .bwdt { fill: var(--bwd); }
+.sheet { display: grid; grid-template-columns: minmax(0, 1fr) 340px; background: var(--sheet); border: 1px solid var(--rule); }
+@media (max-width: 900px) { .sheet { grid-template-columns: minmax(0, 1fr); } }
+.map { position: relative; border-right: 1px solid var(--rule); min-width: 0; }
+@media (max-width: 900px) { .map { border-right: 0; border-bottom: 1px solid var(--rule); } }
+.map canvas.base { display: block; width: 100%; height: auto; max-width: 100%; }
+.map canvas.over { position: absolute; inset: 0; pointer-events: none; }
+.margin { display: grid; align-content: start; gap: 18px; padding: 16px; min-width: 0; }
+.eyebrow { font: 600 0.72rem var(--f-display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 6px; }
+.tabs { display: grid; gap: 4px; }
+.tab { all: unset; cursor: pointer; padding: 7px 10px; border: 1px solid var(--rule);
+       font: 500 1rem var(--f-display); letter-spacing: 0.02em; display: flex; justify-content: space-between; gap: 8px; }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--sheet); border-color: var(--ink); }
+.tab span { font: 400 0.75rem var(--f-data); opacity: 0.7; align-self: center; }
+.tab:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, tr:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 2px; }
+.explain { margin: 0; font-size: 0.92rem; }
+.controls { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+button.icon { all: unset; cursor: pointer; width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--ink); }
+button.icon svg { width: 14px; height: 14px; fill: var(--ink); }
+button.text { all: unset; cursor: pointer; font: 500 0.95rem var(--f-display); letter-spacing: 0.04em;
+              border: 1px solid var(--ink); padding: 5px 12px; }
+input[type=range] { width: 100%; accent-color: var(--ink); }
+select { font: 400 0.8rem var(--f-data); background: var(--sheet); color: var(--ink); border: 1px solid var(--rule); padding: 3px 4px; max-width: 100%; }
+.readout { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font: 400 0.8rem var(--f-data); font-variant-numeric: tabular-nums; }
+.readout dt { color: var(--muted); }
+.readout dd { margin: 0; text-align: right; }
+.legend { display: grid; gap: 6px; font-size: 0.85rem; }
+.key { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: center; }
+.sw { height: 10px; border: 1px solid var(--rule); }
+.scale { font: 400 0.75rem var(--f-data); color: var(--muted); display: grid; gap: 4px; }
+.scale .bar { height: 6px; border: 1px solid var(--ink); border-top: 0; background: linear-gradient(90deg, var(--ink) 50%, transparent 50%); }
+.note { font-size: 0.8rem; color: var(--muted); margin: 0; max-width: 75ch; }
+.tablewrap { overflow-x: auto; border-top: 1px solid var(--rule); }
+table { border-collapse: collapse; width: 100%; font: 400 0.8rem var(--f-data); font-variant-numeric: tabular-nums; }
+th { font: 600 0.72rem var(--f-display); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+     text-align: right; padding: 8px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+#rows tr { cursor: pointer; }
+#rows tr:hover, #rows tr.hot { background: color-mix(in srgb, var(--ink) 7%, transparent); }
+.chip { display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px; border: 1px solid var(--rule); }
+.runpick { display: grid; gap: 4px; }
+.stack { display: grid; gap: 16px; }
+.map canvas.over.draw { pointer-events: auto; touch-action: none; cursor: crosshair; }
+.map canvas.over.draw:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.seg { display: flex; flex-wrap: wrap; border: 1px solid var(--ink); width: fit-content; max-width: 100%; }
+.seg button { all: unset; cursor: pointer; padding: 5px 12px; font: 500 0.95rem var(--f-display); letter-spacing: 0.03em; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--sheet); }
+.seg button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btnrow { display: flex; flex-wrap: wrap; gap: 6px; }
+.btnrow button.text { font-size: 0.85rem; padding: 4px 10px; }
+.btnrow button.text:disabled { opacity: 0.4; cursor: default; }
+table.cmp { font-size: 0.74rem; }
+table.cmp th, table.cmp td { padding: 5px 4px; }
+table.cmp th:first-child, table.cmp td:first-child { padding-left: 0; }
+table.cmp td.neg { color: var(--bwd); }
+table.cmp td.pos { color: var(--road); }
+.issues { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; font-size: 0.85rem; }
+.issues li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: baseline; }
+.issues .sw { align-self: center; }
+.via { margin: 0; font-size: 0.85rem; border-left: 3px solid var(--focus); padding: 4px 0 4px 10px; }
+.via[hidden] { display: none; }
+.profile { background: var(--sheet); border: 1px solid var(--rule); padding: 12px 16px 10px; display: grid; gap: 6px; min-width: 0; }
+.profile canvas { width: 100%; height: 210px; display: block; }
+.ramp { height: 10px; border: 1px solid var(--rule); background: linear-gradient(90deg, #f5d77a, #e8590c, #7f1d1d); }
+textarea.geo { width: 100%; min-height: 90px; font: 400 0.72rem var(--f-data); background: var(--sheet); color: var(--ink);
+               border: 1px solid var(--rule); box-sizing: border-box; }
+.status { font: 400 0.85rem var(--f-data); color: var(--muted); }
+.warn { font: 600 0.68rem var(--f-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--road);
+        border: 1px solid var(--road); padding: 0 4px; margin-left: 6px; }
+.sw.ref { height: 0; border: 0; border-top: 3px dashed var(--ref); }
+#rows tr.refrow { cursor: default; font-style: italic; }
+#rows tr.refrow:hover { background: none; }
+.refpanel { background: var(--sheet); border: 1px solid var(--rule); padding: 16px clamp(16px, 3vw, 28px);
+            display: grid; gap: 12px; min-width: 0; }
+.refpanel h2 { font: 600 1.25rem/1.15 var(--f-display); margin: 0; letter-spacing: 0.01em; }
+.refgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 4px 28px; margin: 0;
+           font: 400 0.82rem var(--f-data); font-variant-numeric: tabular-nums; }
+.refgrid div { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--rule); padding: 4px 0; }
+.refgrid dt { color: var(--muted); }
+.refgrid dd { margin: 0; text-align: right; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1 id="title">__HEADING__</h1>
+    <div class="sub" id="sub"></div>
+  </header>
+
+  <nav class="views" role="tablist" aria-label="View">
+    <button type="button" role="tab" id="t-compare" aria-controls="v-compare" aria-selected="true">Compare runs</button>
+    <button type="button" role="tab" id="t-search" aria-controls="v-search" aria-selected="false">Watch a search</button>
+    <button type="button" role="tab" id="t-draw" aria-controls="v-draw" aria-selected="false">Draw a route</button>
+    <button type="button" role="tab" id="t-method" aria-controls="v-method" aria-selected="false">How the search works</button>
+  </nav>
+
+  <div id="v-compare" role="tabpanel" aria-labelledby="t-compare" class="stack">
+  <!-- Compare view -->
+  <section id="compare" class="sheet" aria-label="Best routes of every run">
+    <div class="map">
+      <canvas id="cmap" class="base" aria-label="Hillshade with the best route of each run"></canvas>
+      <canvas id="cover" class="over" aria-hidden="true"></canvas>
+    </div>
+    <div class="margin">
+      <p class="explain" id="cexplain">Each run adds lifetime truck costs at a different weight k: a cost per meter driven and per meter
+      of rise and fall. k = 1 is one truck's fuel for five years. Maintenance, tires, brakes and a bigger fleet all scale with
+      these costs, so they push k up. Hover a row to pick out its route; select it to watch that search.</p>
+      <div class="legend" id="clegend"></div>
+      <div class="scale"><div class="bar" id="cscalebar"></div><span id="cscaletext"></span></div>
+    </div>
+  </section>
+
+  <div id="tablewrap" class="tablewrap">
+    <table>
+      <thead><tr><th id="crunhead">Truck-cost weight</th><th>Total</th><th>Construction</th><th>Operating</th><th>Length</th>
+        <th>Rise + fall</th><th>Hairpins</th><th>Bends</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <section class="refpanel" id="refpanel" hidden aria-labelledby="refhead">
+    <h2 id="refhead"></h2>
+    <p class="note" id="refintro"></p>
+    <dl class="refgrid" id="refgrid"></dl>
+    <p class="note" id="refnote"></p>
+  </section>
+
+  <p class="note" id="cnote">Costs are in the tool's relative units: excavating 1 m³ of soil = 1, so at the assumed $4/m³ one unit is $4.
+  Construction covers grading, earthwork, hairpins, bends, culverts and crossing fill. Operating is five years of truck costs at
+  the given weight.</p>
+  </div>
+
+  <!-- Animation view -->
+  <section id="v-search" role="tabpanel" aria-labelledby="t-search" class="sheet" aria-label="Search wavefront of one run" hidden>
+    <div class="map">
+      <canvas id="amap" class="base" aria-label="Hillshade with the search frontier"></canvas>
+      <canvas id="aover" class="over" aria-hidden="true"></canvas>
+    </div>
+    <div class="margin">
+      <div class="runpick"><p class="eyebrow">Run</p><select id="runsel" aria-label="Run"></select></div>
+      <div>
+        <p class="eyebrow">Stage of the search</p>
+        <div class="tabs" role="tablist" id="tabs"></div>
+      </div>
+      <p class="explain" id="explain"></p>
+      <div class="controls">
+        <button class="icon" id="play" type="button" aria-label="Play">
+          <svg viewBox="0 0 14 14" id="playicon"><path d="M2 1l11 6-11 6z"/></svg>
+        </button>
+        <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="Position in the search">
+        <select id="speed" aria-label="Playback length">
+          <option value="16">slow</option><option value="8" selected>normal</option><option value="4">fast</option>
+        </select>
+      </div>
+      <dl class="readout" id="readout"></dl>
+      <div><p class="eyebrow">Legend</p><div class="legend" id="alegend"></div></div>
+      <div class="scale"><div class="bar" id="ascalebar"></div><span id="ascaletext"></span></div>
+      <p class="status" id="status"></p>
+    </div>
+  </section>
+
+  <!-- Draw view -->
+  <div id="v-draw" role="tabpanel" aria-labelledby="t-draw" class="stack" hidden>
+    <section class="sheet" aria-label="Draw a route and cost it">
+      <div class="map">
+        <canvas id="dmap" class="base" aria-label="Hillshade of the run's terrain"></canvas>
+        <canvas id="dover" class="over draw" tabindex="0"
+                aria-label="Drawing surface. Click to add a point, drag a point to move it, Delete removes the selected point."></canvas>
+      </div>
+      <div class="margin">
+        <div class="runpick"><p class="eyebrow">Terrain and costs from</p><select id="drawsel" aria-label="Run"></select></div>
+        <div>
+          <p class="eyebrow">Mode</p>
+          <div class="seg">
+            <button type="button" id="m-draw" aria-pressed="true">Draw</button>
+            <button type="button" id="m-explore" aria-pressed="false">Best route through a point</button>
+          </div>
+        </div>
+        <p class="explain" id="dhint"></p>
+        <div class="btnrow">
+          <button class="text" type="button" id="d-undo">Undo</button>
+          <button class="text" type="button" id="d-del">Remove point</button>
+          <button class="text" type="button" id="d-clear">Clear</button>
+          <button class="text" type="button" id="d-copy">Copy GeoJSON</button>
+          <button class="text" type="button" id="d-use" hidden>Use as my route</button>
+          <button class="text" type="button" id="d-ref" hidden>Start from the as-built road</button>
+        </div>
+        <p class="via" id="dvia" hidden></p>
+        <div><p class="eyebrow">Your route against the optimum</p><table class="cmp" id="dcmp"></table></div>
+        <div><p class="eyebrow">Checks</p><ul class="issues" id="dissues"></ul></div>
+        <div><p class="eyebrow">Legend</p><div class="legend" id="dlegend"></div></div>
+        <div class="scale"><div class="bar" id="dscalebar"></div><span id="dscaletext"></span></div>
+        <p class="status" id="dstatus" role="status"></p>
+        <textarea class="geo" id="dgeo" readonly hidden aria-label="GeoJSON of the drawn route"></textarea>
+      </div>
+    </section>
+    <div class="profile">
+      <p class="eyebrow">Profile along your route</p>
+      <canvas id="dprof" aria-label="Elevation and cost per meter along the drawn route"></canvas>
+      <p class="status" id="dprofread">Hover the profile to find a point on the map.</p>
+    </div>
+    <p class="note">Your line is costed with the same section model the search uses, at the same sample spacing: the
+    construction of every meter follows the ground, with the cut and fill a half bench or full bench needs there. Corners are rounded to
+    the minimum curve radius. Nothing is refused: grades over the limit, excluded ground and side slopes too steep to build are
+    flagged instead. A drawn switchback is costed as plain road, so it usually shows as too steep; the optimizer would use a
+    hairpin there. The optimum's figures are its full costs, with hairpins, bends, fill crossings and spoil reuse.</p>
+  </div>
+
+  <article id="v-method" role="tabpanel" aria-labelledby="t-method" class="prose" hidden>
+__METHOD__
+  </article>
+</div>
+
+<script id="manifest" type="application/json">__MANIFEST__</script>
+<script>
+/*__EVALUATOR__*/
+</script>
+<script>
+(() => {
+  const M = JSON.parse(document.getElementById("manifest").textContent);
+  const NEVER = 65535;
+  const fmt = v => Math.round(v).toLocaleString("en-US");
+  const km = m => (m / 1000).toFixed(2) + " km";
+  const b64 = s => Uint8Array.from(atob(s), ch => ch.charCodeAt(0));
+  const u16 = s => { const b = b64(s); return new Uint16Array(b.buffer, b.byteOffset, b.byteLength / 2); };
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const rgb = hex => { const h = hex.replace("#", ""); const n = parseInt(h.length === 3 ? h.replace(/./g, c => c + c) : h, 16);
+                       return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const runColor = i => css("--s" + Math.min(i, 6));
+  const label = r => r.factor === null || r.factor === undefined ? r.label
+                     : (r.factor === 0 ? "construction only" : "k = " + r.factor);
+
+  function scaleBar(bar, text, canvas, widthM) {
+    const nice = [100, 200, 250, 500, 1000, 2000, 2500, 5000];
+    const len = nice.reduce((a, v) => (Math.abs(v - widthM / 5) < Math.abs(a - widthM / 5) ? v : a), nice[0]);
+    bar.style.width = (canvas.clientWidth * len / widthM) + "px";
+    text.textContent = (len >= 1000 ? len / 1000 + " km" : len + " m") + " · north up";
+  }
+  function sizeOverlay(base, over) {
+    const dpr = window.devicePixelRatio || 1, cw = base.clientWidth, ch = base.clientHeight;
+    over.width = Math.round(cw * dpr); over.height = Math.round(ch * dpr);
+    over.style.width = cw + "px"; over.style.height = ch + "px";
+    return dpr;
+  }
+  function pin(ctx, x, y, text, fill, lw) {
+    ctx.beginPath(); ctx.arc(x, y, 6 * lw, 0, Math.PI * 2);
+    ctx.fillStyle = fill; ctx.fill(); ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#ffffff"; ctx.stroke();
+    ctx.font = "600 " + 13 * lw + "px " + css("--f-display");
+    ctx.lineWidth = 3 * lw; ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.strokeText(text, x + 10 * lw, y + 4 * lw); ctx.fillStyle = "#111"; ctx.fillText(text, x + 10 * lw, y + 4 * lw);
+  }
+  function strokeRoute(ctx, pts, color, lw, width, dashed) {
+    ctx.beginPath();
+    pts.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(255,255,255,0.85)"; ctx.lineWidth = (width + 2.2) * lw; ctx.stroke();
+    ctx.strokeStyle = color; ctx.lineWidth = width * lw; ctx.setLineDash(dashed ? [6 * lw, 4 * lw] : []); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // A reference centerline (the as-built road), drawn dashed in violet over a white casing.
+  const REF = M.reference;
+  function strokeRef(ctx, pts, lw) {
+    ctx.beginPath();
+    pts.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    ctx.lineJoin = "round"; ctx.lineCap = "butt"; ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 4.6 * lw; ctx.stroke();
+    ctx.strokeStyle = css("--ref"); ctx.lineWidth = 2.6 * lw; ctx.setLineDash([7 * lw, 4 * lw]); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // ------------------------------------------------------------ compare view
+  const B = M.base, cmap = document.getElementById("cmap"), cover = document.getElementById("cover");
+  cmap.width = B.w; cmap.height = B.h;
+  {
+    const hill = b64(B.hill), img = cmap.getContext("2d").createImageData(B.w, B.h), px = img.data;
+    for (let i = 0; i < B.w * B.h; i++) { const g = 70 + hill[i] * 0.72; px[i * 4] = g; px[i * 4 + 1] = g; px[i * 4 + 2] = g; px[i * 4 + 3] = 255; }
+    cmap.getContext("2d").putImageData(img, 0, 0);
+  }
+  const toBase = ([x, y]) => [(x - B.x0) / B.res, (B.y0 - y) / B.res];
+  let hot = -1;
+  function drawCompare() {
+    const dpr = sizeOverlay(cmap, cover), k = cmap.clientWidth / B.w, ctx = cover.getContext("2d");
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+    const lw = 1 / k;
+    M.runs.forEach((r, i) => {
+      if (!r.routes.length || i === hot) return;
+      const faded = hot >= 0;
+      ctx.globalAlpha = faded ? 0.35 : 1;
+      strokeRoute(ctx, r.routes[0].xy.map(toBase), runColor(i), lw, 2.4, false);
+    });
+    ctx.globalAlpha = 1;
+    if (hot >= 0 && M.runs[hot].routes.length) {
+      const r = M.runs[hot];
+      r.routes.slice(1).forEach(a => strokeRoute(ctx, a.xy.map(toBase), runColor(hot), lw, 1.8, true));
+      strokeRoute(ctx, r.routes[0].xy.map(toBase), runColor(hot), lw, 4, false);
+    }
+    if (REF) strokeRef(ctx, REF.xy.map(toBase), lw);
+    const [sx, sy] = toBase(B.start), [gx, gy] = toBase(B.goal);
+    pin(ctx, sx, sy, "START", css("--fwd"), lw); pin(ctx, gx, gy, "GOAL", css("--bwd"), lw);
+    scaleBar(document.getElementById("cscalebar"), document.getElementById("cscaletext"), cmap, B.w * B.res);
+  }
+  document.getElementById("clegend").innerHTML = M.runs.map((r, i) =>
+    '<div class="key"><div class="sw" style="background:' + runColor(i) + '"></div><span>' + label(r) + "</span></div>").join("") +
+    (REF ? '<div class="key"><div class="sw ref"></div><span>' + REF.label + "</span></div>" : "");
+  const rows = document.getElementById("rows");
+  M.runs.forEach((r, i) => {
+    const b = r.routes[0] || {};
+    const tr = document.createElement("tr");
+    tr.tabIndex = 0;
+    const warn = b.self_overlaps ? ' <span class="warn" title="Self-overlap avoidance gave up: this route still crosses or runs over itself in ' +
+      b.self_overlaps + ' places, so it is not buildable as drawn.">crosses itself</span>' : "";
+    tr.innerHTML = '<td><span class="chip" style="background:' + runColor(i) + '"></span>' + label(r) + warn + "</td>" +
+      "<td>" + fmt(b.cost || 0) + "</td><td>" + fmt(b.construction || 0) + "</td><td>" + fmt(b.operating || 0) + "</td>" +
+      "<td>" + km(b.length || 0) + "</td><td>" + fmt(b.vertical || 0) + " m</td><td>" + (b.hairpins ?? "") + "</td>" +
+      "<td>" + (b.bends ?? "") + "</td><td>Watch the search &rsaquo;</td>";
+    tr.addEventListener("mouseenter", () => { hot = i; tr.classList.add("hot"); drawCompare(); });
+    tr.addEventListener("mouseleave", () => { hot = -1; tr.classList.remove("hot"); drawCompare(); });
+    tr.addEventListener("focus", () => { hot = i; drawCompare(); });
+    tr.addEventListener("blur", () => { hot = -1; drawCompare(); });
+    tr.addEventListener("click", () => openRun(i));
+    tr.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openRun(i); } });
+    rows.appendChild(tr);
+  });
+  if (REF) {
+    const t = REF.runs[M.runs[0].run_id], pr = REF.profile, tr = document.createElement("tr");
+    tr.className = "refrow";
+    tr.innerHTML = '<td><span class="chip" style="background:transparent;border-top:3px dashed var(--ref);border-width:3px 0 0;height:0"></span>' +
+      REF.label + "</td><td>" + fmt(t.total) + "</td><td>" + fmt(t.construction) + "</td><td>" + fmt(t.operating) + "</td><td>" +
+      km(t.length) + "</td><td>" + fmt(pr.climb_50m + pr.descent_50m) + " m</td><td>" + pr.switchbacks + " switchbacks</td><td></td><td></td>";
+    rows.appendChild(tr);
+    const pct = v => (100 * v).toFixed(1) + "%", m = v => fmt(v) + " m";
+    const items = [["Length", km(pr.length)], ["Construction cost, this model", fmt(t.construction)],
+      ["Elevation, start to end", fmt(pr.z_start) + " → " + fmt(pr.z_end) + " m"],
+      ["Rise + fall (profile smoothed over 50 m)", m(pr.climb_50m + pr.descent_50m)]];
+    Object.entries(pr.grades).forEach(([win, gs]) => {
+      items.push(["Steepest grade over " + win + " m", pct(gs.max)]);
+      REF.g_max.forEach(gm => items.push(["Steeper than " + (100 * gm).toFixed(0) + "% over " + win + " m", m(gs["over_" + gm + "_m"])]));
+    });
+    items.push(["Tightest curve (over 40 m of road)", "radius " + m(pr.min_radius_40m)]);
+    REF.R_min.forEach(r => items.push(["Curves tighter than radius " + r + " m", m(pr.tighter_than_m[String(r)])]));
+    items.push(["Switchbacks (turns over 150° within 150 m)", String(pr.switchbacks)],
+               ["Full-bench section", m(t.full_bench_m)], ["Side slope too steep to build", m(t.infeasible_m)],
+               ["On excluded ground", m(t.excluded_m)], ["Culverts", String(t.culverts)]);
+    if (t.outside_m > 0) items.push(["Outside the run's terrain", m(t.outside_m)]);
+    document.getElementById("refhead").textContent = REF.label + ", for reference";
+    document.getElementById("refintro").textContent = "The as-built centerline (" + REF.file + "), costed with the same model as the " +
+      "routes above and profiled on the same terrain. Grades come from the DEM along the line, averaged over 100 m and 200 m: " +
+      "over shorter distances the line's digitizing (a vertex every 60 m or so) and the DEM's cells dominate.";
+    document.getElementById("refgrid").innerHTML = items.map(([a, b]) => "<div><dt>" + a + "</dt><dd>" + b + "</dd></div>").join("");
+    document.getElementById("refnote").textContent = "The DEM shows the highway already built, so the ground along it is the " +
+      "finished bench rather than the original hillside. Smoothing at the road width recovers part of the hillside slope, " +
+      "but the earthwork cost is a lower bound for building this line new. Retaining walls, structures and drainage beyond " +
+      "culverts are not modeled.";
+    document.getElementById("refpanel").hidden = false;
+  }
+  {
+    const gs = [...new Set(M.runs.map(r => r.params.g_max))].sort((x, y) => x - y).map(g => (g * 100).toFixed(0) + "%");
+    document.getElementById("sub").textContent = M.runs.length + (M.runs.length === 1 ? " run · " : " runs · ") + B.res +
+      " m cells · road " + M.runs[0].params.w + " m, max grade " + (gs.length > 1 ? gs[0] + "–" + gs[gs.length - 1] : gs[0]);
+  }
+
+  // ------------------------------------------------------------ animation view
+  const amap = document.getElementById("amap"), aover = document.getElementById("aover");
+  const actx = amap.getContext("2d");
+  const runsel = document.getElementById("runsel");
+  M.runs.forEach((r, i) => { const o = document.createElement("option"); o.value = i; o.textContent = label(r); runsel.appendChild(o); });
+  const cache = {};
+  let D = null, Fd = null, base = null, img = null, contour = null, epsQ = 0, cur = -1;
+  let ch = 1, t = 0, playing = false, last = 0, C = {};
+  const readColors = () => { C = { fwd: rgb(css("--fwd")), bwd: rgb(css("--bwd")), road: rgb(css("--road")) }; };
+  readColors();
+
+  const chapters = () => [
+    { id: "astar", name: "A* to the goal", tag: fmt(D.n_astar) + " cells",
+      text: "A* expands states in order of cost so far plus a lower bound on the cost to the goal. It reaches the goal after settling only the cells behind the bright frontier." },
+    { id: "dijkstra", name: "Two-way Dijkstra", tag: fmt(D.n_fwd) + " cells",
+      text: "Full Dijkstra searches run from the start (orange) and from the goal (teal). Their cost fields add up to the corridor field. The fronts first touch at half the best route's cost." },
+    { id: "corridor", name: "Corridor and routes", tag: D.routes.length + (D.routes.length === 1 ? " route" : " routes"),
+      text: "Each cell is colored by the cost of the cheapest route through it, as a fraction above the best. The white line marks the alternatives threshold; each ranked route appears as the threshold passes its cost." }
+  ];
+
+  const TITLE = M.heading;
+  if (M.explain) document.getElementById("cexplain").textContent = M.explain;
+  if (M.column) document.getElementById("crunhead").textContent = M.column;
+  if (!M.sweep) {
+    const op = M.runs.some(r => (r.params.C_travel || 0) > 0 || (r.params.C_vertical || 0) > 0);
+    document.getElementById("cnote").textContent = "Costs are in the tool's relative units: excavating 1 m³ of soil = 1. " +
+      "Construction covers grading, earthwork, hairpins, bends, culverts and crossing fill" +
+      (op ? "; operating is the trucks' lifetime costs." : "; no truck operating costs are included.");
+  }
+  const VIEWS = ["compare", "search", "draw", "method"];
+  let view = "compare";
+  function show(v) {
+    view = v;
+    setPlaying(false);
+    VIEWS.forEach(n => {
+      document.getElementById("v-" + n).hidden = n !== v;
+      document.getElementById("t-" + n).setAttribute("aria-selected", n === v ? "true" : "false");
+      document.getElementById("t-" + n).tabIndex = n === v ? 0 : -1;
+    });
+    try { history.replaceState(null, "", "#" + v); } catch (e) { /* the frame may refuse; the view still changes */ }
+    if (v === "compare") { document.getElementById("title").textContent = TITLE; drawCompare(); }
+    if (v === "method") document.getElementById("title").textContent = "How the search works";
+    if (v === "search") { if (cur < 0) openRun(0); else draw(); }
+    if (v === "draw") openDraw(dcur < 0 ? Math.max(cur, 0) : dcur);
+  }
+  VIEWS.forEach(n => document.getElementById("t-" + n).addEventListener("click", () => show(n)));
+  document.querySelector(".views").addEventListener("keydown", e => {
+    if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+    const k = VIEWS.indexOf(view), n = VIEWS[(k + (e.key === "ArrowRight" ? 1 : VIEWS.length - 1)) % VIEWS.length];
+    show(n); document.getElementById("t-" + n).focus();
+  });
+
+  async function openRun(i) {
+    setPlaying(false);
+    if (view !== "search") show("search");
+    runsel.value = i;
+    const status = document.getElementById("status");
+    let d;
+    try { d = await getRun(i, status); } catch (e) { return; }
+    load(d, i);
+  }
+  async function getRun(i, status) {
+    if (cache[i]) return cache[i];
+    status.textContent = "Loading the data for this run…";
+    try {
+      const res = await fetch("data/" + M.runs[i].run_id + ".json");
+      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      cache[i] = await res.json();
+      status.textContent = "";
+      return cache[i];
+    } catch (e) {
+      status.textContent = "Could not load data/" + M.runs[i].run_id + ".json (" + e.message + "). This view needs the data folder published next to this page.";
+      throw e;
+    }
+  }
+  function baseOf(d) {
+    if (d._base) return d._base;
+    const N = d.w * d.h, hill = b64(d.hill), flags = b64(d.flags), out = new Uint8ClampedArray(N * 4);
+    for (let j = 0; j < N; j++) {
+      let g = 70 + hill[j] * 0.72, r = g, gg = g, b = g;
+      const f = flags[j];
+      if (f & 4) { r = gg = b = 150 + hill[j] * 0.35; }
+      if (f & 1) { r = r * 0.7 + 80; gg = gg * 0.7 + 35; b = b * 0.7 + 35; }
+      if (f & 2) { r = r * 0.45 + 20; gg = gg * 0.45 + 90; b = b * 0.45 + 150; }
+      out[j * 4] = r; out[j * 4 + 1] = gg; out[j * 4 + 2] = b; out[j * 4 + 3] = 255;
+    }
+    d._base = out; d._flags = flags; d.clipped = flags.some(f => f & 4);
+    return out;
+  }
+  runsel.addEventListener("change", () => openRun(+runsel.value));
+
+  function load(d, i) {
+    D = d; cur = i;
+    Fd = { astar: u16(D.astar), fwd: u16(D.fwd), bwd: u16(D.bwd), corr: u16(D.corr) };
+    const W = D.w, H = D.h, N = W * H;
+    amap.width = W; amap.height = H;
+    img = actx.createImageData(W, H);
+    base = baseOf(D);
+    epsQ = Math.round(Math.min(D.eps_alt / D.rel_max, 1) * 65534);
+    contour = new Uint8Array(N);
+    const fc = Fd.corr;
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      const j = y * W + x;
+      if (fc[j] > epsQ) continue;
+      if (fc[j - 1] > epsQ || fc[j + 1] > epsQ || fc[j - W] > epsQ || fc[j + W] > epsQ) contour[j] = 1;
+    }
+    D.routesPx = D.routes.map(r => ({ ...r, pts: r.xy.map(([x, y]) => [(x - D.x0) / D.res, (D.y0 - y) / D.res]) }));
+    const tabs = document.getElementById("tabs");
+    tabs.innerHTML = "";
+    chapters().forEach((c, k) => {
+      const b = document.createElement("button");
+      b.className = "tab"; b.type = "button"; b.setAttribute("role", "tab");
+      b.innerHTML = c.name + "<span>" + c.tag + "</span>";
+      b.addEventListener("click", () => { ch = k; t = k === 1 ? meetT() * 1.15 : 0; setPlaying(!reduce); draw(); });
+      tabs.appendChild(b);
+    });
+    ch = 1; t = Math.min(meetT() * 1.15, 1);
+    draw();
+  }
+  const meetT = () => D.F_min / 2 / D.g_max;
+
+  function render() {
+    const W = D.w, N = W * D.h, px = img.data, c = chapters()[ch].id;
+    px.set(base);
+    const tau = Math.round(t * 65534), band = 900;
+    const blend = (o, m, a) => { px[o] = px[o] * (1 - a) + m[0] * a; px[o + 1] = px[o + 1] * (1 - a) + m[1] * a; px[o + 2] = px[o + 2] * (1 - a) + m[2] * a; };
+    if (c === "astar") {
+      const f = Fd.astar;
+      for (let i = 0; i < N; i++) {
+        const v = f[i];
+        if (v === NEVER || v > tau) continue;
+        const front = tau - v < band;
+        blend(i * 4, front ? [255, 236, 200] : C.fwd, front ? 0.95 : 0.42);
+      }
+    } else if (c === "dijkstra") {
+      const a1 = Fd.fwd, a2 = Fd.bwd;
+      for (let i = 0; i < N; i++) {
+        const v1 = a1[i], v2 = a2[i], in1 = v1 !== NEVER && v1 <= tau, in2 = v2 !== NEVER && v2 <= tau;
+        if (!in1 && !in2) continue;
+        if (in1 && in2) blend(i * 4, [240, 240, 232], 0.55);
+        else if (in1) { const fr = tau - v1 < band; blend(i * 4, fr ? [255, 232, 196] : C.fwd, fr ? 0.95 : 0.4); }
+        else { const fr = tau - v2 < band; blend(i * 4, fr ? [210, 250, 244] : C.bwd, fr ? 0.95 : 0.4); }
+      }
+    } else {
+      const f = Fd.corr, r0 = C.road;
+      for (let i = 0; i < N; i++) {
+        const o = i * 4;
+        if (contour[i] && tau >= epsQ) { px[o] = 255; px[o + 1] = 255; px[o + 2] = 255; continue; }
+        const v = f[i];
+        if (v === NEVER || v > tau) continue;
+        const s = v / 65534;
+        blend(o, [r0[0] + (250 - r0[0]) * s, r0[1] + (214 - r0[1]) * s, r0[2] + (120 - r0[2]) * s], 0.72 - 0.3 * s);
+      }
+    }
+    actx.putImageData(img, 0, 0);
+  }
+
+  function overlay() {
+    const dpr = sizeOverlay(amap, aover), k = amap.clientWidth / D.w, ctx = aover.getContext("2d");
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+    const lw = 1 / k, c = chapters()[ch].id, best = D.routesPx[0];
+    const show = r => c === "corridor" ? t * D.rel_max >= Math.max(r.rel, 0) - 1e-9
+                    : c === "astar" ? (t >= 0.999 && r === best) : (t >= meetT() && r === best);
+    D.routesPx.slice().reverse().forEach(r => {
+      if (show(r)) strokeRoute(ctx, r.pts, r === best ? css("--road") : css("--ink"), lw, r === best ? 2.6 : 2, r !== best);
+    });
+    pin(ctx, D.start[0] + 0.5, D.start[1] + 0.5, "START", css("--fwd"), lw);
+    pin(ctx, D.goal[0] + 0.5, D.goal[1] + 0.5, "GOAL", css("--bwd"), lw);
+  }
+
+  function readout() {
+    const c = chapters()[ch].id;
+    let rows;
+    if (c === "astar") rows = [["frontier, cost + bound", fmt(D.f0 + t * (D.f_goal - D.f0))], ["goal reached at", fmt(D.f_goal)],
+                               ["cells settled", fmt(D.n_astar)], ["of the grid", (100 * D.n_astar / D.cells).toFixed(1) + "%"]];
+    else if (c === "dijkstra") rows = [["frontier cost", fmt(t * D.g_max)], ["fronts meet at", fmt(D.F_min / 2)],
+                                       ["best route", fmt(D.F_min)], ["cells in the clip", fmt(D.n_fwd)]];
+    else { const s = t * D.rel_max;
+      rows = [["above the best cost", "+" + (100 * s).toFixed(1) + "%"], ["best route", fmt(D.F_min)],
+              ["alternatives threshold", "+" + (100 * D.eps_alt).toFixed(0) + "%"], ["cells under it", fmt(D.n_corridor)],
+              ["routes shown", D.routesPx.filter(r => s >= Math.max(r.rel, 0) - 1e-9).length + " of " + D.routesPx.length]]; }
+    document.getElementById("readout").innerHTML = rows.map(([a, b]) => "<dt>" + a + "</dt><dd>" + b + "</dd>").join("");
+  }
+
+  function draw() {
+    if (!D) return;
+    const c = chapters()[ch];
+    [...document.getElementById("tabs").children].forEach((b, k) => b.setAttribute("aria-selected", k === ch ? "true" : "false"));
+    document.getElementById("explain").textContent = c.text;
+    const L = c.id === "astar" ? [[css("--fwd"), "settled by A*"], ["#ffecc8", "frontier"], [css("--road"), "best route"]]
+            : c.id === "dijkstra" ? [[css("--fwd"), "reached from the start"], [css("--bwd"), "reached from the goal"],
+                                     ["#f0f0e8", "reached from both"], ["#2a4f8c", "stream channels"]]
+            : [[css("--road"), "cost of the best route"], ["#fad678", "twice that cost"], ["#ffffff", "alternatives threshold"],
+               [css("--ink"), "alternative routes"]];
+    if (D.clipped) L.push(["#d4d4cf", "outside the corridor: not searched"]);
+    document.getElementById("alegend").innerHTML = L.map(([col, s]) =>
+      '<div class="key"><div class="sw" style="background:' + col + '"></div><span>' + s + "</span></div>").join("");
+    document.getElementById("scrub").value = Math.round(t * 1000);
+    document.getElementById("title").textContent = "How the search found the road: " + label(M.runs[cur]);
+    render(); overlay(); readout();
+    scaleBar(document.getElementById("ascalebar"), document.getElementById("ascaletext"), amap, D.w * D.res);
+  }
+
+  const playBtn = document.getElementById("play"), icon = document.getElementById("playicon");
+  function setPlaying(on) {
+    playing = on && !!D;
+    icon.innerHTML = playing ? '<path d="M2 1h4v12H2zM8 1h4v12H8z"/>' : '<path d="M2 1l11 6-11 6z"/>';
+    playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+    if (playing) { last = 0; requestAnimationFrame(tick); }
+  }
+  function tick(ts) {
+    if (!playing) return;
+    if (last) {
+      t = Math.min(1, t + (ts - last) / (+document.getElementById("speed").value * 1000));
+      draw();
+      if (t >= 1) { setPlaying(false); return; }
+    }
+    last = ts;
+    requestAnimationFrame(tick);
+  }
+  playBtn.addEventListener("click", () => { if (!playing && t >= 1) t = 0; setPlaying(!playing); });
+  document.getElementById("scrub").addEventListener("input", e => { t = e.target.value / 1000; setPlaying(false); draw(); });
+
+
+  // ------------------------------------------------------------ draw view
+  const RE = window.RoadEval, $ = id => document.getElementById(id);
+  const dmap = $("dmap"), dover = $("dover"), dprof = $("dprof"), drawsel = $("drawsel"), dstatus = $("dstatus");
+  M.runs.forEach((r, i) => { const o = document.createElement("option"); o.value = i; o.textContent = label(r); drawsel.appendChild(o); });
+  const KEY = "roadsearch-draw-v1";
+  let DD = null, dcur = -1, mode = "draw", ctrl = [], sel = -1, undoStack = [], R = null, drag = null;
+  let hoverVia = null, pinVia = null, profK = -1, pending = false;
+  try { const v = JSON.parse(localStorage.getItem(KEY) || "[]"); if (Array.isArray(v)) ctrl = v.filter(p => Array.isArray(p) && p.length === 2); } catch (e) { /* no storage */ }
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(ctrl)); } catch (e) { /* no storage */ } };
+  const pushUndo = () => { undoStack.push(JSON.stringify(ctrl)); if (undoStack.length > 200) undoStack.shift(); };
+  const short = v => !Number.isFinite(v) ? "–" : Math.abs(v) >= 1e6 ? (v / 1e6).toFixed(Math.abs(v) >= 1e8 ? 0 : 2) + "M"
+                   : Math.abs(v) >= 1e4 ? Math.round(v / 1e3) + "k" : fmt(v);
+  const RAMP = [[245, 215, 122], [232, 89, 12], [127, 29, 29]];
+  const VIOL = "#d946ef";
+  const ramp = t => { t = Math.max(0, Math.min(1, t)); const k = t < 0.5 ? 0 : 1, u = t < 0.5 ? t * 2 : t * 2 - 1;
+                      return "rgb(" + RAMP[k].map((c, j) => Math.round(c + (RAMP[k + 1][j] - c) * u)).join(",") + ")"; };
+  const cpmT = cpm => (cpm / DD.P.sp.C_base - 1) / 5;
+
+  async function openDraw(i) {
+    drawsel.value = i;
+    let d;
+    try { d = await getRun(i, dstatus); } catch (e) { return; }
+    DD = d; dcur = i;
+    if (!d._T) {
+      baseOf(d);
+      const zb = b64(d.zs), zs = new Float32Array(zb.buffer, zb.byteOffset, zb.byteLength / 4);
+      const rep = [0].concat(d.P.culvert_area_breaks), area = new Float64Array(d.w * d.h);
+      for (let j = 0; j < area.length; j++) if (d._flags[j] & 2) area[j] = rep[Math.min((d._flags[j] >> 3) & 3, rep.length - 1)];
+      d._T = RE.makeTerrain({ w: d.w, h: d.h, res: d.res, x0: d.x0, y0: d.y0, zs, flags: d._flags, area });
+      d._corr = u16(d.corr);
+      const best = M.runs[i].routes[0];
+      if (best) {
+        const sp = RE.samplePolyline(d._T, best.xy);
+        d._bestProf = { st: sp.samples.map(q => q.station), z: sp.samples.map(q => RE.bilinear(d._T.zs, d.w, d.h, q.fr, q.fc)), length: sp.length };
+      }
+    }
+    dmap.width = d.w; dmap.height = d.h;
+    dmap.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(d._base), d.w, d.h), 0, 0);
+    hoverVia = pinVia = null;
+    document.getElementById("title").textContent = "Draw a route: " + label(M.runs[i]);
+    if (mode === "explore") await getTree(d);
+    evaluate();
+  }
+  drawsel.addEventListener("change", () => openDraw(+drawsel.value));
+
+  function evaluate() {
+    if (!DD) return;
+    R = RE.evaluateRoute(DD._T, DD.P, [B.start].concat(ctrl, [B.goal]));
+    if (profK >= R.per.station.length) profK = -1;
+    drawDraw(); panel(); drawProfile();
+  }
+  const schedule = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; evaluate(); }); };
+
+  // --- map
+  const pxOf = ([x, y]) => [(x - DD.x0) / DD.res, (DD.y0 - y) / DD.res];
+  function drawDraw() {
+    if (!DD || view !== "draw") return;
+    const dpr = sizeOverlay(dmap, dover), k = dmap.clientWidth / DD.w, ctx = dover.getContext("2d");
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+    const lw = 1 / k;
+    const best = M.runs[dcur].routes[0];
+    if (best) strokeRoute(ctx, best.xy.map(pxOf), css("--ink"), lw, 1.8, true);
+    if (REF) strokeRef(ctx, REF.xy.map(pxOf), lw);
+    const via = pinVia || hoverVia;
+    if (via && via.px) {
+      strokeRoute(ctx, via.px, css("--focus"), lw, pinVia ? 2.6 : 2, !pinVia);
+      const [x, y] = pxOf(via.viaXY);
+      ctx.beginPath(); ctx.arc(x, y, 5 * lw, 0, Math.PI * 2); ctx.fillStyle = css("--focus"); ctx.fill();
+      ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#fff"; ctx.stroke();
+    }
+    if (R) {
+      const P = R.pts.map(pxOf);
+      ctx.beginPath(); P.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.strokeStyle = "rgba(255,255,255,0.9)"; ctx.lineWidth = 6.4 * lw; ctx.stroke();
+      const q = R.per, n = q.station.length;
+      ctx.lineWidth = 4 * lw;
+      for (let j = 0; j < n; j++) {
+        const a = j ? pxOf([q.x[j - 1], q.y[j - 1]]) : pxOf(R.pts[0]);
+        const b = j + 1 < n ? pxOf([q.x[j + 1], q.y[j + 1]]) : pxOf(R.pts[R.pts.length - 1]);
+        const m = pxOf([q.x[j], q.y[j]]);
+        ctx.beginPath(); ctx.moveTo((a[0] + m[0]) / 2, (a[1] + m[1]) / 2); ctx.lineTo(m[0], m[1]); ctx.lineTo((b[0] + m[0]) / 2, (b[1] + m[1]) / 2);
+        ctx.strokeStyle = q.flag[j] || !Number.isFinite(q.cpm[j]) ? VIOL : ramp(cpmT(q.cpm[j]));
+        ctx.stroke();
+      }
+      R.corners.filter(c => c.tight).forEach(c => {
+        const [x, y] = pxOf(c.i === 0 ? B.start : ctrl[c.i - 1]);
+        ctx.beginPath(); ctx.arc(x, y, 11 * lw, 0, Math.PI * 2); ctx.strokeStyle = VIOL; ctx.lineWidth = 2 * lw; ctx.stroke();
+      });
+      if (profK >= 0) {
+        const [x, y] = pxOf([q.x[profK], q.y[profK]]);
+        ctx.beginPath(); ctx.arc(x, y, 6 * lw, 0, Math.PI * 2); ctx.fillStyle = css("--focus"); ctx.fill();
+        ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#fff"; ctx.stroke();
+      }
+    }
+    if (mode === "draw") {
+      const full = [B.start].concat(ctrl, [B.goal]);
+      for (let j = 0; j + 1 < full.length; j++) {
+        const [x, y] = pxOf([(full[j][0] + full[j + 1][0]) / 2, (full[j][1] + full[j + 1][1]) / 2]);
+        ctx.beginPath(); ctx.arc(x, y, 3.5 * lw, 0, Math.PI * 2); ctx.fillStyle = "rgba(255,255,255,0.75)"; ctx.fill();
+        ctx.lineWidth = 1.2 * lw; ctx.strokeStyle = "#111"; ctx.stroke();
+      }
+      ctrl.forEach((p, j) => {
+        const [x, y] = pxOf(p);
+        ctx.beginPath(); ctx.arc(x, y, 5.5 * lw, 0, Math.PI * 2); ctx.fillStyle = j === sel ? css("--focus") : "#fff"; ctx.fill();
+        ctx.lineWidth = 2 * lw; ctx.strokeStyle = "#111"; ctx.stroke();
+      });
+    }
+    const [sx, sy] = pxOf(B.start), [gx, gy] = pxOf(B.goal);
+    pin(ctx, sx, sy, "START", css("--fwd"), lw); pin(ctx, gx, gy, "GOAL", css("--bwd"), lw);
+    scaleBar($("dscalebar"), $("dscaletext"), dmap, DD.w * DD.res);
+  }
+
+  // --- pointer
+  function evPt(e) {
+    const r = dover.getBoundingClientRect();
+    const cx = (e.clientX - r.left) / r.width * DD.w, cy = (e.clientY - r.top) / r.height * DD.h;
+    return { cx, cy, xy: [DD.x0 + cx * DD.res, DD.y0 - cy * DD.res], tol: 11 / (r.width / DD.w) };
+  }
+  function nearestVertex(p) {
+    let bi = -1, bd = p.tol;
+    ctrl.forEach((q, j) => { const [x, y] = pxOf(q), d = Math.hypot(x - p.cx, y - p.cy); if (d < bd) { bd = d; bi = j; } });
+    return bi;
+  }
+  function nearestMid(p) {
+    const full = [B.start].concat(ctrl, [B.goal]);
+    let bi = -1, bd = p.tol * 0.8;
+    for (let j = 0; j + 1 < full.length; j++) {
+      const [x, y] = pxOf([(full[j][0] + full[j + 1][0]) / 2, (full[j][1] + full[j + 1][1]) / 2]), d = Math.hypot(x - p.cx, y - p.cy);
+      if (d < bd) { bd = d; bi = j; }
+    }
+    return bi;
+  }
+  dover.addEventListener("pointerdown", e => {
+    if (!DD || e.button > 0) return;
+    const p = evPt(e);
+    dover.focus({ preventScroll: true });
+    if (mode === "explore") { pinVia = viaAt(p); panel(); drawDraw(); return; }
+    let i = nearestVertex(p);
+    pushUndo();
+    if (i < 0) { const m = nearestMid(p); if (m >= 0) { ctrl.splice(m, 0, p.xy); i = m; } }
+    if (i < 0) { ctrl.push(p.xy); i = ctrl.length - 1; }
+    sel = i; drag = { i, id: e.pointerId };
+    try { dover.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    schedule();
+  });
+  dover.addEventListener("pointermove", e => {
+    if (!DD) return;
+    const p = evPt(e);
+    if (drag) { ctrl[drag.i] = p.xy; schedule(); return; }
+    if (mode === "explore") {
+      const v = viaAt(p);
+      if ((v && v.key) !== (hoverVia && hoverVia.key)) { hoverVia = v; drawDraw(); }
+      if (!pinVia) showVia(v, p);
+    } else dover.style.cursor = nearestVertex(p) >= 0 || nearestMid(p) >= 0 ? "grab" : "crosshair";
+  });
+  const endDrag = () => { if (drag) { drag = null; save(); schedule(); } };
+  dover.addEventListener("pointerup", endDrag);
+  dover.addEventListener("pointercancel", endDrag);
+  dover.addEventListener("pointerleave", () => { if (mode === "explore" && hoverVia) { hoverVia = null; drawDraw(); if (!pinVia) showVia(null); } });
+  dover.addEventListener("keydown", e => {
+    if ((e.key === "Delete" || e.key === "Backspace") && sel >= 0) { e.preventDefault(); removeSel(); }
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+  });
+  function removeSel() { if (sel < 0 || sel >= ctrl.length) return; pushUndo(); ctrl.splice(sel, 1); sel = Math.min(sel, ctrl.length - 1); save(); schedule(); }
+  function undo() { if (!undoStack.length) return; ctrl = JSON.parse(undoStack.pop()); sel = -1; save(); schedule(); }
+  $("d-undo").addEventListener("click", undo);
+  $("d-del").addEventListener("click", removeSel);
+  $("d-clear").addEventListener("click", () => { if (!ctrl.length) return; pushUndo(); ctrl = []; sel = -1; save(); schedule(); });
+
+  // --- modes
+  function setMode(m) {
+    mode = m;
+    $("m-draw").setAttribute("aria-pressed", m === "draw" ? "true" : "false");
+    $("m-explore").setAttribute("aria-pressed", m === "explore" ? "true" : "false");
+    dover.style.cursor = "crosshair";
+    if (m === "draw") { hoverVia = null; }
+    else if (DD) getTree(DD).then(() => panel());
+    panel(); drawDraw();
+  }
+  $("m-draw").addEventListener("click", () => setMode("draw"));
+  $("m-explore").addEventListener("click", () => setMode("explore"));
+
+  // --- best route through a point (corridor field + corridor tree)
+  async function getTree(d) {
+    if (d._tree !== undefined) return d._tree;
+    if (!d.tree_file) { d._tree = null; return null; }
+    dstatus.textContent = "Loading the search trees for this run…";
+    try {
+      const res = await fetch(d.tree_file);
+      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      const t = await res.json(), i32 = s => { const b = b64(s); return new Int32Array(b.buffer, 0, b.byteLength / 4); };
+      const i16 = s => { const b = b64(s); return new Int16Array(b.buffer, 0, b.byteLength / 2); };
+      const one = a => {
+        const o = { cell: i32(a.cell), h: b64(a.h), parent: i32(a.parent), ng: b64(a.ng), geo: i16(a.geo) };
+        o.key = new Int32Array(o.cell.length); o.off = new Int32Array(o.cell.length);
+        for (let j = 0, acc = 0; j < o.key.length; j++) { o.key[j] = o.cell[j] * t.n_theta + o.h[j]; o.off[j] = acc; acc += o.ng[j]; }
+        return o;
+      };
+      const bh = b64(t.best_h);
+      d._tree = { nh: t.n_theta, step: t.step, best_h: new Int8Array(bh.buffer, 0, bh.byteLength), fwd: one(t.fwd), bwd: one(t.bwd) };
+      dstatus.textContent = "";
+    } catch (e) {
+      d._tree = null;
+      dstatus.textContent = "Could not load the search trees (" + e.message + ").";
+    }
+    return d._tree;
+  }
+  function findNode(t, key) {
+    let lo = 0, hi = t.key.length - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (t.key[m] === key) return m; if (t.key[m] < key) lo = m + 1; else hi = m - 1; }
+    return -1;
+  }
+  function chainUp(t, i) {          // points (row, col) from node i up to its tree's root
+    const W = DD.w, rc = j => [Math.floor(t.cell[j] / W), t.cell[j] % W], out = [rc(i)];
+    for (let guard = 0; t.parent[i] >= 0 && guard < 1e6; guard++) {
+      const p = t.parent[i], n = t.ng[i];
+      if (n) {                        // hairpin or bend: shape as 1/8-cell offsets from the parent cell
+        const [pr, pc] = rc(p), o = t.off[i];
+        for (let k = n - 2; k >= 0; k--) out.push([pr + t.geo[2 * (o + k)] / 8, pc + t.geo[2 * (o + k) + 1] / 8]);
+      } else out.push(rc(p));
+      i = p;
+    }
+    return out;
+  }
+  function viaAt(p) {
+    const d = DD, t = d._tree;
+    const r = Math.floor(p.cy), c = Math.floor(p.cx);
+    if (r < 0 || c < 0 || r >= d.h || c >= d.w) return null;
+    const cell = r * d.w + c, v = d._corr[cell];
+    const out = { key: cell, rel: v === NEVER ? Infinity : v / 65534 * d.rel_max };
+    out.cost = d.F_min * (1 + out.rel);
+    if (!t || v === NEVER) return out;
+    // Routes are saved through via points every `step` cells: take the nearest one that has a route.
+    let via = -1, vd = Infinity;
+    const r0 = Math.round(r / t.step) * t.step, c0 = Math.round(c / t.step) * t.step;
+    for (let dr = -t.step; dr <= t.step; dr += t.step) for (let dc = -t.step; dc <= t.step; dc += t.step) {
+      const rr = r0 + dr, cc = c0 + dc;
+      if (rr < 0 || cc < 0 || rr >= d.h || cc >= d.w || t.best_h[rr * d.w + cc] < 0) continue;
+      const dist = Math.hypot(rr - r, cc - c);
+      if (dist < vd) { vd = dist; via = rr * d.w + cc; }
+    }
+    if (via < 0) return out;
+    const hb = t.best_h[via];
+    out.key = via;
+    out.viaCost = d.F_min * (1 + d._corr[via] / 65534 * d.rel_max);
+    const fi = findNode(t.fwd, via * t.nh + hb), bi = findNode(t.bwd, via * t.nh + (hb + t.nh / 2) % t.nh);
+    if (fi < 0 || bi < 0) return out;
+    const head = chainUp(t.fwd, fi).reverse(), tail = chainUp(t.bwd, bi).slice(1);
+    const rcs = head.concat(tail);
+    out.px = rcs.map(([rr, cc]) => [cc + 0.5, rr + 0.5]);
+    out.xy = rcs.map(([rr, cc]) => [d.x0 + (cc + 0.5) * d.res, d.y0 - (rr + 0.5) * d.res]);
+    out.length = out.xy.reduce((a, p, j) => j ? a + Math.hypot(p[0] - out.xy[j - 1][0], p[1] - out.xy[j - 1][1]) : 0, 0);
+    out.viaXY = [d.x0 + (via % d.w + 0.5) * d.res, d.y0 - (Math.floor(via / d.w) + 0.5) * d.res];
+    return out;
+  }
+  function showVia(v, p) {
+    const el = $("dvia");
+    if (mode !== "explore") { el.hidden = true; return; }
+    el.hidden = false;
+    if (!v) { el.textContent = DD && DD._tree === null && DD.tree_file === undefined
+                ? "This run has no saved search trees, so routes through a point can't be drawn; their cost still shows."
+                : "Hover the map: the cheapest route through that point and what it costs."; return; }
+    if (!Number.isFinite(v.rel)) { el.textContent = "No route through this point within twice the best cost."; return; }
+    el.innerHTML = (pinVia ? "<strong>Pinned:</strong> " : "") + "best route through this point costs <strong>" + short(v.cost) +
+      "</strong>, <strong>+" + (100 * v.rel).toFixed(1) + "%</strong> over the best." +
+      (v.px ? " Drawn through the nearest saved via point (" + short(v.viaCost) + ", " + km(v.length) + ")."
+            : " (Route not drawn: no saved search tree here.)");
+  }
+  $("d-ref").addEventListener("click", () => {
+    if (!REF) return;
+    pushUndo();
+    ctrl = simplify(REF.xy, DD.res * 0.6).slice(1, -1);
+    sel = -1; save(); schedule();
+  });
+  $("d-use").addEventListener("click", () => {
+    if (!pinVia || !pinVia.xy) return;
+    pushUndo();
+    ctrl = simplify(pinVia.xy, DD.res * 0.6).slice(1, -1);
+    sel = -1; pinVia = null; save(); setMode("draw"); schedule();
+  });
+  function simplify(pts, tol) {     // Douglas-Peucker
+    if (pts.length < 3) return pts.slice();
+    const keep = new Uint8Array(pts.length); keep[0] = keep[pts.length - 1] = 1;
+    const stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop(); let bi = -1, bd = tol;
+      const [ax, ay] = pts[a], [bx, by] = pts[b], L = Math.hypot(bx - ax, by - ay) || 1e-9;
+      for (let j = a + 1; j < b; j++) {
+        const d = Math.abs((bx - ax) * (ay - pts[j][1]) - (ax - pts[j][0]) * (by - ay)) / L;
+        if (d > bd) { bd = d; bi = j; }
+      }
+      if (bi >= 0) { keep[bi] = 1; stack.push([a, bi], [bi, b]); }
+    }
+    return pts.filter((_, j) => keep[j]);
+  }
+
+  // --- side panel
+  function panel() {
+    if (!DD) return;
+    $("dhint").textContent = mode === "draw"
+      ? "Click the map to add a point before the goal, drag a point to move it, or drag a small midpoint to add one between. " +
+        "Select a point and press Delete to remove it. Corners are rounded to the " + DD.P.R_min + " m minimum radius."
+      : "Hover to see what the cheapest route through a point costs; click to pin it, then use it as your route to edit it.";
+    $("d-use").hidden = mode !== "explore";
+    $("d-ref").hidden = !REF || mode !== "draw";
+    $("d-use").disabled = !(pinVia && pinVia.xy);
+    $("d-del").disabled = sel < 0; $("d-undo").disabled = !undoStack.length; $("d-clear").disabled = !ctrl.length;
+    showVia(pinVia || null);
+    const best = M.runs[dcur].routes[0] || {}, t = R ? R.tot : {};
+    const rows = [
+      ["Total", t.total, best.cost, short], ["Construction", t.construction, best.construction, short],
+      ["Operating", t.operating, best.operating, short], ["Length", t.length, best.length, v => km(v)],
+      ["Rise + fall", t.vertical, best.vertical, v => fmt(v) + " m"],
+    ];
+    const diff = (a, b, f) => !(Number.isFinite(a) && Number.isFinite(b)) ? "" :
+      (a - b >= 0 ? "+" : "−") + f(Math.abs(a - b)).replace(/^−/, "");
+    $("dcmp").innerHTML = "<thead><tr><th></th><th>Yours</th><th>Optimum</th><th>Difference</th></tr></thead><tbody>" +
+      rows.map(([n, a, b, f]) => "<tr><td>" + n + "</td><td>" + (Number.isFinite(a) ? f(a) : "–") + "</td><td>" +
+        (Number.isFinite(b) ? f(b) : "–") + '</td><td class="' + (a - b > 0 ? "pos" : a - b < 0 ? "neg" : "") + '">' + diff(a, b, f) + "</td></tr>").join("") +
+      "<tr><td>Culverts</td><td>" + (t.culverts ?? "–") + "</td><td></td><td></td></tr>" +
+      "<tr><td>Full bench</td><td>" + (Number.isFinite(t.full_bench_m) ? fmt(t.full_bench_m) + " m" : "–") + "</td><td></td><td></td></tr></tbody>";
+    const items = [], gm = (100 * DD.P.g_max).toFixed(0);
+    if (t.over_grade_m > 0) items.push([VIOL, "Steeper than " + gm + "%: " + fmt(t.over_grade_m) + " m (up to " + (100 * t.max_grade).toFixed(1) + "%)"]);
+    if (t.excluded_m > 0) items.push([VIOL, "On excluded ground: " + fmt(t.excluded_m) + " m"]);
+    if (t.infeasible_m > 0) items.push([VIOL, "Side slope too steep to build: " + fmt(t.infeasible_m) + " m, not costed"]);
+    if (t.outside_m > 0) items.push([VIOL, "Outside this run's terrain: " + fmt(t.outside_m) + " m, not costed"]);
+    if (t.tight_corners > 0) items.push([VIOL, t.tight_corners + (t.tight_corners === 1 ? " corner" : " corners") +
+      " tighter than " + DD.P.R_min + " m (no room for the curve)"]);
+    if (!items.length) items.push([css("--bwd"), "Within every limit: grade, exclusions, side slope and curve radius."]);
+    else items.push(["transparent", "Not buildable as drawn, so its cost is a lower bound: fixing these needs more length, cut, or hairpins."]);
+    $("dissues").innerHTML = items.map(([c, s]) => '<li><span class="sw" style="background:' + c + '"></span><span>' + s + "</span></li>").join("");
+    $("dlegend").innerHTML =
+      '<div class="key"><div class="ramp"></div><span>Your route, cost per meter: ' + fmt(DD.P.sp.C_base) + " (base) to " + fmt(6 * DD.P.sp.C_base) + "+</span></div>" +
+      '<div class="key"><div class="sw" style="background:' + VIOL + '"></div><span>Over a limit (see Checks)</span></div>' +
+      '<div class="key"><div class="sw" style="background:' + css("--ink") + '"></div><span>Optimum for this run (dashed)</span></div>' +
+      (REF ? '<div class="key"><div class="sw ref"></div><span>' + REF.label + "</span></div>" : "") +
+      (mode === "explore" ? '<div class="key"><div class="sw" style="background:' + css("--focus") + '"></div><span>Best route through the point</span></div>' : "");
+  }
+
+  // --- profile
+  function niceStep(span, n) { const raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw))); return [1, 2, 2.5, 5, 10].map(m => m * p).find(v => v >= raw); }
+  function drawProfile() {
+    if (!DD || !R || view !== "draw") return;
+    const dpr = window.devicePixelRatio || 1, W = dprof.clientWidth, H = dprof.clientHeight;
+    dprof.width = Math.round(W * dpr); dprof.height = Math.round(H * dpr);
+    const ctx = dprof.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    const q = R.per, n = q.station.length, bp = DD._bestProf;
+    const L = Math.max(R.tot.length, bp ? bp.length : 0) || 1;
+    const left = 58, right = 10, top = 18, gap = 22, eH = Math.round((H - 62) * 0.6), cH = H - 62 - eH;
+    const X = st => left + (W - left - right) * st / L;
+    const zs = Array.from(q.z).filter(Number.isFinite).concat(bp ? bp.z.filter(Number.isFinite) : []);
+    if (!zs.length) return;
+    let zmin = Math.min(...zs), zmax = Math.max(...zs); if (zmax - zmin < 1) { zmax += 0.5; zmin -= 0.5; }
+    const Yz = z => top + eH * (1 - (z - zmin) / (zmax - zmin));
+    const finite = Array.from(q.cpm).filter(Number.isFinite).sort((a, b) => a - b);
+    const cmax = Math.max(DD.P.sp.C_base * 2, finite.length ? finite[Math.floor(0.98 * (finite.length - 1))] : 1);
+    const c0 = top + eH + gap, Yc = v => c0 + cH * (1 - Math.min(v, cmax) / cmax);
+    ctx.font = "11px " + css("--f-data"); ctx.fillStyle = css("--muted"); ctx.strokeStyle = css("--rule"); ctx.lineWidth = 1;
+    const zs_ = niceStep(zmax - zmin, 3);
+    for (let z = Math.ceil(zmin / zs_) * zs_; z <= zmax; z += zs_) {
+      const y = Yz(z); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W - right, y); ctx.stroke();
+      ctx.textAlign = "right"; ctx.fillText(fmt(z) + " m", left - 6, y + 4);
+    }
+    const cs = niceStep(cmax, 2);
+    for (let v = 0; v <= cmax + 1e-9; v += cs) {
+      const y = Yc(v); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(W - right, y); ctx.stroke();
+      ctx.textAlign = "right"; ctx.fillText(fmt(v) + "/m", left - 6, y + 4);
+    }
+    const xs = niceStep(L / 1000, 6) * 1000;
+    ctx.textAlign = "center";
+    for (let st = 0; st <= L + 1e-6; st += xs) ctx.fillText((st / 1000).toFixed(xs < 1000 ? 1 : 0) + " km", X(st), H - 6);
+    if (bp) {
+      ctx.beginPath(); let on = false;
+      bp.st.forEach((st, j) => { const z = bp.z[j]; if (!Number.isFinite(z)) { on = false; return; } on ? ctx.lineTo(X(st), Yz(z)) : ctx.moveTo(X(st), Yz(z)); on = true; });
+      ctx.setLineDash([5, 4]); ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1.4; ctx.stroke(); ctx.setLineDash([]);
+    }
+    ctx.lineWidth = 2;
+    for (let j = 1; j < n; j++) {
+      if (!Number.isFinite(q.z[j]) || !Number.isFinite(q.z[j - 1])) continue;
+      ctx.beginPath(); ctx.moveTo(X(q.station[j - 1]), Yz(q.z[j - 1])); ctx.lineTo(X(q.station[j]), Yz(q.z[j]));
+      ctx.strokeStyle = q.flag[j] & 1 ? VIOL : css("--ink"); ctx.stroke();
+    }
+    for (let j = 0; j < n; j++) {
+      const a = j ? (q.station[j - 1] + q.station[j]) / 2 : 0, b = j + 1 < n ? (q.station[j] + q.station[j + 1]) / 2 : R.tot.length;
+      const v = q.cpm[j];
+      ctx.fillStyle = q.flag[j] || !Number.isFinite(v) ? VIOL : ramp(cpmT(v));
+      const y = Number.isFinite(v) ? Yc(v) : c0;
+      ctx.fillRect(X(a), y, Math.max(X(b) - X(a), 0.6), c0 + cH - y);
+    }
+    ctx.textAlign = "left"; ctx.fillStyle = css("--muted");
+    ctx.fillText(W < 640 ? "Elevation (optimum dashed)" : "Elevation: yours solid (over " + (100 * DD.P.g_max).toFixed(0) +
+                 "% in magenta), optimum dashed", left, top - 6);
+    ctx.fillText("Cost per meter of your route", left, c0 - 6);
+    if (profK >= 0) {
+      ctx.strokeStyle = css("--focus"); ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(X(q.station[profK]), top); ctx.lineTo(X(q.station[profK]), c0 + cH); ctx.stroke();
+    }
+    dprof._X = { left, right, L, W };
+  }
+  dprof.addEventListener("pointermove", e => {
+    if (!R || !dprof._X) return;
+    const r = dprof.getBoundingClientRect(), { left, right, L, W } = dprof._X;
+    const st = (e.clientX - r.left - left) / (W - left - right) * L, q = R.per;
+    let lo = 0, hi = q.station.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (q.station[m] < st) lo = m + 1; else hi = m; }
+    profK = lo;
+    const kind = RE.KIND_NAMES[q.kind[lo]] || "", g = q.grade[lo];
+    $("dprofread").textContent = "km " + (q.station[lo] / 1000).toFixed(2) + " · elevation " + (Number.isFinite(q.z[lo]) ? fmt(q.z[lo]) + " m" : "–") +
+      " · grade " + (100 * g).toFixed(1) + "% · " + (Number.isFinite(q.cpm[lo]) ? fmt(q.cpm[lo]) + " per m" : "not costed") + " · " + kind.replace("_", " ");
+    drawDraw(); drawProfile();
+  });
+  dprof.addEventListener("pointerleave", () => { profK = -1; $("dprofread").textContent = "Hover the profile to find a point on the map."; drawDraw(); drawProfile(); });
+
+  // --- GeoJSON
+  $("d-copy").addEventListener("click", () => {
+    if (!R) return;
+    const t = R.tot, gj = { type: "Feature",
+      properties: { crs: B.crs, run_id: M.runs[dcur].run_id, weight: label(M.runs[dcur]), cost_total: Math.round(t.total),
+                    cost_construction: Math.round(t.construction), cost_operating: Math.round(t.operating),
+                    length_m: Math.round(t.length), vertical_travel_m: Math.round(t.vertical), control_points: ctrl },
+      geometry: { type: "LineString", coordinates: R.pts.map(([x, y]) => [Math.round(x * 100) / 100, Math.round(y * 100) / 100]) } };
+    const text = JSON.stringify(gj), ta = $("dgeo");
+    const fallback = () => { ta.hidden = false; ta.value = text; ta.focus(); ta.select(); dstatus.textContent = "Copying isn't allowed here: the GeoJSON is selected below, copy it with Ctrl+C."; };
+    try {
+      navigator.clipboard.writeText(text).then(() => { ta.hidden = true; dstatus.textContent = "Copied the route as GeoJSON (" + B.crs + ")."; }, fallback);
+    } catch (e) { fallback(); }
+  });
+
+  const redraw = () => { readColors(); if (view === "search") draw(); else if (view === "compare") drawCompare();
+                         else if (view === "draw") { drawDraw(); drawProfile(); } };
+  window.addEventListener("resize", redraw);
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+  new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  const first = (location.hash || "").slice(1);
+  show(VIEWS.includes(first) ? first : "compare");
+  window.addEventListener("hashchange", () => {
+    const v = (location.hash || "").slice(1);
+    if (VIEWS.includes(v) && v !== view) show(v);
+  });
+})();
+</script>

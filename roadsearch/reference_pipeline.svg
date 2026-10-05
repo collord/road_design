@@ -1,0 +1,45 @@
+<svg class="fig pipeline" viewBox="0 48 720 724" role="img" aria-label="A run goes coarse to fine, then from the best route to ranked alternatives">
+<defs><marker id="run-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
+<g class="conn">
+<path d="M240 120V142" marker-end="url(#run-arrow)"/>
+<path d="M240 200V222" marker-end="url(#run-arrow)"/>
+<path d="M240 280V302" marker-end="url(#run-arrow)"/>
+<path d="M240 360V382" marker-end="url(#run-arrow)"/>
+<path d="M240 440V462" marker-end="url(#run-arrow)"/>
+<path d="M240 520V542" marker-end="url(#run-arrow)"/>
+<path d="M240 600V622" marker-end="url(#run-arrow)"/>
+<path d="M240 680V702" marker-end="url(#run-arrow)"/>
+<path d="M440 492H500V424H442" marker-end="url(#run-arrow)"/>
+<path d="M440 400H560V252H442" marker-end="url(#run-arrow)"/>
+</g>
+<rect class="box" x="40" y="64" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="88" text-anchor="middle">Inputs</text>
+<text class="body" x="240" y="106" text-anchor="middle">DEM, start and goal, exclusion polygons, parameters</text>
+<rect class="box" x="40" y="144" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="168" text-anchor="middle">Terrain preparation</text>
+<text class="body" x="240" y="186" text-anchor="middle">Smoothed DEM, slope, soil depth, channels, no-go mask</text>
+<rect class="box" x="40" y="224" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="248" text-anchor="middle">Coarse pass, 15 m cells</text>
+<text class="body" x="240" y="266" text-anchor="middle">Endpoint box + 2 km; finds the near-optimal corridor</text>
+<rect class="box" x="40" y="304" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="328" text-anchor="middle">Fine grid, 10 m cells</text>
+<text class="body" x="240" y="346" text-anchor="middle">Corridor + buffer; hairpin and bend costs precomputed</text>
+<rect class="box" x="40" y="384" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="408" text-anchor="middle">A* search with fill price</text>
+<text class="body" x="240" y="426" text-anchor="middle">Repeats with the realized fill price, up to 5 times</text>
+<rect class="box" x="40" y="464" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="488" text-anchor="middle">Self-overlap check</text>
+<text class="body" x="240" y="506" text-anchor="middle">A route that loops back over itself is not accepted</text>
+<rect class="box" x="40" y="544" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="568" text-anchor="middle">Two-way Dijkstra</text>
+<text class="body" x="240" y="586" text-anchor="middle">Cost of the cheapest route through every cell</text>
+<rect class="box" x="40" y="624" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="648" text-anchor="middle">Alternatives</text>
+<text class="body" x="240" y="666" text-anchor="middle">Via cells within 25%, overlap and local-optimality filters</text>
+<rect class="box main" x="40" y="704" width="400" height="56" rx="8"/>
+<text class="step" x="240" y="728" text-anchor="middle">True cost and ranking</text>
+<text class="body" x="240" y="746" text-anchor="middle">Exact sections, spoil haul, culverts; outputs and rasters</text>
+<text class="body" x="512" y="462">overlap found: block, repeat</text>
+<text class="body" x="572" y="322">route reaches clip edge:</text>
+<text class="body" x="572" y="338">widen the corridor, redo</text>
+</svg>

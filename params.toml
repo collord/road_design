@@ -1,0 +1,95 @@
+# Default parameters for the road alignment search.
+#
+# Every value here is a placeholder chosen by the brief's author, not by the
+# user. Every key can be overridden from the CLI as --<key> VALUE (lists as
+# comma-separated values), or from a partial TOML file passed as --params.
+# Slopes are tangents (rise over run) unless stated. Lengths in meters.
+
+# --- Road geometry -----------------------------------------------------------
+w = 5.0               # road width, running surface (m)
+g_max = 0.10          # maximum road grade
+R_min = 20.0          # minimum open-road centerline radius (m)
+R_hp = 10.0           # hairpin centerline radius (m)
+g_hp = 0.04           # maximum grade through a hairpin
+w_hp = 7.0            # road width through a hairpin (m)
+hp_gap_min = 8.0      # narrowest clear gap between the two legs of a keyhole hairpin (m)
+C_wall = inf          # retaining wall between hairpin legs, per m2 of face; inf = no walls
+                      # (legs whose slopes overlap are then reported as conflicts)
+hp_leg_max = 60.0     # longest approach leg either side of a hairpin arc (m).
+                      # The legs leave the ground so the hairpin can climb the
+                      # S*2R step between its ends; 0 gives the brief's pure
+                      # 180-degree hairpin, which needs cross slope < g_hp*pi/2.
+
+# --- Soil and slopes ---------------------------------------------------------
+d0 = 2.0              # soil depth on level ground, vertical (m)
+S0 = 0.30             # e-folding slope for soil thinning
+c_soil = 1.0          # cut backslope in soil (1H:1V)
+c_rock = 4.0          # cut backslope in rock (0.25H:1V)
+f_soil = 0.67         # fill slope (repose) for soil spoil
+f_rock = 0.80         # fill slope (repose) for rock spoil
+k_soil = 1.0          # bank-to-sidecast volume factor, soil
+k_rock = 1.3          # bank-to-sidecast volume factor, rock
+b_min = 0.5           # narrowest usable fill bench; below this, full bench (m)
+mask_margin = 0.9     # fraction of c_rock at which ground is excluded
+catch_max = 50.0      # cut catch cap (m): the cut is clipped at this horizontal
+                      # distance from the hinge, as if ended by a vertical face
+
+# --- Unit costs (relative; soil excavation = 1 per bank m3) -----------------
+C_base = 10.0         # base cost per meter (grading, surfacing, ditching)
+C_soil = 1.0          # soil excavation per bank m3
+C_rock = 6.0          # rock excavation per bank m3
+C_borrow = 4.0        # imported crossing fill per m3
+C_haul_down = 0.01    # spoil haul per m3*m, loaded downhill
+C_haul_up = 0.02      # spoil haul per m3*m, loaded uphill
+haul_max = 500.0      # maximum economic haul distance along route (m)
+
+# --- Operating costs over the road's life (same relative units) -------------
+# Trucks pay per meter driven and per meter climbed or descended. Whatever the
+# loaded/empty and up/down rates, a route's climb minus descent is fixed by its
+# endpoints, so only the TOTAL vertical travel (rise + fall) can change which
+# route wins:
+#   C_vertical = N_round_trips * (c_up_loaded + c_down_loaded + c_up_empty + c_down_empty) / 2
+#   C_travel   = N_round_trips * (c_per_m_loaded + c_per_m_empty)
+# Both 0 = construction cost only (the brief).
+C_travel = 0.0        # per meter of route length
+C_vertical = 0.0      # per meter of rise or fall along the road profile
+
+# --- Drainage ----------------------------------------------------------------
+A_min = 2.0                         # contributing area defining a channel (ha)
+culvert_area_breaks = [10.0, 50.0]  # contributing-area class limits (ha)
+culvert_costs = [50.0, 150.0, 400.0]  # cost for area < 10, < 50, >= 50 ha
+H_fill_max = 8.0      # maximum crossing fill height (m)
+L_cross_max = 60.0    # maximum fill-crossing length (m)
+fill_tol = 0.25       # fill crossings may dip this far below ground (m)
+
+# --- Search ------------------------------------------------------------------
+move_max_cells = 7    # straight moves to coprime lattice points up to this many cells,
+                      # binned to lattice headings; lets roads climb near g_max on
+                      # any slope. 0 = exact lattice headings only (the brief).
+kink_max_deg = 10.0   # largest direction change at a node between such moves
+N_theta = 32          # heading bins: 8, 16 or 32 (brief default 16; 32 follows contours on steeper ground).
+                      # Contour-following works on slopes
+                      # up to g_max/sin(half the widest heading gap): 0.43 for 16,
+                      # 0.82 for 32 (at g_max = 0.10)
+K_alt = 5             # number of alternatives to save
+eps_alt = 0.25        # alternatives must cost within this fraction of the best
+D_alt = 100.0         # minimum separation between alternatives' via points (m)
+alt_window = 0.25     # local-optimality test: window either side of the via point,
+                      # as a fraction of the best route's cost ...
+alt_local_tol = 0.02  # ... whose path may cost at most this fraction more than the
+                      # cheapest path between the window ends
+alt_max_tries = 1000  # candidate via points examined at most
+
+# --- Preprocessing (additions not in the brief's table) ---------------------
+smooth_sigma = 0.0    # Gaussian sigma for the smoothed DEM (m); 0 means use w
+excl_buffer = 0.0     # buffer applied to manual exclusion polygons (m)
+s_flat = 0.02         # sidehill slope below which a section is labeled "flat"
+                      # (label only; cost is computed by the same formula)
+z_units = "m"         # vertical units of the DEM: "m", "ft" or "ftUS"
+max_states = 2.0e7    # target ceiling on searchable states (cells in the clip region * N_theta)
+max_memory_gb = 3.0   # ceiling on search memory for the whole working grid (~26 bytes per state)
+clip_slack = 0.0      # --clip auto: keep coarse-corridor cells with
+                      # F <= (1 + eps_alt) * (1 + clip_slack) * F_min ...
+clip_buffer = 300.0   # ... buffered by this distance (m)
+clip_coarse_margin = 2000.0  # --clip auto: the coarse pass covers the endpoint box
+                      # plus this margin (m), doubled if its route reaches the edge

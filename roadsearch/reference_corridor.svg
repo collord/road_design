@@ -1,0 +1,17 @@
+<svg class="fig" viewBox="0 20 660 260" role="img" aria-label="The cheapest route through a cell costs the cheapest cost from the start to it plus the cheapest cost from it to the goal">
+<defs><marker id="cor-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="arrowhead" d="M0 0L10 5L0 10z"/></marker></defs>
+<path class="move bestroute" d="M60 200C200 260 440 250 600 200"/>
+<path class="fwdl" d="M60 200C110 120 200 70 300 60"/>
+<path class="bwdl" d="M300 60C420 50 540 120 600 200"/>
+<circle class="node end" cx="60" cy="200" r="7"/>
+<text class="lab" x="60" y="226" text-anchor="middle">START</text>
+<circle class="node end" cx="600" cy="200" r="7"/>
+<text class="lab" x="600" y="226" text-anchor="middle">GOAL</text>
+<circle class="node via" cx="300 " cy="60" r="8"/>
+<text class="nm" x="300" y="42" text-anchor="middle">cell X</text>
+<text class="body fwdt" x="160" y="58" text-anchor="middle">cheapest from START: 640</text>
+<text class="body bwdt" x="505" y="58" text-anchor="middle">cheapest to GOAL: 590</text>
+<text class="body" x="330" y="262" text-anchor="middle">best route: 1,000. Every cell on it sums to 1,000</text>
+<text class="lab" x="330" y="140" text-anchor="middle">through X: 640 + 590 = 1,230, or +23%</text>
+<text class="body" x="330" y="160" text-anchor="middle">Do this for every cell: the corridor field</text>
+</svg>

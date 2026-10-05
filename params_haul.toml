@@ -1,0 +1,39 @@
+# Haul-road parameter set: overrides params.toml when passed as
+#     python -m roadsearch run --params params_haul.toml ...
+#
+# Placeholders for a 20 m two-way mine haul road, to be replaced with the
+# operation's own design standard. Values marked (*) follow common guidance
+# (e.g. US Bureau of Mines, Kaufman & Ault 1977: two-lane width about 3.5x
+# the truck width, sustained grade about 8%), quoted from memory.
+
+w = 20.0              # running surface width (m) (*)
+g_max = 0.08          # maximum sustained grade, loaded trucks (*)
+R_min = 40.0          # minimum open-road centerline radius (m); also the keyhole reverse curves
+R_hp = 25.0           # hairpin loop radius (m): truck turning circle plus margin
+w_hp = 25.0           # road width through a hairpin (m), widened
+g_hp = 0.03           # maximum centerline grade through a hairpin
+hp_leg_max = 100.0    # approach legs are longer for wider, flatter hairpins (m)
+
+# Unconfirmed: the forest-road base cost scaled by width (5 m -> 20 m).
+C_base = 40.0         # per meter: grading, sub-base, surfacing, ditching
+
+# Unconfirmed: retaining wall between hairpin legs, per m2 of face (relative
+# to soil excavation at 1 per m3). Swiss ratio from Stueckelberger et al.
+# (2007): 80-100 CHF/m2 against 6.80 CHF/m3 excavation, about 12-15.
+C_wall = 15.0
+
+# Operating costs, from supplied haul-truck fuel figures (diesel at about $2.10/L):
+#   flat: loaded $0.013/m, empty $0.006/m
+#   per meter climbed (from the 10% figures): loaded $0.65, empty $0.28
+#   per meter descended, retarding: loaded -$0.11, empty -$0.04 (fuel saved vs flat)
+# Per round trip: C_travel = $0.019/m, C_vertical = (0.65 - 0.11 + 0.28 - 0.04)/2 = $0.39/m.
+# Trips: 5 years x 365 d x 22 h = 40,150 h; a 91 min round trip on the 10.8 km
+# route (30 km/h, 10 km/h on hairpins, bends and grades >= 4%) gives about
+# 26,400 round trips per truck, so per truck: $502 per meter of route and
+# $10,300 per meter of rise or fall.
+# Unconfirmed: $4 per relative cost unit (soil excavation $4/m3) and a fleet of 1 truck.
+# These are the k = 1 values: `sweep --k ...` runs k x both. Everything else that grows
+# with route length (road maintenance, tires, more trucks) is taken to scale with them,
+# so k covers it.
+C_travel = 125.5
+C_vertical = 2576.0

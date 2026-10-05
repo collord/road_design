@@ -1,0 +1,272 @@
+"""End-to-end run: inspect, clip, preprocess, search, alternatives, outputs."""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import math
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import rasterio
+from pyproj import CRS
+from scipy import ndimage
+
+from .exclusion import ExclusionError
+from .explore import write_corridor_tree
+from .masshaul import TrueCost, true_cost
+from .outputs import write_field_rasters, write_params_json, write_vectors
+from .params import Params
+from .pipeline import alternatives, avoid_self_overlap, corridor_fields, fill_price_iteration
+from .preprocess import ConnectivityError, EndpointError, preprocess
+from .quicklook import quicklook
+from .route import Segment, evaluate_route, stacked_leg_conflicts
+from .search import make_problem, path_xy, reconstruct, run_search
+from .terrain import NICE_RESOLUTIONS, Grid, inspect_dem, load_grid, parse_point, write_raster
+
+
+@dataclass
+class RankedRoute:
+    route_id: int
+    via: tuple[int, int]
+    edges: list
+    segments: list[Segment]
+    cost: TrueCost
+    lam_fill: float
+    params: Params
+
+
+def make_run_id(payload: dict) -> str:
+    """Deterministic id from parameters and inputs, so identical runs coincide."""
+    blob = json.dumps(payload, sort_keys=True, default=str).encode()
+    return hashlib.sha1(blob).hexdigest()[:10]
+
+
+BYTES_PER_STATE = 26   # two Dijkstra fields (cost, parent, closed) + hairpin table
+
+
+def resolution_for(bounds, p: Params, region_area: float | None = None, floor: float = 1.0) -> float:
+    """Smallest nice resolution with the searchable states (cells in the
+    region, or the whole box) under max_states and the whole grid's search
+    memory under max_memory_gb."""
+    box = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+    region = box if region_area is None else region_area
+    for r in NICE_RESOLUTIONS:
+        if (r >= floor and region / r**2 * p.N_theta <= p.max_states
+                and box / r**2 * p.N_theta * BYTES_PER_STATE <= p.max_memory_gb * 1e9):
+            return float(r)
+    return float(NICE_RESOLUTIONS[-1])
+
+
+def check_memory(grid: Grid, p: Params) -> None:
+    need = grid.shape[0] * grid.shape[1] * p.N_theta * BYTES_PER_STATE / 1e9
+    if need > p.max_memory_gb:
+        raise MemoryError(f"working grid needs ~{need:.1f} GB of search memory, over max_memory_gb = "
+                          f"{p.max_memory_gb:g}; use a coarser --resolution, a tighter clip, or raise it")
+
+
+def _region_bounds(grid: Grid, mask: np.ndarray, pad: float):
+    rows, cols = np.nonzero(mask)
+    t = grid.transform
+    xmin = t.c + cols.min() * t.a - pad
+    xmax = t.c + (cols.max() + 1) * t.a + pad
+    ymax = t.f + rows.min() * t.e + pad
+    ymin = t.f + (rows.max() + 1) * t.e - pad
+    return (xmin, ymin, xmax, ymax)
+
+
+def _resample_mask(src: Grid, mask: np.ndarray, dst: Grid) -> np.ndarray:
+    """Nearest-neighbor lookup of a coarse mask at fine cell centers."""
+    rr, cc = np.mgrid[0:dst.shape[0], 0:dst.shape[1]]
+    x = dst.transform.c + (cc + 0.5) * dst.transform.a
+    y = dst.transform.f + (rr + 0.5) * dst.transform.e
+    col = np.floor((x - src.transform.c) / src.transform.a).astype(int)
+    row = np.floor((y - src.transform.f) / src.transform.e).astype(int)
+    ok = (row >= 0) & (row < src.shape[0]) & (col >= 0) & (col < src.shape[1])
+    out = np.zeros(dst.shape, dtype=bool)
+    out[ok] = mask[row[ok], col[ok]]
+    return out
+
+
+def coarse_corridor(dem, p: Params, start, goal, exclude, coarse_res, log):
+    """Coarse search over the endpoint box plus clip_coarse_margin, at the
+    finest resolution that fits max_states (or coarse_res). The margin is
+    doubled once if the coarse route reaches the edge of the box.
+    Returns (grid, region mask, info, fields)."""
+    margin = p.clip_coarse_margin
+    for attempt in range(2):
+        bounds = (min(start[0], goal[0]) - margin, min(start[1], goal[1]) - margin,
+                  max(start[0], goal[0]) + margin, max(start[1], goal[1]) + margin)
+        res = coarse_res or resolution_for(bounds, p)
+        grid, ginfo = load_grid(dem, p, res, bounds)
+        t = preprocess(grid, start, goal, p, exclude)
+        prob = make_problem(t, p)
+        a = run_search(prob, t.start_rc, t.goal_rc, astar=True)
+        if a.goal_state is None:
+            raise ConnectivityError(
+                f"coarse search ({res:g} m, margin {margin:g} m) found no route; "
+                "try a finer --coarse-res or --clip box")
+        edges = reconstruct(a, prob.lat, a.goal_state)
+        if not touches_boundary(prob, edges, t.start_rc, ~np.isnan(grid.z)) or attempt == 1:
+            break
+        log(f"coarse route reaches the edge of the {margin:g} m box; doubling the margin")
+        margin *= 2
+    thr = (1 + p.eps_alt) * (1 + p.clip_slack) * a.goal_cost
+    fields = corridor_fields(prob, t.start_rc, t.goal_rc, max_cost=thr * (1 + 1e-9))
+    region = fields.F <= thr
+    dist = ndimage.distance_transform_edt(~region) * grid.res
+    region = dist <= p.clip_buffer
+    info = {"coarse_res_m": grid.res, "coarse_shape": list(grid.shape), "coarse_cost": a.goal_cost,
+            "coarse_margin_m": margin, "coarse_bounds": list(bounds),
+            "coarse_threshold": thr, "region_cells": int(region.sum())}
+    log(f"coarse pass at {grid.res:g} m: cost {a.goal_cost:,.0f}, corridor {region.sum() * grid.res**2 / 1e6:.1f} km2")
+    return grid, region, info, fields
+
+
+def touches_boundary(prob, edges, start_rc, allowed: np.ndarray) -> bool:
+    """True if the route comes within one cell of the edge of the allowed region."""
+    pts = path_xy(prob, edges, start_rc)
+    cells = np.unique(np.floor(pts + 0.5).astype(int), axis=0)
+    edge = ~ndimage.binary_erosion(allowed, structure=np.ones((3, 3)), border_value=0)
+    return bool(edge[cells[:, 0], cells[:, 1]].any())
+
+
+def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", resolution=None,
+        clip="none", clip_margin=1000.0, coarse_res=None, run_id=None, endpoint_crs=None,
+        log=print, reuse=False) -> dict:
+    """One full run. With reuse, a run with the same inputs that already finished is returned as is."""
+    t_start = time.time()
+    out = Path(out)
+    timings = {}
+    dem_info = inspect_dem(dem, p)
+    with rasterio.open(dem) as ds:
+        dem_crs = CRS.from_user_input(ds.crs)
+    wcrs = CRS.from_user_input(dem_info["working_crs_epsg"] or dem_info["working_crs_name"])
+    pt_crs = CRS.from_user_input(endpoint_crs) if endpoint_crs else dem_crs
+    start = parse_point(start_txt, pt_crs, wcrs)
+    goal = parse_point(goal_txt, pt_crs, wcrs)
+    exclude = [str(Path(e).resolve()) for e in exclude]
+    inputs = {"dem": dem_info["path"], "start": start, "goal": goal, "exclude": exclude,
+              "resolution": resolution, "clip": clip, "clip_margin": clip_margin,
+              "coarse_res": coarse_res, "params": p.to_dict()}
+    run_id = run_id or make_run_id(inputs)
+    run_dir = out / "runs" / run_id
+    if reuse and (run_dir / "params.json").exists():
+        prev = json.loads((run_dir / "params.json").read_text(encoding="utf-8"))
+        if "error" not in prev and "total_s" in prev.get("timings", {}):
+            log(f"run {run_id}: already finished, reusing it")
+            return prev
+    run_dir.mkdir(parents=True, exist_ok=True)
+    record = {"run_id": run_id, "inputs": inputs, "params": p.to_dict(), "dem": dem_info}
+    log(f"run {run_id}")
+
+    def fail(exc):
+        record["error"] = f"{type(exc).__name__}: {exc}"
+        write_params_json(run_dir, record)
+        log(f"run {run_id}: {record['error']}")
+        return record
+
+    buffer = p.clip_buffer
+    attempts = 0
+    while True:
+        attempts += 1
+        region_mask = None
+        try:
+            if clip == "none":
+                bounds = None
+                res = resolution or dem_info["proposed_res_m"]
+            elif clip == "box":
+                bounds = (min(start[0], goal[0]) - clip_margin, min(start[1], goal[1]) - clip_margin,
+                          max(start[0], goal[0]) + clip_margin, max(start[1], goal[1]) + clip_margin)
+                res = resolution or resolution_for(bounds, p)
+            elif clip == "auto":
+                t0 = time.time()
+                pc = dataclasses.replace(p, clip_buffer=buffer)
+                cgrid, cregion, cinfo, cfields = coarse_corridor(dem, pc, start, goal, exclude, coarse_res, log)
+                timings["coarse_s"] = time.time() - t0
+                record["coarse"] = cinfo
+                write_raster(run_dir / "coarse_corridor_field.tif",
+                             np.where(np.isfinite(cfields.F), cfields.F, np.nan), cgrid)
+                del cfields
+                bounds = _region_bounds(cgrid, cregion, 0.0)
+                res = resolution or resolution_for(bounds, p, float(cregion.sum()) * cgrid.res**2)
+            else:
+                raise ValueError(f"unknown clip mode {clip!r}")
+            t0 = time.time()
+            grid, ginfo = load_grid(dem, p, res, bounds)
+            check_memory(grid, p)
+            if clip == "auto":
+                region_mask = _resample_mask(cgrid, cregion, grid)
+            record["grid"] = ginfo
+            n_search = int(region_mask.sum()) if region_mask is not None else grid.shape[0] * grid.shape[1]
+            log(f"working grid {grid.shape[0]} x {grid.shape[1]} at {grid.res:g} m "
+                f"({n_search * p.N_theta:,} searchable states)")
+            terrain = preprocess(grid, start, goal, p, exclude, run_dir)
+            if region_mask is not None:
+                terrain.clip = region_mask
+                write_raster(run_dir / "clip_region.tif", region_mask, grid, nodata=255)
+            record["preprocess"] = terrain.info
+            timings["preprocess_s"] = time.time() - t0
+        except (EndpointError, ExclusionError, ConnectivityError, MemoryError) as exc:
+            return fail(exc)
+
+        t0 = time.time()
+        prob = make_problem(terrain, p)
+        timings["hairpin_table_s"] = time.time() - t0
+        t0 = time.time()
+        it = fill_price_iteration(prob, terrain.start_rc, terrain.goal_rc)
+        timings["fill_price_iteration_s"] = time.time() - t0
+        record["fill_price_iteration"] = [h.__dict__ for h in it.history]
+        it, overlap_rounds, overlap_blocked = avoid_self_overlap(prob, terrain.start_rc, terrain.goal_rc, it,
+                                                                 log=log)
+        record["self_overlap_rounds"] = overlap_rounds
+        if overlap_blocked.any():
+            write_raster(run_dir / "overlap_blocked.tif", overlap_blocked, grid, nodata=255)
+        explored = it.last_search.min_over_headings(closed_only=True) if it.last_search else None
+        it.last_search = None
+        if it.best is None:
+            return fail(ConnectivityError("no feasible route on the lattice (all edges infeasible somewhere "
+                                          "between the endpoints)"))
+        allowed = region_mask if region_mask is not None else np.ones(prob.open_.shape, bool)
+        if clip != "none" and touches_boundary(prob, it.best.edges, terrain.start_rc, allowed):
+            record.setdefault("clip_warnings", []).append(
+                f"attempt {attempts}: best route reaches the clip boundary (buffer {buffer:g} m)")
+            log(record["clip_warnings"][-1])
+            if clip == "auto" and attempts < 2:
+                buffer *= 2
+                continue
+        break
+
+    t0 = time.time()
+    fields = corridor_fields(prob, terrain.start_rc, terrain.goal_rc)
+    timings["corridor_fields_s"] = time.time() - t0
+    alts = alternatives(prob, fields, terrain.start_rc, log=log)
+    routes = []
+    for k, a in enumerate(alts):
+        segs = evaluate_route(prob, a.edges)
+        routes.append(RankedRoute(k, a.via, a.edges, segs, true_cost(segs, p), prob.lam_fill, p))
+    routes.sort(key=lambda r: (r.cost.total, r.route_id))
+    timings["alternatives_s"] = time.time() - t0 - timings["corridor_fields_s"]
+
+    write_field_rasters(run_dir, grid, fields, explored)
+    write_corridor_tree(run_dir, prob, fields)
+    conflicts = write_vectors(out, grid, run_id, routes, prob)
+    quicklook(run_dir / "quicklook.png", terrain, fields, routes, prob, p,
+              f"run {run_id}: {grid.res:g} m, N_theta={p.N_theta}, clip={clip}")
+    record["routes"] = [{"rank": i + 1, "route_id": r.route_id, "via_rc": list(r.via),
+                         "cost_true": r.cost.total, "cost_surrogate": r.cost.surrogate,
+                         "length_m": sum(s.length for s in r.segments),
+                         "hairpins": sum(s.section_type == "hairpin" for s in r.segments),
+                         "conflicts": conflicts[r.route_id]} for i, r in enumerate(routes)]
+    record["corridor_F_min"] = fields.F_min
+    record["lam_fill_final"] = prob.lam_fill
+    timings["total_s"] = time.time() - t_start
+    record["timings"] = timings
+    write_params_json(run_dir, record)
+    for r in record["routes"]:
+        log(f"  rank {r['rank']}: true cost {r['cost_true']:,.0f} (surrogate {r['cost_surrogate']:,.0f}), "
+            f"{r['length_m']:,.0f} m, {r['hairpins']} hairpins, {r['conflicts']} conflicts")
+    return record

@@ -1,0 +1,10 @@
+# Red Mountain example (data/topo_redmtn.tif, NAD83 / UTM 13N, meters; elevations in meters).
+# Overrides params.toml; everything not set here keeps its default.
+w = 9.0               # road width (m)
+g_max = 0.06          # maximum grade
+R_min = 10.0          # minimum centerline turn radius (m); also the keyhole hairpins' reverse curves
+w_hp = 11.0           # width through hairpins: the road width plus 2 m, as in the defaults (5 m -> 7 m)
+
+# No operating costs: least construction cost only.
+C_travel = 0.0
+C_vertical = 0.0

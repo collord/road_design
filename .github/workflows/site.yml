@@ -1,0 +1,107 @@
+# Builds the example site from examples.toml: one job per example run (the
+# slowest takes 1-2 hours), then every example's viewer and a landing page,
+# deployed to GitHub Pages. Runs are cached by the code, parameters, examples
+# and DEMs, so a rebuild with none of those changed only regenerates the viewers.
+name: Site
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "roadsearch/**"
+      - "params*.toml"
+      - "examples.toml"
+      - "data/**"
+      - "constraints.txt"
+      - ".github/workflows/site.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - id: matrix
+        # One job per example run: each example's swept values in examples.toml.
+        run: echo "matrix=$(python -c 'from roadsearch.examples import run_matrix; print(run_matrix())')" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: ${{ matrix.example }} ${{ matrix.value }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install
+        run: pip install -c constraints.txt -e .
+      - name: Restore a finished run
+        uses: actions/cache@v4
+        with:
+          path: out-run
+          key: run-${{ matrix.example }}-${{ matrix.value }}-${{ hashFiles('roadsearch/**/*.py', 'params*.toml', 'examples.toml', 'data/**', 'constraints.txt') }}
+      - name: Run
+        run: python -m roadsearch example "${{ matrix.example }}" --k "${{ matrix.value }}" --out out-run --no-viewer
+      - uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ matrix.example }}-${{ matrix.value }}
+          path: out-run
+          retention-days: 7
+
+  site:
+    needs: run
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install
+        run: pip install -c constraints.txt -e .
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: run-*
+          path: parts
+      - name: Merge each example's runs
+        run: |
+          for name in $(python -c "from roadsearch.examples import load_examples; print(' '.join(load_examples()))"); do
+            python -m roadsearch merge parts/run-"$name"-* --out "out-$name"
+          done
+      - name: Build the viewers and landing page (reuses every run)
+        run: python -m roadsearch site --dest site --repo-url "${{ github.server_url }}/${{ github.repository }}"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: site
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
