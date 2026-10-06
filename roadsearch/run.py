@@ -25,6 +25,7 @@ from .preprocess import ConnectivityError, EndpointError, preprocess
 from .quicklook import quicklook
 from .route import Segment, evaluate_route, stacked_leg_conflicts
 from .search import make_problem, path_xy, reconstruct, run_search
+from .timing import stage
 from .terrain import NICE_RESOLUTIONS, Grid, inspect_dem, load_grid, parse_point, write_raster
 
 
@@ -37,6 +38,22 @@ class RankedRoute:
     cost: TrueCost
     lam_fill: float
     params: Params
+
+
+# Parameters added after runs were made: left out of the run id at their default, so the
+# ids (and the reuse of finished runs) of runs made before them don't change.
+_LATER_PARAMS = {"C_turn": 0.0}
+
+
+def _id_params(p: Params) -> dict:
+    d = p.to_dict()
+    for k, v in _LATER_PARAMS.items():
+        if d.get(k) == v:
+            d.pop(k, None)
+    if d.get("alt_method") == "via":       # the original method: ids as before it had a name
+        d.pop("alt_method", None)
+        d.pop("alt_plateau", None)
+    return d
 
 
 def make_run_id(payload: dict) -> str:
@@ -101,10 +118,14 @@ def coarse_corridor(dem, p: Params, start, goal, exclude, coarse_res, log):
         bounds = (min(start[0], goal[0]) - margin, min(start[1], goal[1]) - margin,
                   max(start[0], goal[0]) + margin, max(start[1], goal[1]) + margin)
         res = coarse_res or resolution_for(bounds, p)
-        grid, ginfo = load_grid(dem, p, res, bounds)
-        t = preprocess(grid, start, goal, p, exclude)
-        prob = make_problem(t, p)
-        a = run_search(prob, t.start_rc, t.goal_rc, astar=True)
+        with stage("load and preprocess"):
+            grid, ginfo = load_grid(dem, p, res, bounds)
+            t = preprocess(grid, start, goal, p, exclude)
+        with stage("hairpin and bend tables"):
+            prob = make_problem(t, p)
+        with stage("A* search", resolution_m=float(grid.res)) as row:
+            a = run_search(prob, t.start_rc, t.goal_rc, astar=True)
+            row["settled"] = int(a.n_expanded)
         if a.goal_state is None:
             raise ConnectivityError(
                 f"coarse search ({res:g} m, margin {margin:g} m) found no route; "
@@ -115,7 +136,8 @@ def coarse_corridor(dem, p: Params, start, goal, exclude, coarse_res, log):
         log(f"coarse route reaches the edge of the {margin:g} m box; doubling the margin")
         margin *= 2
     thr = (1 + p.eps_alt) * (1 + p.clip_slack) * a.goal_cost
-    fields = corridor_fields(prob, t.start_rc, t.goal_rc, max_cost=thr * (1 + 1e-9))
+    with stage("corridor fields"):
+        fields = corridor_fields(prob, t.start_rc, t.goal_rc, max_cost=thr * (1 + 1e-9))
     region = fields.F <= thr
     dist = ndimage.distance_transform_edt(~region) * grid.res
     region = dist <= p.clip_buffer
@@ -137,7 +159,28 @@ def touches_boundary(prob, edges, start_rc, allowed: np.ndarray) -> bool:
 def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", resolution=None,
         clip="none", clip_margin=1000.0, coarse_res=None, run_id=None, endpoint_crs=None,
         log=print, reuse=False) -> dict:
-    """One full run. With reuse, a run with the same inputs that already finished is returned as is."""
+    """One full run. With reuse, a run with the same inputs that already finished is returned as is.
+
+    Stages are timed (roadsearch.timing): the profile is saved in params.json and logged."""
+    from . import timing
+
+    prof = timing.start()
+    try:
+        with timing.stage("run"):
+            rec = _run(dem, start_txt, goal_txt, p, exclude, out, resolution, clip, clip_margin, coarse_res,
+                       run_id, endpoint_crs, log, reuse)
+    finally:
+        timing.stop()
+    if "timings" in rec and "profile" not in rec:
+        rec["profile"] = prof.rows
+        write_params_json(Path(out) / "runs" / rec["run_id"], rec)
+        log("time by stage:" + chr(10) + prof.table())
+    return rec
+
+
+def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", resolution=None,
+         clip="none", clip_margin=1000.0, coarse_res=None, run_id=None, endpoint_crs=None,
+         log=print, reuse=False) -> dict:
     t_start = time.time()
     out = Path(out)
     timings = {}
@@ -151,7 +194,7 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
     exclude = [normalize_spec(e) for e in exclude]
     inputs = {"dem": dem_info["path"], "start": start, "goal": goal, "exclude": exclude,
               "resolution": resolution, "clip": clip, "clip_margin": clip_margin,
-              "coarse_res": coarse_res, "params": p.to_dict()}
+              "coarse_res": coarse_res, "params": _id_params(p)}
     if exclude:
         # Zone files are identified by their contents too, so an edited file is a new run.
         inputs["exclude_sha256"] = [hashlib.sha256(Path(split_spec(e)[0]).read_bytes()).hexdigest()[:16]
@@ -189,7 +232,8 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
             elif clip == "auto":
                 t0 = time.time()
                 pc = dataclasses.replace(p, clip_buffer=buffer)
-                cgrid, cregion, cinfo, cfields = coarse_corridor(dem, pc, start, goal, exclude, coarse_res, log)
+                with stage('coarse pass'):
+                    cgrid, cregion, cinfo, cfields = coarse_corridor(dem, pc, start, goal, exclude, coarse_res, log)
                 timings["coarse_s"] = time.time() - t0
                 record["coarse"] = cinfo
                 write_raster(run_dir / "coarse_corridor_field.tif",
@@ -200,7 +244,8 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
             else:
                 raise ValueError(f"unknown clip mode {clip!r}")
             t0 = time.time()
-            grid, ginfo = load_grid(dem, p, res, bounds)
+            with stage('fine: load the grid'):
+                grid, ginfo = load_grid(dem, p, res, bounds)
             check_memory(grid, p)
             if clip == "auto":
                 region_mask = _resample_mask(cgrid, cregion, grid)
@@ -208,7 +253,8 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
             n_search = int(region_mask.sum()) if region_mask is not None else grid.shape[0] * grid.shape[1]
             log(f"working grid {grid.shape[0]} x {grid.shape[1]} at {grid.res:g} m "
                 f"({n_search * p.N_theta:,} searchable states)")
-            terrain = preprocess(grid, start, goal, p, exclude, run_dir)
+            with stage('fine: preprocess'):
+                terrain = preprocess(grid, start, goal, p, exclude, run_dir)
             if region_mask is not None:
                 terrain.clip = region_mask
                 write_raster(run_dir / "clip_region.tif", region_mask, grid, nodata=255)
@@ -218,14 +264,18 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
             return fail(exc)
 
         t0 = time.time()
-        prob = make_problem(terrain, p)
+        with stage('fine: hairpin and bend tables'):
+            prob = make_problem(terrain, p)
         timings["hairpin_table_s"] = time.time() - t0
         t0 = time.time()
-        it = fill_price_iteration(prob, terrain.start_rc, terrain.goal_rc)
+        with stage('fine: A* with fill-price repeats'):
+            it = fill_price_iteration(prob, terrain.start_rc, terrain.goal_rc)
         timings["fill_price_iteration_s"] = time.time() - t0
         record["fill_price_iteration"] = [h.__dict__ for h in it.history]
-        it, overlap_rounds, overlap_blocked = avoid_self_overlap(prob, terrain.start_rc, terrain.goal_rc, it,
-                                                                 log=log)
+        with stage("self-overlap avoidance") as row:
+            it, overlap_rounds, overlap_blocked = avoid_self_overlap(prob, terrain.start_rc, terrain.goal_rc, it,
+                                                                     log=log)
+            row["rounds"] = len(overlap_rounds)
         record["self_overlap_rounds"] = overlap_rounds
         if overlap_blocked.any():
             write_raster(run_dir / "overlap_blocked.tif", overlap_blocked, grid, nodata=255)
@@ -245,21 +295,28 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
         break
 
     t0 = time.time()
-    fields = corridor_fields(prob, terrain.start_rc, terrain.goal_rc)
+    with stage('corridor fields (two full Dijkstra)'):
+        fields = corridor_fields(prob, terrain.start_rc, terrain.goal_rc)
     timings["corridor_fields_s"] = time.time() - t0
-    alts = alternatives(prob, fields, terrain.start_rc, log=log)
+    with stage('alternatives'):
+        alts = alternatives(prob, fields, terrain.start_rc, log=log)
     routes = []
-    for k, a in enumerate(alts):
-        segs = evaluate_route(prob, a.edges)
-        routes.append(RankedRoute(k, a.via, a.edges, segs, true_cost(segs, p), prob.lam_fill, p))
+    with stage("true costs of the routes", routes=len(alts)):
+        for k, a in enumerate(alts):
+            segs = evaluate_route(prob, a.edges)
+            routes.append(RankedRoute(k, a.via, a.edges, segs, true_cost(segs, p), prob.lam_fill, p))
     routes.sort(key=lambda r: (r.cost.total, r.route_id))
     timings["alternatives_s"] = time.time() - t0 - timings["corridor_fields_s"]
 
-    write_field_rasters(run_dir, grid, fields, explored)
-    write_corridor_tree(run_dir, prob, fields)
-    conflicts = write_vectors(out, grid, run_id, routes, prob)
-    quicklook(run_dir / "quicklook.png", terrain, fields, routes, prob, p,
-              f"run {run_id}: {grid.res:g} m, N_theta={p.N_theta}, clip={clip}")
+    with stage('write field rasters'):
+        write_field_rasters(run_dir, grid, fields, explored)
+    with stage('write corridor tree'):
+        write_corridor_tree(run_dir, prob, fields)
+    with stage('write vectors (and conflict checks)'):
+        conflicts = write_vectors(out, grid, run_id, routes, prob)
+    with stage("quick-look image"):
+        quicklook(run_dir / "quicklook.png", terrain, fields, routes, prob, p,
+                  f"run {run_id}: {grid.res:g} m, N_theta={p.N_theta}, clip={clip}")
     record["routes"] = [{"rank": i + 1, "route_id": r.route_id, "via_rc": list(r.via),
                          "cost_true": r.cost.total, "cost_surrogate": r.cost.surrogate,
                          "length_m": sum(s.length for s in r.segments),

@@ -153,8 +153,12 @@ def evaluate_polyline(T: RunTerrain, xy, p: Params | None = None) -> dict:
         "full_bench_m": float(w[good & (sec[:, 0] == FULL_BENCH)].sum()),
         "max_catch": float(sec[good, 7].max()) if good.any() else 0.0,
     }
+    # Turning: the change in direction between consecutive samples (at the line's vertices).
+    ang = np.arctan2(tan[:, 1], tan[:, 0])
+    dth = np.abs((np.diff(ang) + np.pi) % (2 * np.pi) - np.pi)
+    tot["turning"] = float(dth.sum())
     tot["construction"] = tot["base"] + tot["earthwork"] + tot["culvert_cost"]
-    tot["operating"] = p.C_travel * length + p.C_vertical * vertical
+    tot["operating"] = p.C_travel * length + p.C_vertical * vertical + p.C_turn * tot["turning"]
     tot["total"] = tot["construction"] + tot["operating"]
     return tot
 

@@ -104,7 +104,8 @@ def cmd_sweep(args) -> int:
         for k in ks:
             # Rounded so that k x the unit cost hashes like the same value typed on the command line.
             variants.append((dataclasses.replace(p, C_travel=float(f"{k * p.C_travel:.12g}"),
-                                                 C_vertical=float(f"{k * p.C_vertical:.12g}")), f"k={k:g}", k, []))
+                                                 C_vertical=float(f"{k * p.C_vertical:.12g}"),
+                                                 C_turn=float(f"{k * p.C_turn:.12g}")), f"k={k:g}", k, []))
     for spec in args.extra:
         # "LABEL|NAME=V,NAME=V[|exclude=FILE[|WHERE]]": one more run beside the sweep, e.g.
         # "20 m, 8% grade|R_min=20,g_max=0.08", optionally with more exclusion zones.

@@ -40,7 +40,7 @@ def run_js(tmp_path, body: str, data) -> dict:
 
 def js_params(p) -> dict:
     return {"sp": section_params(p)._asdict(), "d0": p.d0, "S0": p.S0, "g_max": p.g_max, "R_min": p.R_min,
-            "C_travel": p.C_travel, "C_vertical": p.C_vertical,
+            "C_travel": p.C_travel, "C_vertical": p.C_vertical, "C_turn": p.C_turn,
             "culvert_area_breaks": list(p.culvert_area_breaks), "culvert_costs": list(p.culvert_costs)}
 
 
@@ -144,7 +144,7 @@ def test_python_polyline_costing_matches_the_browser(tmp_path):
 
     from roadsearch.polyline import RunTerrain, evaluate_polyline, sample_polyline
 
-    p = load_params(overrides={"A_min": 0.3, "C_travel": 2.0, "C_vertical": 30.0})
+    p = load_params(overrides={"A_min": 0.3, "C_travel": 2.0, "C_vertical": 30.0, "C_turn": 50.0})
     rr, cc = np.mgrid[0:80, 0:80]
     z = random_terrain(3, n=80, relief=8.0) + 0.3 * np.abs(cc - 40) + 0.05 * rr
     g = make_grid(z, 5.0)
@@ -166,7 +166,7 @@ def test_python_polyline_costing_matches_the_browser(tmp_path):
     js = run_js(tmp_path, """
 const T = E.makeTerrain(D.T);
 console.log(JSON.stringify(E.costSamples(T, D.P, D.S, D.a, D.b, D.L).tot));""", data)
-    assert py["culverts"] > 0 and py["over_grade_m"] > 0
+    assert py["culverts"] > 0 and py["over_grade_m"] > 0 and py["turning"] > 1.0
     for k in ("length", "base", "earthwork", "culverts", "culvert_cost", "soil_m3", "rock_m3", "fill_m3", "vertical",
-              "over_grade_m", "excluded_m", "infeasible_m", "construction", "operating", "total"):
+              "over_grade_m", "excluded_m", "infeasible_m", "turning", "construction", "operating", "total"):
         assert py[k] == pytest.approx(js[k], rel=1e-9, abs=1e-6), k

@@ -53,6 +53,8 @@ haul_max = 500.0      # maximum economic haul distance along route (m)
 # Both 0 = construction cost only (the brief).
 C_travel = 0.0        # per meter of route length
 C_vertical = 0.0      # per meter of rise or fall along the road profile
+C_turn = 0.0          # per radian of change in heading (each curve, bend and hairpin): vehicles
+                      # braking and re-accelerating. An operating cost, scaled by k with the others.
 
 # --- Drainage ----------------------------------------------------------------
 A_min = 2.0                         # contributing area defining a channel (ha)
@@ -79,6 +81,11 @@ alt_window = 0.25     # local-optimality test: window either side of the via poi
 alt_local_tol = 0.02  # ... whose path may cost at most this fraction more than the
                       # cheapest path between the window ends
 alt_max_tries = 1000  # candidate via points examined at most
+alt_method = "plateau" # how alternatives are found: "plateau" (stretches that are cheapest from both
+                       # ends, so locally optimal by construction) or "via" (via cells, each checked
+                       # with its own A* search: the original method, much slower)
+alt_plateau = 0.10     # plateau method: an alternative's plateau must cost at least this fraction of the
+                       # best route, i.e. the route is optimal over any window that short
 
 # --- Preprocessing (additions not in the brief's table) ---------------------
 smooth_sigma = 0.0    # Gaussian sigma for the smoothed DEM (m); 0 means use w

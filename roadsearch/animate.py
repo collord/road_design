@@ -93,7 +93,7 @@ def _routes(run_id: str, out_root: Path, F_min: float, width: float = 0.0) -> li
             "rank": int(s["rank"]), "cost": get("cost_true"),
             "construction": get("cost_construction", get("cost_true")), "operating": get("cost_operating"),
             "length": get("length"), "vertical": get("vertical_travel", get("total_climb") + get("total_descent")),
-            "climb": get("total_climb"), "descent": get("total_descent"),
+            "climb": get("total_climb"), "descent": get("total_descent"), "turning_deg": get("turning_deg"),
             "hairpins": int(s["hairpin_count"]), "bends": int(get("bend_count")),
             "crossings": int(s["fill_crossing_count"] + s["at_grade_crossing_count"]),
             "rel": (get("cost_surrogate") - F_min) / F_min, "self_overlaps": overlaps,
@@ -154,7 +154,7 @@ def run_data(run_dir: str | Path, out_root: str | Path) -> dict:
 
     pp = load_params(overrides=p)
     evaluator = {"sp": section_params(pp)._asdict(), "d0": pp.d0, "S0": pp.S0, "g_max": pp.g_max, "R_min": pp.R_min,
-                 "w": pp.w, "C_travel": pp.C_travel, "C_vertical": pp.C_vertical,
+                 "w": pp.w, "C_travel": pp.C_travel, "C_vertical": pp.C_vertical, "C_turn": pp.C_turn,
                  "culvert_area_breaks": list(pp.culvert_area_breaks), "culvert_costs": list(pp.culvert_costs)}
     return {
         "run_id": run_id, "w": w, "h": h, "res": res, "x0": tr.c, "y0": tr.f,
@@ -165,7 +165,7 @@ def run_data(run_dir: str | Path, out_root: str | Path) -> dict:
         "n_astar": int(np.isfinite(g_ast).sum()), "n_fwd": int(np.isfinite(g_f).sum()),
         "n_bwd": int(np.isfinite(g_b).sum()), "cells": int(h * w),
         "n_corridor": int((np.nan_to_num(F_rel, nan=np.inf) <= p["eps_alt"]).sum()),
-        "params": {k: p[k] for k in ("w", "g_max", "R_min", "R_hp", "N_theta", "C_base", "C_travel", "C_vertical")
+        "params": {k: p[k] for k in ("w", "g_max", "R_min", "R_hp", "N_theta", "C_base", "C_travel", "C_vertical", "C_turn")
                    if k in p},
         # Shaded from the unsmoothed working DEM: the search reads the smoothed one, but the map
         # should show the ground's detail when zoomed in.

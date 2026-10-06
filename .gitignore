@@ -32,3 +32,4 @@ Thumbs.db
 
 # GDAL sidecar files
 *.aux.xml
+/topo_stibnite.tif

@@ -16,7 +16,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-KEY_PARAMS = ("w", "g_max", "R_min", "R_hp", "w_hp", "C_base", "C_travel", "C_vertical", "N_theta")
+KEY_PARAMS = ("w", "g_max", "R_min", "R_hp", "w_hp", "g_hp", "C_base", "C_travel", "C_vertical", "C_turn", "N_theta")
 
 
 def _label(params: dict, varying: list[str], exclude: list[str]) -> str:

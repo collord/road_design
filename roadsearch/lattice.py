@@ -334,6 +334,7 @@ class LatticeArrays:
     by_heading: np.ndarray   # (n_theta, max_out) action indices, -1 padded
     kind: np.ndarray         # ACTION_PRIM, ACTION_HP_*, ACTION_FILL or ACTION_BEND_*
     slot: np.ndarray         # hairpin leg-spacing slot or bend slot (0 for other actions)
+    turn: np.ndarray | None = None   # change in heading, radians (|h1 - h0|; pi for a hairpin)
 
     @property
     def n_prims(self) -> int:
@@ -452,6 +453,11 @@ def lattice_arrays(n_theta: int, R_min_cells: float, hp_slots: np.ndarray | None
     for h, lst in enumerate(out):
         by_heading[h, :len(lst)] = lst
     i64 = lambda a: np.array(a, dtype=np.int64)  # noqa: E731
+    ang = heading_angles(n_theta)
+    d = ang[i64(h1)] - ang[i64(h0)]
+    turn = np.abs((d + np.pi) % (2 * np.pi) - np.pi)
+    turn[np.isin(i64(kind), [ACTION_HP_LEFT, ACTION_HP_RIGHT])] = np.pi
+    turn = np.minimum(turn, turn[i64(rev)])     # bit-identical both ways (the search relies on it)
     return LatticeArrays(
         n_theta, prims,
         h0=i64(h0), h1=i64(h1), dr=i64(dr), dc=i64(dc),
@@ -459,5 +465,5 @@ def lattice_arrays(n_theta: int, R_min_cells: float, hp_slots: np.ndarray | None
         rev=i64(rev), s0=i64(s0), ns=i64(ns),
         sdr=-pts[:, 1].copy(), sdc=pts[:, 0].copy(),
         tx=tans[:, 0].copy(), ty=tans[:, 1].copy(),
-        by_heading=by_heading, kind=i64(kind), slot=i64(slot),
+        by_heading=by_heading, kind=i64(kind), slot=i64(slot), turn=turn,
     )

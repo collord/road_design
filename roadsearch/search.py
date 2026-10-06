@@ -102,7 +102,7 @@ class SearchProblem:
     def lat_tuple(self):
         L = self.lat
         return (L.h0, L.h1, L.dr, L.dc, L.length, L.rev, L.s0, L.ns,
-                L.sdr, L.sdc, L.tx, L.ty, L.by_heading, L.kind, L.slot)
+                L.sdr, L.sdc, L.tx, L.ty, L.by_heading, L.kind, L.slot, L.turn)
 
     def terr_tuple(self):
         c = self.cost
@@ -115,7 +115,7 @@ class SearchProblem:
                 np.array(p.culvert_costs, dtype=np.float64),
                 float(lam), p.w, p.f_rock, p.H_fill_max, p.fill_tol,
                 self.bend if self.bend is not None else np.full((1, 1, 1, 1), np.inf, dtype=np.float32),
-                p.C_travel, p.C_vertical)
+                p.C_travel, p.C_vertical, p.C_turn)
 
 
 def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool = True,
@@ -132,18 +132,22 @@ def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool =
         chdist = ndimage.distance_transform_edt(channel == 0).astype(np.float64)
     else:
         chdist = np.full(channel.shape, np.inf)
+    from .timing import stage
+
     slots = hairpin_slots(p, g.res) if hairpins else None
     z_raw = np.ascontiguousarray(g.z, dtype=np.float64)
     if hairpins:
-        hp = hairpin_table((open_, zs, gx, gy, soil, z_raw), p, g.res, (channel, area))
+        with stage("hairpin table", cells=int(open_.sum())):
+            hp = hairpin_table((open_, zs, gx, gy, soil, z_raw), p, g.res, (channel, area))
     else:
         hp = np.full((1, 1, 1, 1), np.inf, dtype=np.float32)
     bend_geo = bend = None
     if bends:
         from .bend import bend_geometry, bend_table
 
-        bend_geo = bend_geometry(p, g.res)
-        bend = bend_table((open_, zs, gx, gy, soil, z_raw), p, g.res, bend_geo, (channel, area))
+        with stage("bend table"):
+            bend_geo = bend_geometry(p, g.res)
+            bend = bend_table((open_, zs, gx, gy, soil, z_raw), p, g.res, bend_geo, (channel, area))
     return SearchProblem(
         nr=g.shape[0], nc=g.shape[1], open_=open_, gx=gx, gy=gy, zs=zs, soil=soil,
         z_raw=z_raw, channel=channel, area=area, chdist=chdist,
@@ -213,7 +217,7 @@ def _eval_fill(r, c, p, lat, terr):
     p_len = lat[4]
     (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base,
      z_raw, channel, area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel,
-     C_vert) = terr
+     C_vert, C_turn) = terr
     nr, nc = open_.shape
     Lc = p_len[p]
     if chdist[r, c] > Lc:
@@ -345,10 +349,10 @@ def culvert_charges(r, c, p, lat, terr):
 def _eval_action(r, c, p, lat, terr):
     """Cost of action p from node (r, c), in its own direction; inf if infeasible."""
     (p_h0, p_h1, p_dr, p_dc, p_len, p_rev, p_s0, p_ns, sdr, sdc, stx, sty, by_heading, p_kind,
-     p_slot) = lat
+     p_slot, p_turn) = lat
     (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base,
      z_raw, channel, area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel,
-     C_vert) = terr
+     C_vert, C_turn) = terr
     nr, nc = open_.shape
     kind = p_kind[p]
     if kind == ACTION_HP_LEFT or kind == ACTION_BEND_L:
@@ -415,13 +419,16 @@ def _eval_action(r, c, p, lat, terr):
 
 @numba.njit(cache=True)
 def edge_cost(r, c, p, lat, terr):
-    """Cost of action p from (r, c), evaluated in canonical direction."""
+    """Cost of action p from (r, c), evaluated in canonical direction, plus its turning
+    cost (C_turn per radian of heading change: the same both ways, never negative)."""
     p_dr = lat[2]
     p_dc = lat[3]
     q = lat[5][p]
     if q < p:
-        return _eval_action(r + p_dr[p], c + p_dc[p], q, lat, terr)
-    return _eval_action(r, c, p, lat, terr)
+        cost = _eval_action(r + p_dr[p], c + p_dc[p], q, lat, terr)
+    else:
+        cost = _eval_action(r, c, p, lat, terr)
+    return cost + terr[25] * lat[15][p]
 
 
 @numba.njit(cache=True, inline="always")

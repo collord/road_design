@@ -63,7 +63,8 @@ class Segment:
     cost_culvert: float = 0.0
     culvert_area_ha: float = 0.0
     vertical_travel: float = 0.0    # rise + fall along the profile (m)
-    cost_operating: float = 0.0     # C_travel * length + C_vertical * vertical_travel
+    turning: float = 0.0            # change in heading (radians)
+    cost_operating: float = 0.0     # C_travel * length + C_vertical * vertical_travel + C_turn * turning
     extra: dict = field(default_factory=dict)
 
     @property
@@ -79,7 +80,9 @@ def evaluate_edge(prob: SearchProblem, seq: int, r: int, c: int, a: int) -> Segm
     """Exact construction quantities and costs of one edge, plus its operating cost."""
     seg = _construction(prob, seq, r, c, a)
     seg.vertical_travel = vertical_travel(prob, r, c, a)
-    seg.cost_operating = prob.params.C_travel * seg.length + prob.params.C_vertical * seg.vertical_travel
+    seg.turning = float(prob.lat.turn[a])
+    p = prob.params
+    seg.cost_operating = p.C_travel * seg.length + p.C_vertical * seg.vertical_travel + p.C_turn * seg.turning
     return seg
 
 

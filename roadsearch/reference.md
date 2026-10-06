@@ -50,7 +50,7 @@ The ground is read from a DEM smoothed at the road's width, so slopes are those 
 The cost per meter of road is:
 
 - **Construction:** grading and surfacing (`C_base`), plus cut in soil and rock, plus culverts. Hairpins, bends and fill crossings carry their whole footprint's earthwork, plus any retaining walls.
-- **Operating:** if switched on, `C_travel` per meter of road and `C_vertical` per meter of rise or fall. That is the truck costs over the road's life; maintenance, tires, brakes and fleet size are assumed to scale with them, through the weight k.
+- **Operating:** if switched on, `C_travel` per meter of road, `C_vertical` per meter of rise or fall, and `C_turn` per radian of change in heading (each curve, bend and hairpin makes every vehicle brake and re-accelerate). That is the truck costs over the road's life; maintenance, tires, brakes and fleet size are assumed to scale with them, through the weight k.
 
 Units are relative: excavating 1 m³ of soil costs 1. Only ratios change the route.
 
@@ -108,15 +108,14 @@ The corridor field drives:
 
 ## 6. Alternatives, and from network cost to true cost
 
-Alternatives are read from the corridor field, one at a time:
+Alternatives come from **plateaus** of the two full searches. A plateau is a stretch of road that is in both search trees: the cheapest way to reach its far end from the start *and* the cheapest way to reach its near end from the goal. A route that follows the start's tree to a plateau, runs along it, and follows the goal's tree from there is therefore optimal over any window shorter than the plateau. It cannot be a detour out to some point and back, the classic flaw of naive alternatives, and that takes no extra search to show.
 
-1. Take the cell with the lowest corridor cost that is at least `D_alt` (100 m) from every route already chosen and within `eps_alt` (25%) of the best cost.
-2. Build the route through it from the two searches.
-3. Reject it if it shares more than half its length with a chosen route, or if it overlaps itself.
-4. Reject it if it is not locally optimal. Within a window either side of the via cell, its path must cost at most 2% more than the cheapest path between the window ends, found with A\*. This throws out routes that copy the best route and detour out to the via cell and back.
-5. Stop at `K_alt` (5) routes or 1,000 candidates.
+1. Find every plateau, in one pass over the two trees. The best route is a single plateau from start to goal.
+2. Keep plateaus whose route costs at most `eps_alt` (25%) more than the best, and whose own cost is at least `alt_plateau` (10%) of the best.
+3. Take them cheapest route first. Skip one whose middle is within `D_alt` (100 m) of a route already chosen. Reject one that shares more than half its length with a chosen route, or that overlaps itself.
+4. Stop at `K_alt` (5) routes.
 
-A prefilter skips via cells whose route would mostly follow the best route, worked out for every cell at once from the two search trees.
+The original method (`alt_method = "via"`) takes via cells by corridor cost, and checks each candidate with its own A\* search between the ends of a window around the via cell. It finds similar routes but is much slower: in one Red Mountain run, those checks were half the run time.
 
 The network prices crossing fill at one flat rate per m³. Each finished route is then costed exactly, and routes are ranked by that **true cost**:
 

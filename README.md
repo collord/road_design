@@ -71,6 +71,7 @@ The brief minimizes construction cost. For roads that trucks will use for years,
 
 - `C_travel`: cost per meter of route length, for the trucks' whole life on the road.
 - `C_vertical`: cost per meter of **total vertical travel** (rise plus fall along the profile).
+- `C_turn`: cost per radian of **change in heading**: every curve, bend and hairpin, for the braking and re-accelerating it costs each vehicle. A wiggle pays for both its turns, so needless S-curves stop being free.
 
 Only the total vertical travel matters. Trucks may pay different rates climbing and descending, loaded and empty, but a route's climb minus its descent is fixed by its endpoints, so for any route:
 
@@ -81,7 +82,7 @@ The second term is the same for every route. So, over N round trips:
     C_vertical = N · (c_up,loaded + c_down,loaded + c_up,empty + c_down,empty) / 2
     C_travel   = N · (c_per_m,loaded + c_per_m,empty)
 
-This penalizes routes that lose elevation and regain it: diesel to climb back, brakes to come down. It also keeps the cost the same in both directions, which the bidirectional search needs. Both default to 0. Segments and route summaries report `cost_construction`, `cost_operating` and `vertical_travel` separately, and routes are ranked by the sum.
+This penalizes routes that lose elevation and regain it: diesel to climb back, brakes to come down. It also keeps the cost the same in both directions, which the bidirectional search needs. All three default to 0, and `sweep --k` scales all three. Segments and route summaries report `cost_construction`, `cost_operating`, `vertical_travel` and `turning_deg` separately, and routes are ranked by the sum. `params_haul.toml` gives a crude haul-truck value for `C_turn` (8,000 per radian at k = 1), commented out so the haul-road example is unchanged.
 
 `params_haul.toml` sets both for one truck over 5 years (diesel only, unconfirmed $4 per cost unit). Road maintenance, tires, brakes and fleet size are all taken to scale with these per-meter costs, so they are covered by a single weight k:
 
@@ -174,11 +175,9 @@ On a plane the burned cut and fill match the section model within 4%. On real te
 - **Cut catch cap** — `catch_max`, default 50 m. A cut that would daylight beyond 50 m is clipped there. This bounds the cost spike as s → `c_soil`, where a soil backslope never reaches the ground.
 - **Culverts** — one culvert per run of channel cells crossed. A run that starts or ends at a node is charged half by each of the two edges meeting there, so it is paid once and costs the same in both directions.
 - **Fill crossings** — the design runs between raw-DEM elevations at the end nodes, and fill may dip `fill_tol` (0.25 m) below ground.
-- **Alternatives** — the brief's via-cell rule is applied, plus two filters:
-  - **Overlap prefilter.** Computed from both search trees for every cell at once: via cells whose route would follow the best route for more than 70% of its cost are skipped without reconstruction. The exact half-the-length rule is still checked on every candidate that gets through.
-  - **Local-optimality test**, from the alternative-route literature. Within `alt_window` × the best cost either side of the via point, a candidate's path may cost at most (1 + `alt_local_tol`) times the cheapest path between the window ends. That cheapest path is searched in a box around the window. This rejects routes that copy the best route and detour out to the via point and back, so on featureless terrain only the best route may be returned.
-
-  At most `alt_max_tries` candidates are examined.
+- **Alternatives** — taken from **plateaus** (`alt_method = "plateau"`, the default): stretches of road that are in both full search trees, so cheapest from both ends. A route through a plateau is optimal over any window shorter than the plateau, which rules out detours to a via point and back without any extra search. Plateaus must cost at least `alt_plateau` × the best cost. The usual rules then apply: at most `eps_alt` above the best, at least `D_alt` from chosen routes, at most half shared, no self-overlap.
+  - `alt_method = "via"` keeps the brief's via-cell rule with an overlap prefilter and a local-optimality test, which runs one A\* search per candidate (within `alt_window` × the best cost either side of the via point, the path may cost at most (1 + `alt_local_tol`) times the cheapest path between the window ends). It finds similar routes, but in a timed Red Mountain run those searches were half the run time.
+  - At most `alt_max_tries` candidates are examined.
 - **Nodata cells** are slope-excluded (code 1). The flood-fill connectivity check uses 4-connectivity, matching the search's rule that a road cannot pass diagonally between two excluded cells.
 - **pysheds 0.5 on NumPy 2.4** — `np.in1d` is aliased to `np.isin` in `roadsearch/flow.py`.
 

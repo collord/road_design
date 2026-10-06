@@ -25,7 +25,7 @@ ROUTE_COLUMNS = [
     "run_id", "route_id", "rank", "seq", "station_start", "length", "grade", "sidehill_slope",
     "terrain_slope", "soil_depth", "section_type", "cut_width", "fill_width", "cut_catch", "fill_toe",
     "cut_soil_m3", "cut_rock_m3", "fill_m3", "spoil_m3", "borrow_m3", "cost_base", "cost_earthwork",
-    "cost_culvert", "culvert_area_ha", "cost_construction", "vertical_travel", "cost_operating", "cost_total",
+    "cost_culvert", "culvert_area_ha", "cost_construction", "vertical_travel", "turning_deg", "cost_operating", "cost_total",
     "cost_surrogate",
 ]
 
@@ -59,6 +59,7 @@ def segment_rows(grid: Grid, run_id: str, route_id: int, rank: int, segs: list[S
             "borrow_m3": s.borrow_m3, "cost_base": s.cost_base, "cost_earthwork": earth,
             "cost_culvert": s.cost_culvert, "culvert_area_ha": s.culvert_area_ha,
             "cost_construction": s.cost_base + earth + s.cost_culvert, "vertical_travel": s.vertical_travel,
+            "turning_deg": math.degrees(s.turning),
             "cost_operating": s.cost_operating,
             "cost_total": s.cost_base + earth + s.cost_culvert + s.cost_operating,
             "cost_surrogate": s.cost_surrogate,
@@ -102,6 +103,7 @@ def summary_row(run_id, route_id, rank, route, conflicts, via_xy) -> dict:
         "cost_surrogate": tc.surrogate, "cost_true": tc.total,
         "cost_construction": tc.construction, "cost_operating": tc.operating,
         "vertical_travel": sum(s.vertical_travel for s in segs),
+        "turning_deg": math.degrees(sum(s.turning for s in segs)),
         "cost_base": tc.base, "cost_excavation": tc.excavation, "cost_culverts": tc.culverts,
         "cost_crossing_fill": tc.crossing_fill, "cost_haul": tc.mass.haul_cost,
         "cost_borrow_crossings": tc.mass.borrow_cost, "lam_fill": route.lam_fill,

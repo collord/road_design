@@ -1075,6 +1075,7 @@ __METHOD__
       ["Total", t.total, best.cost, short], ["Construction", t.construction, best.construction, short],
       ["Operating", t.operating, best.operating, short], ["Length", t.length, best.length, v => km(v)],
       ["Rise + fall", t.vertical, best.vertical, v => fmt(v) + " m"],
+      ["Turning", Number.isFinite(t.turning) ? t.turning * 180 / Math.PI : NaN, best.turning_deg, v => fmt(v) + "°"],
     ];
     const diff = (a, b, f) => !(Number.isFinite(a) && Number.isFinite(b)) ? "" :
       (a - b >= 0 ? "+" : "−") + f(Math.abs(a - b)).replace(/^−/, "");

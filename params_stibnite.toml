@@ -1,0 +1,13 @@
+# Stibnite example (topo_stibnite.tif, NAD83 / UTM 11N, meters; elevations in meters).
+# Overrides params.toml; everything not set here keeps its default.
+w = 7.92              # road width including shoulders (26 ft)
+g_max = 0.09          # maximum grade
+R_min = 15.0          # minimum centerline turn radius (m)
+R_hp = 15.0           # hairpin loop radius (m): the minimum turn radius
+w_hp = 9.92           # width through hairpins: the road width plus 2 m
+g_hp = 0.06           # maximum grade through a hairpin
+
+# Truck operating costs at k = 1 (the haul-road figures in params_haul.toml), turning included.
+C_travel = 125.5
+C_vertical = 2576.0
+C_turn = 8000.0

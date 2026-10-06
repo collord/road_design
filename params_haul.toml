@@ -37,3 +37,8 @@ C_wall = 15.0
 # so k covers it.
 C_travel = 125.5
 C_vertical = 2576.0
+# Turning, crude: slowing a loaded 385 t truck from 30 to ~15 km/h for a sharp (~90 degree)
+# curve and re-accelerating takes ~10 MJ, ~0.75 L of diesel; ~$2 per round trip with the empty
+# leg, ~$50,000 over 26,400 round trips: ~$32,000 per radian, ~8,000 units at $4 per unit.
+# Off by default so the haul-road example is unchanged; the Red Mountain example sets it.
+# C_turn = 8000.0

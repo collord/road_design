@@ -299,7 +299,13 @@
     const endCell = cellOf(rc1[0], rc1[1]);
     if (endCell !== lastCell) visitCell(endCell);
     closeRun();
-    tot.operating = P.C_travel * length + P.C_vertical * tot.vertical;
+    // Turning: the change in direction between consecutive samples (at corners and along arcs).
+    tot.turning = 0;
+    for (let k = 1; k < n; k++) {
+      const d = Math.atan2(samples[k].ty, samples[k].tx) - Math.atan2(samples[k - 1].ty, samples[k - 1].tx);
+      tot.turning += Math.abs(((d + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI);
+    }
+    tot.operating = P.C_travel * length + P.C_vertical * tot.vertical + (P.C_turn || 0) * tot.turning;
     tot.construction = tot.base + tot.earthwork + tot.culvert_cost;
     tot.total = tot.construction + tot.operating;
     return { per, tot };

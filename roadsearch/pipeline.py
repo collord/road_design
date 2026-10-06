@@ -4,6 +4,7 @@ fields and alternatives (section 9)."""
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass, field
 
 import numba
@@ -13,6 +14,7 @@ from scipy import ndimage
 from .masshaul import TrueCost, true_cost
 from .route import Segment, evaluate_route
 from .search import SearchProblem, edge_cost, edge_points, reconstruct, reverse_edges, run_search
+from .timing import add, stage
 
 
 @dataclass
@@ -61,7 +63,9 @@ def fill_price_iteration(prob: SearchProblem, start_rc, goal_rc, max_iter: int =
     prev = None
     for it in range(max_iter):
         prob.lam_fill = lam
-        res = run_search(prob, start_rc, goal_rc, astar=True)
+        with stage(f"A* search {it + 1}", fill_price=round(lam, 3)) as row:
+            res = run_search(prob, start_rc, goal_rc, astar=True)
+            row["settled"] = int(res.n_expanded)
         out.last_search = res
         if res.goal_state is None:
             break
@@ -156,8 +160,12 @@ def corridor_fields(prob: SearchProblem, start_rc, goal_rc, max_cost: float = ma
     to (i, j, h+pi) equals cost-to-go from (i, j, h) to the goal. F is built
     one heading at a time to keep memory to two (rows, cols) arrays.
     """
-    fwd = run_search(prob, start_rc, max_cost=max_cost)
-    bwd = run_search(prob, goal_rc, max_cost=max_cost)
+    with stage("Dijkstra from the start") as row:
+        fwd = run_search(prob, start_rc, max_cost=max_cost)
+        row["settled"] = int(fwd.n_expanded)
+    with stage("Dijkstra from the goal") as row:
+        bwd = run_search(prob, goal_rc, max_cost=max_cost)
+        row["settled"] = int(bwd.n_expanded)
     nh = prob.n_theta
     F = np.full((prob.nr, prob.nc), np.inf)
     best_h = np.full((prob.nr, prob.nc), -1, dtype=np.int16)
@@ -271,7 +279,7 @@ def locally_optimal(prob: SearchProblem, edges, via_idx: int, window: float, tol
     res = run_search(sub_prob, (ra - r0, ca - c0), (rb - r0, cb - c0), astar=True,
                      max_cost=sub * (1 + tol) + 1e-9, source_heading=ha)
     best = res.goal_cost
-    return sub <= (1 + tol) * best, {"window_cost": sub, "shortest": best}
+    return sub <= (1 + tol) * best, {"window_cost": sub, "shortest": best, "settled": int(res.n_expanded)}
 
 
 @numba.njit(cache=True)
@@ -343,7 +351,172 @@ class Alternative:
     local_check: dict = field(default_factory=dict)
 
 
+@numba.njit(cache=True)
+def _plateau_chains(fpar, bpar, dr, dc, h0, rev, nc, nh, Gf, Gb, length, res, F_max, min_cost):
+    """Plateaus: chains of edges that are in both search trees. Edge u -> v (action a) is in
+    the forward tree when v's parent is a, and in the backward tree when u-reversed's parent
+    is rev[a]. Each state has at most one plateau edge in and one out, so plateaus are chains.
+    Returns, for chains whose route costs at most F_max and whose own cost is at least min_cost:
+    (head state, tail state, number of edges, length m, plateau cost, route cost)."""
+    n = fpar.shape[0]
+    nxt = np.full(n, -1, dtype=np.int64)
+    has_in = np.zeros(n, dtype=np.bool_)
+    half = nh // 2
+    for v in range(n):
+        a = fpar[v]
+        if a < 0:
+            continue
+        cell = v // nh
+        r = cell // nc
+        c = cell - r * nc
+        ur = r - dr[a]
+        uc = c - dc[a]
+        uh = h0[a]
+        urev = (ur * nc + uc) * nh + (uh + half) % nh
+        if bpar[urev] == rev[a]:
+            nxt[(ur * nc + uc) * nh + uh] = v
+            has_in[v] = True
+    n_heads = 0
+    for u in range(n):
+        if nxt[u] >= 0 and not has_in[u]:
+            n_heads += 1
+    heads = np.empty(n_heads, dtype=np.int64)
+    tails = np.empty(n_heads, dtype=np.int64)
+    edges = np.empty(n_heads, dtype=np.int64)
+    lens = np.empty(n_heads)
+    pcost = np.empty(n_heads)
+    rcost = np.empty(n_heads)
+    m = 0
+    for u in range(n):
+        if nxt[u] < 0 or has_in[u]:
+            continue
+        cell = u // nh
+        hrev = (u - cell * nh + half) % nh
+        F = Gf[u] + Gb[cell * nh + hrev]
+        if not F <= F_max:
+            continue
+        x = u
+        k = 0
+        L = 0.0
+        while nxt[x] >= 0:
+            x = nxt[x]
+            k += 1
+            L += length[fpar[x]] * res
+        cost = Gf[x] - Gf[u]
+        if cost < min_cost:
+            continue
+        heads[m] = u
+        tails[m] = x
+        edges[m] = k
+        lens[m] = L
+        pcost[m] = cost
+        rcost[m] = F
+        m += 1
+    return heads[:m], tails[:m], edges[:m], lens[:m], pcost[:m], rcost[:m]
+
+
+def plateaus(prob: SearchProblem, fields: Fields, F_max: float, min_cost: float) -> dict:
+    """Plateaus of the two search trees (see _plateau_chains), as arrays, cheapest route first."""
+    L = prob.lat
+    h, t, k, ln, pc, rc = _plateau_chains(
+        fields.fwd.parent.reshape(-1), fields.bwd.parent.reshape(-1), L.dr.astype(np.int64),
+        L.dc.astype(np.int64), L.h0.astype(np.int64), L.rev.astype(np.int64), prob.nc, prob.n_theta,
+        fields.fwd.G.reshape(-1), fields.bwd.G.reshape(-1), L.length.astype(np.float64), float(prob.res),
+        float(F_max), float(min_cost))
+    order = np.lexsort((-pc, rc))
+    return {"head": h[order], "tail": t[order], "edges": k[order], "length": ln[order], "cost": pc[order],
+            "route_cost": rc[order]}
+
+
+def route_through_state(prob: SearchProblem, fields: Fields, state: int) -> list:
+    """Edges of the cheapest route through a given state: start -> state on the forward tree,
+    state -> goal on the backward tree."""
+    nh, nc = prob.n_theta, prob.nc
+    cell, h = divmod(int(state), nh)
+    r, c = divmod(cell, nc)
+    head = reconstruct(fields.fwd, prob.lat, (r, c, h))
+    tail = reconstruct(fields.bwd, prob.lat, (r, c, (h + nh // 2) % nh))
+    return head + reverse_edges(tail, prob.lat)
+
+
 def alternatives(prob: SearchProblem, fields: Fields, start_rc, log=None) -> list[Alternative]:
+    """Best route plus up to K_alt - 1 alternatives, by the method alt_method names."""
+    if prob.params.alt_method == "plateau":
+        return _alternatives_plateau(prob, fields, log)
+    return _alternatives_via(prob, fields, start_rc, log)
+
+
+def _alternatives_plateau(prob: SearchProblem, fields: Fields, log=None) -> list[Alternative]:
+    """Alternatives along plateaus: stretches that are the cheapest path from both ends.
+
+    A route made of the forward tree up to a plateau, the plateau, and the backward tree
+    beyond it is optimal over any window costing less than its plateau, so no extra search
+    is needed to show it is not a detour. Plateaus whose route costs at most (1 + eps_alt)
+    times the best and whose own cost is at least alt_plateau times the best are taken
+    cheapest route first; a candidate is kept if its via point (the plateau's middle) is at
+    least D_alt from every route already chosen, it shares at most half its length with
+    each, and it does not run over itself.
+    """
+    p = prob.params
+    F = fields.F
+    if not np.isfinite(fields.F_min):
+        return []
+    geo = _Geometry(prob)
+    flat = np.argmin(F)
+    via0 = (int(flat // prob.nc), int(flat % prob.nc))
+    edges0, _ = route_through(prob, fields, via0)
+    chosen = [Alternative(edges0, via0, float(F[via0]))]
+    near = geo.mask(edges0)
+    dist = ndimage.distance_transform_edt(~near) * prob.res
+    with stage("find plateaus") as row:
+        pl = plateaus(prob, fields, (1 + p.eps_alt) * fields.F_min * (1 + 1e-12), p.alt_plateau * fields.F_min)
+        row["plateaus"] = int(len(pl["head"]))
+    nh = prob.n_theta
+    stats = {"near": 0, "overlap": 0, "self_overlap": 0}
+    n_tries = 0
+    t_route = t_geom = 0.0
+    for i, (tail, k) in enumerate(zip(pl["tail"], pl["edges"])):
+        if len(chosen) >= p.K_alt or n_tries >= p.alt_max_tries:
+            break
+        # The plateau's middle state: walk half its edges back from the tail along the forward tree.
+        x = int(tail)
+        for _ in range(int(k) // 2):
+            cell, h = divmod(x, nh)
+            a = int(fields.fwd.parent.reshape(-1)[x])
+            r, c = divmod(cell, prob.nc)
+            x = ((r - int(prob.lat.dr[a])) * prob.nc + (c - int(prob.lat.dc[a]))) * nh + int(prob.lat.h0[a])
+        rc = divmod(x // nh, prob.nc)
+        if dist[rc] < p.D_alt:
+            stats["near"] += 1
+            continue
+        n_tries += 1
+        t0 = time.perf_counter()
+        edges = route_through_state(prob, fields, x)
+        t1 = time.perf_counter()
+        t_route += t1 - t0
+        reject = None
+        if any(_shared_edge_fraction(prob, edges, ch.edges) > 0.5 for ch in chosen):
+            reject = "overlap"
+        elif geo.overlaps(edges):
+            reject = "self_overlap"
+        t_geom += time.perf_counter() - t1
+        if reject:
+            stats[reject] += 1
+            continue
+        chosen.append(Alternative(edges, (int(rc[0]), int(rc[1])), float(pl["route_cost"][i]),
+                                  {"plateau_cost": float(pl["cost"][i]), "plateau_length_m": float(pl["length"][i])}))
+        near |= geo.mask(edges)
+        dist = ndimage.distance_transform_edt(~near) * prob.res
+    add("rebuild candidate routes from the trees", t_route, candidates=n_tries)
+    add("overlap checks", t_geom)
+    if log:
+        log(f"alternatives (plateaus): {len(chosen)} kept from {len(pl['head'])} plateaus; {n_tries} candidates "
+            f"({stats['overlap']} overlapping, {stats['self_overlap']} overlapping themselves, "
+            f"{stats['near']} too near a chosen route)")
+    return chosen
+
+
+def _alternatives_via(prob: SearchProblem, fields: Fields, start_rc, log=None) -> list[Alternative]:
     """Best route plus up to K_alt - 1 alternatives through distinct via cells.
 
     Each further via cell has the lowest F among cells at least D_alt from
@@ -369,7 +542,8 @@ def alternatives(prob: SearchProblem, fields: Fields, start_rc, log=None) -> lis
     dist = ndimage.distance_transform_edt(~near) * prob.res
     tried = np.zeros_like(near)
     thr = (1 + p.eps_alt) * fields.F_min
-    share = shared_cost_fraction(prob, fields, edges0)
+    with stage("prefilter (shared cost, all cells)"):
+        share = shared_cost_fraction(prob, fields, edges0)
     cand = np.flatnonzero((F.ravel() <= thr) & (share.ravel() <= PREFILTER_SHARE))
     del share
     order = cand[np.lexsort((cand, F.ravel()[cand]))]
@@ -378,6 +552,8 @@ def alternatives(prob: SearchProblem, fields: Fields, start_rc, log=None) -> lis
     blur_overlap = max(1, int(round(p.D_alt / prob.res)))
     n_tries = 0
     stats = {"overlap": 0, "not_local": 0, "self_overlap": 0}
+    t_route = t_geom = t_local = 0.0
+    n_local = settled_local = 0
     for idx in order:
         if len(chosen) >= p.K_alt or n_tries >= p.alt_max_tries:
             break
@@ -385,14 +561,22 @@ def alternatives(prob: SearchProblem, fields: Fields, start_rc, log=None) -> lis
         if dist[rc] < p.D_alt or tried[rc]:
             continue
         n_tries += 1
+        t0 = time.perf_counter()
         edges, via_idx = route_through(prob, fields, rc)
+        t1 = time.perf_counter()
+        t_route += t1 - t0
         reject = None
         if any(_shared_edge_fraction(prob, edges, ch.edges) > 0.5 for ch in chosen):
             reject = "overlap"
         elif geo.overlaps(edges):
             reject = "self_overlap"
-        else:
+        t_geom += time.perf_counter() - t1
+        if reject is None:
+            t2 = time.perf_counter()
             ok, info = locally_optimal(prob, edges, via_idx, window, p.alt_local_tol, geo)
+            t_local += time.perf_counter() - t2
+            n_local += 1
+            settled_local += int(info.get("settled", 0))
             if not ok:
                 reject = "not_local"
         if reject:
@@ -403,6 +587,9 @@ def alternatives(prob: SearchProblem, fields: Fields, start_rc, log=None) -> lis
         chosen.append(Alternative(edges, rc, float(F[rc]), info))
         near |= geo.mask(edges)
         dist = ndimage.distance_transform_edt(~near) * prob.res
+    add("rebuild candidate routes from the trees", t_route, candidates=n_tries)
+    add("overlap checks", t_geom)
+    add("local-optimality A* searches", t_local, searches=n_local, settled=settled_local)
     if log:
         log(f"alternatives: {len(chosen)} kept after {n_tries} candidates "
             f"({stats['overlap']} overlapping, {stats['not_local']} not locally optimal, "

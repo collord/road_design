@@ -45,6 +45,7 @@ class Params:
     haul_max: float
     C_travel: float
     C_vertical: float
+    C_turn: float
     A_min: float
     culvert_area_breaks: tuple[float, ...]
     culvert_costs: tuple[float, ...]
@@ -60,6 +61,8 @@ class Params:
     alt_window: float
     alt_local_tol: float
     alt_max_tries: int
+    alt_method: str
+    alt_plateau: float
     smooth_sigma: float
     excl_buffer: float
     s_flat: float
@@ -85,6 +88,8 @@ class Params:
             raise ValueError(f"z_units must be one of {sorted(Z_UNIT_SCALE)}")
         if self.N_theta not in (8, 16, 32):
             raise ValueError("N_theta must be 8, 16 or 32")
+        if self.alt_method not in ("plateau", "via"):
+            raise ValueError("alt_method must be 'plateau' or 'via'")
 
     @property
     def sigma_m(self) -> float:
