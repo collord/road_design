@@ -29,5 +29,7 @@ extra = [
     { label = "20 m, 9% grade", R_min = 20, g_max = 0.09 },
     { label = "16 m, 10% grade", R_min = 16, g_max = 0.10 },
     { label = "20 m, 9% grade, avoid zone", R_min = 20, g_max = 0.09, exclude = "data/shapes_red_mtn.gpkg|type='avoid'" },
+    # Hairpins sized like US 550's switchbacks (tightest radius ~23 m, ~5.5% through the turn).
+    { label = "20 m, 9%, avoid zone, 20 m hairpins at 6%", R_min = 20, g_max = 0.09, R_hp = 20, g_hp = 0.06, exclude = "data/shapes_red_mtn.gpkg|type='avoid'" },
 ]
 reference = { file = "data/us550_red_mountain.geojson", label = "As built: US 550" }
