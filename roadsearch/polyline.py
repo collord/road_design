@@ -188,8 +188,57 @@ def profile_metrics(T: RunTerrain, xy, windows=(100.0, 200.0), limits=(0.06, 0.0
     R = (2 * k * step) / np.maximum(turn, 1e-9)
     out["min_radius_40m"] = float(R.min())
     out["tighter_than_m"] = {f"{r:g}": float((R < r).sum() * step) for r in radii}
-    # Switchbacks: the road turns more than 150 degrees within 150 m.
-    k = max(1, int(round(75.0 / step)))
-    big = np.flatnonzero(np.abs(h[2 * k:] - h[:-2 * k]) > math.radians(150))
-    out["switchbacks"] = int(len(np.split(big, np.flatnonzero(np.diff(big) > 10) + 1))) if len(big) else 0
+    # Switchbacks, from the line's own vertices (robust to coarse digitizing): consecutive
+    # vertices within 200 m whose signed turns add to more than 150 degrees. For each: the
+    # grade from 20 m before its first turning vertex to 20 m after its last, and the
+    # tightest circle through three consecutive vertices in it.
+    out.update(switchbacks(T, xy))
     return out
+
+
+def _circle_radius(a, b, c) -> float:
+    A, B, C = np.hypot(*(b - c)), np.hypot(*(a - c)), np.hypot(*(a - b))
+    area = abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2
+    return float(A * B * C / (4 * area)) if area > 1e-9 else math.inf
+
+
+def switchbacks(T: RunTerrain, xy, window: float = 200.0, min_turn_deg: float = 150.0, pad: float = 20.0) -> dict:
+    """Switchbacks of a line, found from its vertices, with the grade through and radius of each."""
+    V = np.asarray(xy, dtype=float)[:, :2]
+    sv = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(V, axis=0).T))])
+    hd = np.arctan2(np.diff(V[:, 1]), np.diff(V[:, 0]))
+    turn = (np.diff(hd) + np.pi) % (2 * np.pi) - np.pi          # signed turn at vertices 1 .. n-2
+    radius = np.array([_circle_radius(V[i - 1], V[i], V[i + 1]) for i in range(1, len(V) - 1)])
+    found, i = [], 0
+    while i < len(turn):
+        tot, j = 0.0, i
+        while j < len(turn) and sv[j + 1] - sv[i + 1] <= window:
+            tot += turn[j]
+            if abs(tot) > math.radians(min_turn_deg):
+                break
+            j += 1
+        if j < len(turn) and abs(tot) > math.radians(min_turn_deg):
+            found.append((i, j, tot))
+            i = j + 1
+        else:
+            i += 1
+    cum = sv
+    def z_at(st):
+        st = float(np.clip(st, 0.0, cum[-1]))
+        x, y = np.interp(st, cum, V[:, 0]), np.interp(st, cum, V[:, 1])
+        r, c = T.rc(np.array([[x, y]]))
+        return float(_bilinear(T.z_raw, r, c)[0])
+    items = []
+    for i, j, tot in found:
+        s0, s1 = sv[i + 1] - pad, sv[j + 1] + pad
+        g = abs(z_at(s1) - z_at(s0)) / max(s1 - s0, 1e-9)
+        items.append({"station": round(float(sv[i + 1]), 1), "turn_deg": round(math.degrees(abs(tot)), 1),
+                      "grade": round(g, 4), "min_radius": round(float(radius[i:j + 1].min()), 1)})
+    grades = [it["grade"] for it in items]
+    radii = [it["min_radius"] for it in items]
+    return {"switchbacks": len(items), "switchback_list": items,
+            "switchback_grade_median": float(np.median(grades)) if items else None,
+            "switchback_grade_max": float(max(grades)) if items else None,
+            "switchback_radius_min": float(min(radii)) if items else None,
+            "switchback_radius_median": float(np.median(radii)) if items else None,
+            "vertex_radius_min": float(radius.min()) if len(radius) else None}

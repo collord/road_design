@@ -522,7 +522,10 @@ __METHOD__
     });
     items.push(["Tightest curve (over 40 m of road)", "radius " + m(pr.min_radius_40m)]);
     REF.R_min.forEach(r => items.push(["Curves tighter than radius " + r + " m", m(pr.tighter_than_m[String(r)])]));
-    items.push(["Switchbacks (turns over 150° within 150 m)", String(pr.switchbacks)],
+    if (pr.switchbacks) items.push(
+      ["Grade through a switchback, median / steepest", pct(pr.switchback_grade_median) + " / " + pct(pr.switchback_grade_max)],
+      ["Tightest radius in a switchback, median / least", m(pr.switchback_radius_median) + " / " + m(pr.switchback_radius_min)]);
+    items.push(["Switchbacks (over 150° within 200 m)", String(pr.switchbacks)],
                ["Full-bench section", m(t.full_bench_m)], ["Side slope too steep to build", m(t.infeasible_m)],
                ["On excluded ground", m(t.excluded_m)], ["Culverts", String(t.culverts)]);
     if (t.outside_m > 0) items.push(["Outside the run's terrain", m(t.outside_m)]);
