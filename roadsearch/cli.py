@@ -149,7 +149,12 @@ def cmd_animate(args) -> int:
     if factors and len(factors) != len(args.run_ids):
         raise SystemExit("--factors needs one value per run")
     dest = Path(args.dest) if args.dest else Path(args.out) / "viewer"
-    path = write_viewer(args.run_ids, args.out, dest, factors=factors, title=args.title, heading=args.heading)
+    labels = args.labels.split(";") if args.labels else None
+    if labels and len(labels) != len(args.run_ids):
+        raise SystemExit("--labels needs one label per run")
+    ref = (args.reference, args.reference_label) if args.reference else None
+    path = write_viewer(args.run_ids, args.out, dest, labels=labels, factors=factors, title=args.title,
+                        heading=args.heading, column=args.column, reference=ref)
     print(f"wrote {path} and {len(args.run_ids)} data files in {dest / 'data'}")
     return 0
 
@@ -287,6 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dest", default=None, help="site folder (default: <out>/viewer)")
     sp.add_argument("--title", default="Road Search", help="viewer page title (browser tab)")
     sp.add_argument("--heading", default=None, help="viewer heading (default: from the title, or a sweep heading)")
+    sp.add_argument("--labels", default=None, help="';'-separated label per run")
+    sp.add_argument("--column", default=None, help="table heading for the labels, e.g. 'Run'")
+    sp.add_argument("--reference", default=None, help="a centerline to show and cost for comparison")
+    sp.add_argument("--reference-label", default="Reference", help="its label in the viewer")
     sp.add_argument("--factors", default=None,
                     help="comma-separated operating-cost weight k of each run, for labels (0 = construction only)")
     sp.set_defaults(func=cmd_animate)
