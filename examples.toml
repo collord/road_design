@@ -35,5 +35,6 @@ extra = [
     # a crude weighting that conserves elevation, not a costing of highway traffic.
     { label = "as above + operating costs, k=1", R_min = 20, g_max = 0.09, R_hp = 20, g_hp = 0.06, C_travel = 125.5, C_vertical = 2576, exclude = "data/shapes_red_mtn.gpkg|type='avoid'" },
     { label = "as above + operating costs, k=10", R_min = 20, g_max = 0.09, R_hp = 20, g_hp = 0.06, C_travel = 1255, C_vertical = 25760, exclude = "data/shapes_red_mtn.gpkg|type='avoid'" },
+    { label = "20 m, 9%, 20 m hairpins at 6%, operating costs k=1, no avoid zone", R_min = 20, g_max = 0.09, R_hp = 20, g_hp = 0.06, C_travel = 125.5, C_vertical = 2576 },
 ]
 reference = { file = "data/us550_red_mountain.geojson", label = "As built: US 550" }
