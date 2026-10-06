@@ -33,3 +33,8 @@ Thumbs.db
 # GDAL sidecar files
 *.aux.xml
 /topo_stibnite.tif
+
+# Working files in the project root (inputs live in data/)
+/*.gpkg
+/*.gpkg-shm
+/*.gpkg-wal
