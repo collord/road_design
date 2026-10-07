@@ -1,5 +1,6 @@
 # Run outputs and the built site (rebuilt by the Site workflow), and local reference papers
 out/
+rust/target/
 out-*/
 site/
 /topo_redmtn.tif

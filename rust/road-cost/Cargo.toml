@@ -1,0 +1,10 @@
+[package]
+name = "road-cost"
+description = "Road edge costs on a DEM (earthwork from a section table, grade limits, culverts, fill crossings, macro tables) for lattice-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lattice-search = { path = "../lattice-search" }

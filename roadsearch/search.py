@@ -16,6 +16,7 @@ keeps the A* climb heuristic consistent.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 import numba
@@ -591,8 +592,55 @@ class SearchResult:
         return G.min(axis=2)
 
 
+def _default_engine() -> str:
+    try:
+        import roadsearch_core  # noqa: F401
+        return "rust"
+    except ImportError:
+        return "numba"
+
+
+# Which kernel searches: "rust" (the roadsearch_core package built from rust/, used when it is
+# installed) or "numba" (this module). Both give the same costs and parents, bit for bit; the
+# Rust one is about ten times faster.
+ENGINE = os.environ.get("ROADSEARCH_ENGINE") or _default_engine()
+
+
+def rust_args(prob: SearchProblem):
+    """The lattice and terrain tuples with the dtypes and memory layout roadsearch_core expects
+    (arrays that already have them are passed through, not copied)."""
+    f8, i8 = np.float64, np.int64
+    lat = tuple(np.ascontiguousarray(a, dtype=f8 if i in (4, 8, 9, 10, 11, 15) else i8)
+                for i, a in enumerate(prob.lat_tuple()))
+    t = list(prob.terr_tuple())
+    for i, dt in {0: np.uint8, 1: f8, 2: f8, 3: f8, 4: np.float32, 5: f8, 11: f8, 12: np.uint8, 13: f8,
+                  14: f8, 15: f8, 16: f8, 22: np.float32}.items():
+        t[i] = np.ascontiguousarray(t[i], dtype=dt)
+    for i in (6, 7, 8, 9, 10, 17, 18, 19, 20, 21, 23, 24, 25):
+        t[i] = float(t[i])
+    return lat, tuple(t)
+
+
+def _search_rust(prob: SearchProblem, sources, gr, gc, astar, max_cost):
+    """roadsearch_core.search, its per-cell results spread back onto the whole grid."""
+    import roadsearch_core
+
+    nh = prob.n_theta
+    lat, terr = rust_args(prob)
+    cells, g, par, cl, n_exp, gs = roadsearch_core.search(nh, lat, terr, sources, gr, gc, astar, float(max_cost))
+    n = prob.nr * prob.nc * nh
+    idx = (cells[:, None] * nh + np.arange(nh)).reshape(-1)
+    G = np.full(n, np.inf)
+    G[idx] = g
+    parent = np.full(n, -1, dtype=np.int16)
+    parent[idx] = par
+    closed = np.zeros(n, dtype=np.uint8)
+    closed[idx] = cl
+    return G, parent, closed, n_exp, gs
+
+
 def run_search(prob: SearchProblem, source_rc, goal_rc=None, astar=False, max_cost=math.inf,
-               source_heading: int | None = None) -> SearchResult:
+               source_heading: int | None = None, engine: str | None = None) -> SearchResult:
     """Search from cell source_rc (all headings, or only source_heading)."""
     nh = prob.n_theta
     r0, c0 = source_rc
@@ -601,8 +649,14 @@ def run_search(prob: SearchProblem, source_rc, goal_rc=None, astar=False, max_co
     gr, gc = goal_rc if goal_rc is not None else (-1, -1)
     if astar and goal_rc is None:
         raise ValueError("A* needs a goal")
-    G, parent, closed, n_exp, gs = _search(nh, prob.lat_tuple(), prob.terr_tuple(),
-                                           sources, gr, gc, astar, max_cost)
+    engine = engine or ENGINE
+    if engine == "rust":
+        G, parent, closed, n_exp, gs = _search_rust(prob, sources, gr, gc, astar, max_cost)
+    elif engine == "numba":
+        G, parent, closed, n_exp, gs = _search(nh, prob.lat_tuple(), prob.terr_tuple(),
+                                               sources, gr, gc, astar, max_cost)
+    else:
+        raise ValueError(f"unknown search engine {engine!r} (numba or rust)")
     shape = (prob.nr, prob.nc, nh)
     goal = None
     if gs >= 0:

@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["lattice-search", "road-cost", "roadsearch-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/collord/road_design"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 1               # symbols for profiling; no effect on speed
