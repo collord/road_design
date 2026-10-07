@@ -15,6 +15,7 @@ import rasterio
 from pyproj import CRS
 from scipy import ndimage
 
+from . import memguard
 from .exclusion import ExclusionError, normalize_spec, split_spec
 from .explore import write_corridor_tree
 from .masshaul import TrueCost, true_cost
@@ -78,11 +79,13 @@ def resolution_for(bounds, p: Params, region_area: float | None = None, floor: f
     return float(NICE_RESOLUTIONS[-1])
 
 
-def check_memory(grid: Grid, p: Params) -> None:
+def check_memory(grid: Grid, p: Params, what: str = "working grid") -> None:
+    """Refuse a grid whose search memory is over max_memory_gb, or more than the machine has free."""
     need = grid.shape[0] * grid.shape[1] * p.N_theta * BYTES_PER_STATE / 1e9
     if need > p.max_memory_gb:
-        raise MemoryError(f"working grid needs ~{need:.1f} GB of search memory, over max_memory_gb = "
+        raise MemoryError(f"{what} needs ~{need:.1f} GB of search memory, over max_memory_gb = "
                           f"{p.max_memory_gb:g}; use a coarser --resolution, a tighter clip, or raise it")
+    memguard.require(need * 1e9 / memguard.GB, what, memguard.FLOOR_GB)
 
 
 def _region_bounds(grid: Grid, mask: np.ndarray, pad: float):
@@ -120,6 +123,7 @@ def coarse_corridor(dem, p: Params, start, goal, exclude, coarse_res, log):
         res = coarse_res or resolution_for(bounds, p)
         with stage("load and preprocess"):
             grid, ginfo = load_grid(dem, p, res, bounds)
+            check_memory(grid, p, "coarse grid")
             t = preprocess(grid, start, goal, p, exclude)
         with stage("hairpin and bend tables"):
             prob = make_problem(t, p)
@@ -161,26 +165,59 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
         log=print, reuse=False) -> dict:
     """One full run. With reuse, a run with the same inputs that already finished is returned as is.
 
-    Stages are timed (roadsearch.timing): the profile is saved in params.json and logged."""
+    Stages are timed (roadsearch.timing): the profile is saved in params.json and logged.
+    Memory is guarded (roadsearch.memguard): if the machine runs short, or the kernel's non-paged
+    pool balloons, the run stops, records why, and raises MemoryGuardError."""
     from . import timing
 
+    s0 = memguard.snapshot()
+    if s0.get("kernel_nonpaged_gb", 0.0) > memguard.POOL_WARN_GB:
+        log(f"memory guard: the kernel's non-paged pool is already {s0['kernel_nonpaged_gb']:.1f} GB "
+            f"(top tags {memguard.describe_tags(memguard.pool_tags(3))}); a restart clears it")
+    ctx = {}
+
+    def memory_record():
+        return {"start": s0, **wd.peak, "pool_events": wd.pool_events}
+
+    def record_abort(why):
+        rec = ctx.get("record")
+        if rec is not None:
+            rec["error"] = f"MemoryGuardError: {why}"
+            rec["memory"] = memory_record()
+            rec["profile"] = prof.rows
+            write_params_json(ctx["run_dir"], rec)
+        log(f"memory guard stopped the run: {why}")
+
     prof = timing.start()
+    wd = memguard.Watchdog(log=log, on_hard_stop=record_abort)
     try:
-        with timing.stage("run"):
+        with wd, timing.stage("run"):
             rec = _run(dem, start_txt, goal_txt, p, exclude, out, resolution, clip, clip_margin, coarse_res,
-                       run_id, endpoint_crs, log, reuse)
+                       run_id, endpoint_crs, log, reuse, ctx)
+    except BaseException:
+        # The interrupt can surface as something else (numba turns it into SystemError) or be
+        # swallowed below, so the watchdog's reason, not the exception type, decides.
+        if wd.reason is None:
+            raise
+        record_abort(wd.reason)
+        raise memguard.MemoryGuardError(wd.reason) from None
     finally:
         timing.stop()
+    if wd.reason is not None:
+        record_abort(wd.reason)
+        raise memguard.MemoryGuardError(wd.reason)
     if "timings" in rec and "profile" not in rec:
         rec["profile"] = prof.rows
+        rec["memory"] = memory_record()
         write_params_json(Path(out) / "runs" / rec["run_id"], rec)
         log("time by stage:" + chr(10) + prof.table())
+        log("memory: " + ", ".join(f"{k} {v}" for k, v in wd.peak.items()))
     return rec
 
 
 def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", resolution=None,
          clip="none", clip_margin=1000.0, coarse_res=None, run_id=None, endpoint_crs=None,
-         log=print, reuse=False) -> dict:
+         log=print, reuse=False, ctx=None) -> dict:
     t_start = time.time()
     out = Path(out)
     timings = {}
@@ -208,6 +245,8 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
             return prev
     run_dir.mkdir(parents=True, exist_ok=True)
     record = {"run_id": run_id, "inputs": inputs, "params": p.to_dict(), "dem": dem_info}
+    if ctx is not None:
+        ctx.update(record=record, run_dir=run_dir)
     log(f"run {run_id}")
 
     def fail(exc):

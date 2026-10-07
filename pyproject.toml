@@ -21,6 +21,7 @@ dependencies = [
     "scikit-image",
     "matplotlib",
     "mistune>=3",
+    "psutil",
 ]
 
 [project.optional-dependencies]

@@ -9,6 +9,7 @@ numba==0.67.0
 numpy==2.4.6
 pandas==3.0.3
 pyarrow==24.0.0
+psutil==7.2.2
 pyproj==3.7.2
 pysheds==0.5
 pytest==9.1.1

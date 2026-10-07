@@ -72,9 +72,15 @@ def cmd_preprocess(args) -> int:
 
 
 def cmd_run(args) -> int:
+    from .memguard import MemoryGuardError
+
     p = params_from_args(args)
-    rec = run(args.dem, args.start, args.goal, p, args.exclude, args.out, args.resolution, args.clip,
-              args.clip_margin, args.coarse_res, args.run_id, args.endpoint_crs)
+    try:
+        rec = run(args.dem, args.start, args.goal, p, args.exclude, args.out, args.resolution, args.clip,
+                  args.clip_margin, args.coarse_res, args.run_id, args.endpoint_crs)
+    except MemoryGuardError as exc:
+        print(f"stopped by the memory guard: {exc}", file=sys.stderr)
+        return 3
     return 2 if "error" in rec else 0
 
 
@@ -116,11 +122,25 @@ def cmd_sweep(args) -> int:
                          [excl] if excl else []))
     if not variants:
         raise SystemExit("nothing to run: give --k or --vary values, or --extra")
+    import gc
+
+    from .memguard import MemoryGuardError, snapshot
+
     ids, labels, values = [], [], []
     for pv, lab, v, excl in variants:
         print(f"{lab}: running")
-        rec = run(args.dem, args.start, args.goal, pv, list(args.exclude) + excl, args.out, args.resolution, args.clip,
-                  args.clip_margin, args.coarse_res, None, args.endpoint_crs, reuse=True)
+        try:
+            rec = run(args.dem, args.start, args.goal, pv, list(args.exclude) + excl, args.out, args.resolution,
+                      args.clip, args.clip_margin, args.coarse_res, None, args.endpoint_crs, reuse=True)
+        except MemoryGuardError as exc:
+            # The rest of the sweep would meet the same shortage: stop here.
+            print(f"{lab}: stopped by the memory guard: {exc}", file=sys.stderr)
+            return 3
+        finally:
+            gc.collect()        # each run's arrays go before the next run allocates
+            s = snapshot()
+            print(f"{lab}: after the run this process holds {s['private_gb']:.2f} GB; "
+                  f"{s['avail_gb']:.1f} GB available")
         if "error" in rec:
             print(f"{lab}: {rec['error']}", file=sys.stderr)
             continue
