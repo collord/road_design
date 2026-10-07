@@ -1022,7 +1022,8 @@ __METHOD__
     if (mode !== "explore") { el.hidden = true; return; }
     el.hidden = false;
     if (!v) { el.textContent = DD && DD._tree === null && DD.tree_file === undefined
-                ? "This run has no saved search trees, so routes through a point can't be drawn; their cost still shows."
+                ? "This run has no saved search trees, so routes through a point can't be drawn; their cost still shows. " +
+                  "(Run with --tree, or add them with: roadsearch tree " + DD.run_id + ")"
                 : "Hover the map: the cheapest route through that point and what it costs."; return; }
     if (!Number.isFinite(v.rel)) { el.textContent = "No route through this point within twice the best cost."; return; }
     el.innerHTML = (pinVia ? "<strong>Pinned:</strong> " : "") + "best route through this point costs <strong>" + short(v.cost) +

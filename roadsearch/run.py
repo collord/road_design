@@ -162,8 +162,10 @@ def touches_boundary(prob, edges, start_rc, allowed: np.ndarray) -> bool:
 
 def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", resolution=None,
         clip="none", clip_margin=1000.0, coarse_res=None, run_id=None, endpoint_crs=None,
-        log=print, reuse=False) -> dict:
+        log=print, reuse=False, tree=False) -> dict:
     """One full run. With reuse, a run with the same inputs that already finished is returned as is.
+    With tree, the corridor tree is saved too (display only: the viewer's "best route through a
+    point"); `roadsearch tree RUN_ID` adds it to a finished run.
 
     Stages are timed (roadsearch.timing): the profile is saved in params.json and logged.
     Memory is guarded (roadsearch.memguard): if the machine runs short, or the kernel's non-paged
@@ -193,7 +195,7 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
     try:
         with wd, timing.stage("run"):
             rec = _run(dem, start_txt, goal_txt, p, exclude, out, resolution, clip, clip_margin, coarse_res,
-                       run_id, endpoint_crs, log, reuse, ctx)
+                       run_id, endpoint_crs, log, reuse, ctx, tree)
     except BaseException:
         # The interrupt can surface as something else (numba turns it into SystemError) or be
         # swallowed below, so the watchdog's reason, not the exception type, decides.
@@ -217,7 +219,7 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
 
 def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", resolution=None,
          clip="none", clip_margin=1000.0, coarse_res=None, run_id=None, endpoint_crs=None,
-         log=print, reuse=False, ctx=None) -> dict:
+         log=print, reuse=False, ctx=None, tree=False) -> dict:
     t_start = time.time()
     out = Path(out)
     timings = {}
@@ -349,8 +351,9 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
 
     with stage('write field rasters'):
         write_field_rasters(run_dir, grid, fields, explored)
-    with stage('write corridor tree'):
-        write_corridor_tree(run_dir, prob, fields)
+    if tree:
+        with stage('write corridor tree'):
+            write_corridor_tree(run_dir, prob, fields)
     with stage('write vectors (and conflict checks)'):
         conflicts = write_vectors(out, grid, run_id, routes, prob)
     with stage("quick-look image"):

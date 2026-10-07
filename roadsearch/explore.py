@@ -13,6 +13,7 @@ bends, the edge's centerline (other edges are short and drawn as chords).
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 from pathlib import Path
 
@@ -20,9 +21,11 @@ import numba
 import numpy as np
 import rasterio
 
-from .lattice import ACTION_FILL, ACTION_PRIM
+from .bend import bend_segments
+from .hairpin import _seg_point, hairpin_plans, hairpin_segments
+from .lattice import ACTION_BEND_L, ACTION_FILL, ACTION_HP_LEFT, ACTION_HP_RIGHT, ACTION_PRIM, heading_vectors
 from .params import load_params
-from .search import SearchProblem, edge_points, make_problem
+from .search import SearchProblem, make_problem
 from .terrain import load_grid
 
 TREE_REL_MAX = 1.0      # cells up to twice the best cost, the range the viewer colors
@@ -41,6 +44,108 @@ def _mark_ancestors(parent, dr, dc, h0, nc, nh, seeds, mark):
             cell, h = divmod(s, nh)
             r, c = divmod(cell, nc)
             s = ((r - dr[a]) * nc + (c - dc[a])) * nh + h0[a]
+
+
+@numba.njit(cache=True)
+def _shape_points(is_hp, A, B, C, D, hh, flip, r0, c0, vx, vy, res):
+    """Sample macro centerlines at about one point per cell. Per edge, (A, B, C, D) are
+    hairpin_segments' (leg spacing, radius, rho, leg) or bend_segments' (L1, R, dth, L2), in
+    meters, for the left macro from (r0, c0) at heading hh; flip reverses the points (the
+    right-hand or reverse action). Returns (length m, offset into geo or -1 where A is nan,
+    geo), geo holding per edge a row [n, 0] and then its n points (row, col)."""
+    n = is_hp.size
+    segs = np.zeros((n, 5, 5))
+    nseg = np.zeros(n, dtype=np.int64)
+    cnt = np.zeros(n, dtype=np.int64)
+    lens = np.zeros(n)
+    for i in range(n):
+        if not math.isfinite(A[i]):
+            continue
+        if is_hp[i]:
+            seg, _, _ = hairpin_segments(A[i], B[i], C[i], D[i])
+            ns = 5
+        else:
+            seg = bend_segments(A[i], B[i], C[i], D[i])
+            ns = 3
+        m = 1
+        for j in range(ns):
+            segs[i, j, :] = seg[j, :]
+            if seg[j, 4] > 1e-9:
+                m += max(1, int(math.ceil(seg[j, 4] / res)))
+                lens[i] += seg[j, 4]
+        nseg[i] = ns
+        cnt[i] = m
+    off = np.full(n, -1, dtype=np.int64)
+    total = 0
+    for i in range(n):
+        if cnt[i] > 0:
+            off[i] = total
+            total += cnt[i] + 1
+    geo = np.zeros((total, 2), dtype=np.float32)
+    for i in range(n):
+        if off[i] < 0:
+            continue
+        o, m, h = off[i], cnt[i], hh[i]
+        vl = math.hypot(vx[h], vy[h])
+        ux, uy = vx[h] / vl, vy[h] / vl
+        geo[o, 0] = m
+        k = 0
+        for j in range(nseg[i]):
+            Ls = segs[i, j, 4]
+            if Ls <= 1e-9:
+                continue
+            pieces = max(1, int(math.ceil(Ls / res)))
+            for q in range(0 if k == 0 else 1, pieces + 1):
+                x, y, _ = _seg_point(segs[i], j, Ls * q / pieces)
+                px = x * ux - y * uy           # local (x along the heading, y to its left) to east, north
+                py = x * uy + y * ux
+                t = m - 1 - k if flip[i] else k
+                geo[o + 1 + t, 0] = r0[i] - py / res
+                geo[o + 1 + t, 1] = c0[i] + px / res
+                k += 1
+    return lens, off, geo
+
+
+def macro_shapes(prob: SearchProblem, rows, cols, acts):
+    """Centerlines of many hairpin and bend edges (row, col, action), about one point per cell,
+    in travel order: the same shapes as edge_points, without its per-edge cost. Bends are fixed by
+    the lattice; hairpins need only the loop radius their cost chose, found in one parallel batch.
+    Returns (length m, offset into geo or -1 if infeasible, geo) as _shape_points."""
+    L, p, res = prob.lat, prob.params, prob.res
+    rows, cols, acts = (np.asarray(x, dtype=np.int64) for x in (rows, cols, acts))
+    k = L.kind[acts]
+    is_hp = (k == ACTION_HP_LEFT) | (k == ACTION_HP_RIGHT)
+    left = (k == ACTION_HP_LEFT) | (k == ACTION_BEND_L)
+    # The equivalent left macro (search.canonical_hairpin, canonical_bend): right ones start at the
+    # other end; a right bend's heading and slot are those of the left bend it reverses.
+    q = np.where(is_hp | left, acts, L.rev[acts])
+    r0 = np.where(left, rows, rows + L.dr[acts]).astype(np.int64)
+    c0 = np.where(left, cols, cols + L.dc[acts]).astype(np.int64)
+    h = L.h0[q].astype(np.int64)
+    slot = L.slot[q].astype(np.int64)
+    A, B, C, D = (np.full(acts.size, np.nan) for _ in range(4))
+    if is_hp.any():
+        A[is_hp], B[is_hp], D[is_hp] = hairpin_plans(r0[is_hp], c0[is_hp], h[is_hp], slot[is_hp],
+                                                      prob.macro_terrain_arrays, p, res, (prob.channel, prob.area))
+        C[is_hp] = p.R_min
+    bd = ~is_hp
+    if bd.any():
+        g = prob.bend_geo
+        A[bd] = g.L1[h[bd], slot[bd]] * res
+        B[bd] = g.R * res
+        C[bd] = g.dth[h[bd], slot[bd]]
+        D[bd] = g.L2[h[bd], slot[bd]] * res
+    vecs = heading_vectors(p.N_theta).astype(np.float64)
+    return _shape_points(is_hp, A, B, C, D, h, ~left, r0, c0, vecs[:, 0].copy(), vecs[:, 1].copy(), float(res))
+
+
+@numba.njit(cache=True)
+def _cumulative(order, par, elen):
+    cum = np.zeros(elen.size)
+    for i in order:
+        if par[i] >= 0:
+            cum[i] = cum[par[i]] + elen[i]
+    return cum
 
 
 def _one_tree(prob: SearchProblem, res, seeds: np.ndarray) -> dict:
@@ -64,28 +169,18 @@ def _one_tree(prob: SearchProblem, res, seeds: np.ndarray) -> dict:
     elen = np.zeros(ids.shape)
     elen[has] = L.length[a] * prob.res
     geo_off = np.full(ids.shape, -1, dtype=np.int64)
-    pts_all = []
-    n_pts = 0
+    geo = np.zeros((0, 2), np.float32)
     kind = np.full(ids.shape, ACTION_PRIM)
     kind[has] = L.kind[a]
-    for i in np.flatnonzero(has & (kind != ACTION_PRIM) & (kind != ACTION_FILL)):
-        pr, pc = int(r[par[i]]), int(c[par[i]])
-        pts = edge_points(prob, pr, pc, int(act[i]))
-        seg = np.hypot(*np.diff(pts, axis=0).T)
-        elen[i] = float(seg.sum() * prob.res)
-        # About one point per cell is plenty to draw it.
-        keep = np.flatnonzero(np.diff(np.floor(np.concatenate([[0.0], np.cumsum(seg)])), prepend=-1) > 0)
-        pts = pts[np.union1d(keep, [len(pts) - 1])]
-        geo_off[i] = n_pts
-        pts_all.append(np.vstack([[len(pts), 0.0], pts]))
-        n_pts += len(pts) + 1
+    mac = np.flatnonzero(has & (kind != ACTION_PRIM) & (kind != ACTION_FILL))
+    if mac.size:
+        lens, off, geo = macro_shapes(prob, r[par[mac]], c[par[mac]], act[mac])
+        ok = off >= 0               # an infeasible macro (none expected) keeps its chord
+        elen[mac[ok]] = lens[ok]
+        geo_off[mac[ok]] = off[ok]
     # Cumulative length from the source, parents first (in order of cost-to-come).
     order = np.argsort(res.G.reshape(-1)[ids], kind="stable")
-    cum = np.zeros(ids.shape)
-    for i in order:
-        if par[i] >= 0:
-            cum[i] = cum[par[i]] + elen[i]
-    geo = np.vstack(pts_all).astype(np.float32) if pts_all else np.zeros((0, 2), np.float32)
+    cum = _cumulative(order, par, elen)
     return {"cell": cell.astype(np.int32), "h": h.astype(np.uint8), "parent": par.astype(np.int32),
             "length": cum.astype(np.float32), "geo_off": geo_off.astype(np.int32), "geo": geo}
 

@@ -72,6 +72,7 @@ HP_FIELDS = ("cost", "leg", "radius", "length", "cut_soil_m3", "cut_rock_m3", "f
              "arc_grade", "inner_edge_grade", "max_catch", "max_toe", "culvert", "culvert_area",
              "leg_spacing", "alpha", "rho", "wall_m2")
 HP_N = len(HP_FIELDS)
+_LEG, _RADIUS, _LEG_SPACING = (HP_FIELDS.index(f) for f in ("leg", "radius", "leg_spacing"))
 N_SLOTS = 2
 N_ACROSS = 6
 R_FACTORS = (1.0, 1.5)
@@ -523,6 +524,38 @@ def _hairpin_table(nr, nc, nh, vx, vy, slots, res, open_, zs, gx, gy, soil, zr, 
                     if cost < math.inf:
                         table[r, c, h, j] = cost
     return table
+
+
+@numba.njit(cache=True, parallel=True)
+def _hairpin_plans(rows, cols, hs, ks, vx, vy, res, nr, nc, open_, zs, gx, gy, soil, zr, hp, drain):
+    n = rows.size
+    D = np.full(n, np.nan)
+    R = np.full(n, np.nan)
+    L = np.full(n, np.nan)
+    for i in prange(n):
+        out = np.zeros(HP_N)
+        tmp = np.empty(HP_N)
+        h = hs[i]
+        vlen = math.hypot(vx[h], vy[h])
+        cost = best_hairpin(rows[i], cols[i], vx[h] / vlen, vy[h] / vlen, ks[i], vlen, res, nr, nc, open_, zs,
+                            gx, gy, soil, zr, hp, drain, out, tmp)
+        if cost < math.inf:
+            D[i] = out[_LEG_SPACING]
+            R[i] = out[_RADIUS]
+            L[i] = out[_LEG]
+    return D, R, L
+
+
+def hairpin_plans(rows, cols, hs, slots, terrain_arrays, p: Params, res: float, drainage=None):
+    """Plan shape of many left hairpins at once: (leg spacing, loop radius, leg length), in meters,
+    as hairpin_detail would give them (nan where infeasible). For drawing them in bulk."""
+    open_, zs, gx, gy, soil, zr = terrain_arrays
+    vecs = heading_vectors(p.N_theta).astype(np.float64)
+    hs = np.asarray(hs, dtype=np.int64)
+    ks = hairpin_slots(p, res)[hs, np.asarray(slots, dtype=np.int64)].astype(np.int64)
+    return _hairpin_plans(np.asarray(rows, dtype=np.int64), np.asarray(cols, dtype=np.int64), hs, ks,
+                          vecs[:, 0].copy(), vecs[:, 1].copy(), res, zs.shape[0], zs.shape[1], open_, zs, gx, gy,
+                          np.nan_to_num(soil), zr, hairpin_params(p, res), _drain(p, drainage, zs.shape))
 
 
 def _drain(p: Params, drainage, shape):

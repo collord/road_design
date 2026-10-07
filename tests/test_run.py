@@ -55,6 +55,7 @@ def test_run_writes_all_outputs(tmp_path):
                  "corridor_field", "cost_to_come_forward", "cost_to_come_backward", "explored_astar"]:
         assert (run_dir / f"{name}.tif").exists(), name
     assert (run_dir / "quicklook.png").exists()
+    assert not (run_dir / "corridor_tree.npz").exists()            # display only: with --tree
     rec = json.loads((run_dir / "params.json").read_text())
     assert rec["params"]["g_max"] == 0.1 and rec["dem"]["crs_epsg"] == 32611
     assert rec["routes"][0]["rank"] == 1

@@ -59,7 +59,7 @@ jobs:
           path: out-run
           key: run-${{ matrix.example }}-${{ matrix.value }}-${{ hashFiles('roadsearch/**/*.py', 'params*.toml', 'examples.toml', 'data/**', 'constraints.txt') }}
       - name: Run
-        run: python -m roadsearch example "${{ matrix.example }}" --k "${{ matrix.value }}" --out out-run --no-viewer
+        run: python -m roadsearch example "${{ matrix.example }}" --k "${{ matrix.value }}" --out out-run --no-viewer --tree
       - uses: actions/upload-artifact@v4
         with:
           name: run-${{ matrix.example }}-${{ matrix.value }}

@@ -77,7 +77,7 @@ def cmd_run(args) -> int:
     p = params_from_args(args)
     try:
         rec = run(args.dem, args.start, args.goal, p, args.exclude, args.out, args.resolution, args.clip,
-                  args.clip_margin, args.coarse_res, args.run_id, args.endpoint_crs)
+                  args.clip_margin, args.coarse_res, args.run_id, args.endpoint_crs, tree=args.tree)
     except MemoryGuardError as exc:
         print(f"stopped by the memory guard: {exc}", file=sys.stderr)
         return 3
@@ -131,7 +131,12 @@ def cmd_sweep(args) -> int:
         print(f"{lab}: running")
         try:
             rec = run(args.dem, args.start, args.goal, pv, list(args.exclude) + excl, args.out, args.resolution,
-                      args.clip, args.clip_margin, args.coarse_res, None, args.endpoint_crs, reuse=True)
+                      args.clip, args.clip_margin, args.coarse_res, None, args.endpoint_crs, reuse=True,
+                      tree=args.tree)
+            run_dir = Path(args.out) / "runs" / rec["run_id"]
+            if args.tree and "error" not in rec and not (run_dir / "corridor_tree.npz").exists():
+                from .explore import backfill_tree
+                backfill_tree(run_dir)      # a reused run made without its tree
         except MemoryGuardError as exc:
             # The rest of the sweep would meet the same shortage: stop here.
             print(f"{lab}: stopped by the memory guard: {exc}", file=sys.stderr)
@@ -202,7 +207,7 @@ def cmd_example(args) -> int:
     ex = load_examples()
     if args.name not in ex:
         raise SystemExit(f"unknown example {args.name!r}; examples.toml has: {', '.join(ex)}")
-    return main(sweep_argv(args.name, ex[args.name], args.k, args.out, args.dest, args.no_viewer))
+    return main(sweep_argv(args.name, ex[args.name], args.k, args.out, args.dest, args.no_viewer, args.tree))
 
 
 def cmd_site(args) -> int:
@@ -212,7 +217,7 @@ def cmd_site(args) -> int:
     ex = load_examples()
     status = 0
     for name, e in ex.items():
-        status = max(status, main(sweep_argv(name, e, dest=str(Path(args.dest) / name))))
+        status = max(status, main(sweep_argv(name, e, dest=str(Path(args.dest) / name), tree=args.tree)))
     print(f"wrote {write_landing(args.dest, ex, args.repo_url)}")
     return status
 
@@ -256,6 +261,9 @@ def add_run_arguments(sp: argparse.ArgumentParser) -> None:
                     help="resolution of the --clip auto coarse pass (default: finest that fits max_states "
                          "over the endpoint box + clip_coarse_margin)")
     sp.add_argument("--out", default="out")
+    sp.add_argument("--tree", action="store_true",
+                    help="also save the corridor tree, for the viewer's 'best route through a point' (display "
+                         "only; slow on big runs; `roadsearch tree RUN_ID` adds it later)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -321,8 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="comma-separated operating-cost weight k of each run, for labels (0 = construction only)")
     sp.set_defaults(func=cmd_animate)
 
-    sp = sub.add_parser("tree", help="save the corridor tree of runs made before it was saved (for the viewer's "
-                                     "'best route through a point')")
+    sp = sub.add_parser("tree", help="save the corridor tree of finished runs made without --tree (for the "
+                                     "viewer's 'best route through a point')")
     sp.add_argument("run_ids", nargs="+")
     sp.add_argument("--out", default="out")
     sp.set_defaults(func=cmd_tree)
@@ -339,10 +347,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--out", default=None, help="output root (default: out-<name>)")
     sp.add_argument("--dest", default=None, help="viewer folder (default: <out>/viewer)")
     sp.add_argument("--no-viewer", action="store_true")
+    sp.add_argument("--tree", action="store_true", help="also save each run's corridor tree (see run --tree)")
     sp.set_defaults(func=cmd_example)
 
     sp = sub.add_parser("site", help="build every example's viewer and a landing page (static site)")
     sp.add_argument("--dest", default="site")
+    sp.add_argument("--tree", action="store_true", help="also save each run's corridor tree (see run --tree)")
     sp.add_argument("--repo-url", default="", help="link to the source repository, shown on the landing page")
     sp.set_defaults(func=cmd_site)
 

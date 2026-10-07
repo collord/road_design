@@ -21,7 +21,7 @@ def load_examples(path: str | Path = EXAMPLES_PATH) -> dict[str, dict]:
 
 
 def sweep_argv(name: str, ex: dict, k: str | None = None, out: str | None = None, dest: str | None = None,
-               no_viewer: bool = False) -> list[str]:
+               no_viewer: bool = False, tree: bool = False) -> list[str]:
     """Arguments for `roadsearch sweep` that run example `name`."""
     argv = ["sweep", "--dem", ex["dem"], "--start", ex["start"], "--goal", ex["goal"], "--params", ex["params"],
             "--out", out or f"out-{name}", "--title", ex["title"], "--heading", ex["heading"]]
@@ -52,6 +52,8 @@ def sweep_argv(name: str, ex: dict, k: str | None = None, out: str | None = None
         argv += ["--dest", dest]
     if no_viewer:
         argv.append("--no-viewer")
+    if tree:
+        argv.append("--tree")
     return argv
 
 

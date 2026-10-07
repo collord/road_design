@@ -19,7 +19,7 @@ def test_sweep_runs_each_k_once_and_writes_viewer(tmp_path, capsys):
     (sx, sy), (gx, gy) = g.xy(8, 8), g.xy(50, 48)
     out = tmp_path / "out"
     argv = ["sweep", "--dem", str(path), "--start", f"{sx},{sy}", "--goal", f"{gx},{gy}", "--out", str(out),
-            "--clip", "none", "--K_alt", "1", "--C_travel", "1", "--C_vertical", "20", "--k", "0,0.1,10"]
+            "--clip", "none", "--K_alt", "1", "--C_travel", "1", "--C_vertical", "20", "--k", "0,0.1,10", "--tree"]
     assert main(argv) == 0
     runs = sorted((out / "runs").iterdir())
     assert len(runs) == 3

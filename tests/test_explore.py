@@ -76,3 +76,48 @@ def test_viewer_tree_keeps_routes_through_via_points():
         bi = int(np.searchsorted(keys["bwd"], (r * nc + c) * nh + (hb + nh // 2) % nh))
         got = chain_cells(v["fwd"], fi, nc)[::-1] + chain_cells(v["bwd"], bi, nc)[1:]
         assert got == [tuple(map(int, n)) for n in nodes]
+
+
+def _dist_to_polyline(pts, line):
+    """Distance from each point to a polyline (cells)."""
+    a, b = line[:-1], line[1:]
+    ab = b - a
+    t = np.einsum("ijk,jk->ij", pts[:, None, :] - a[None], ab) / np.maximum((ab * ab).sum(1), 1e-12)
+    proj = a[None] + np.clip(t, 0, 1)[..., None] * ab[None]
+    return np.sqrt(((pts[:, None, :] - proj) ** 2).sum(-1)).min(1)
+
+
+def test_tree_macro_shapes_match_edge_points():
+    """The batched hairpin and bend centerlines are the shapes edge_points draws one at a time."""
+    from roadsearch.explore import macro_shapes
+    from roadsearch.lattice import ACTION_FILL, ACTION_PRIM
+    from roadsearch.search import edge_points, reconstruct
+
+    p = load_params()
+    z = random_terrain(7, n=90, relief=15.0)
+    g = make_grid(z, 5.0)
+    s, e = (5, 5), (84, 80)
+    prob = make_problem(preprocess(g, g.xy(*s), g.xy(*e), p), p)
+    fields = corridor_fields(prob, s, e)
+    tree = corridor_tree(prob, fields, rel_max=0.5, spacing_m=None)
+    L = prob.lat
+    edges = set()
+    for d, res in (("fwd", fields.fwd), ("bwd", fields.bwd)):
+        t = tree[d]
+        for i in np.flatnonzero(t["geo_off"] >= 0):
+            cell = int(t["cell"][i])
+            edges.add(reconstruct(res, L, (cell // prob.nc, cell % prob.nc, int(t["h"][i])))[-1])
+    kinds = {int(L.kind[a]) for _, _, a in edges}
+    assert len(edges) > 50 and kinds - {ACTION_PRIM, ACTION_FILL} == kinds and len(kinds) >= 3, kinds
+    rows, cols, acts = map(np.array, zip(*sorted(edges)))
+    lens, off, geo = macro_shapes(prob, rows, cols, acts)
+    assert (off >= 0).all()
+    for i, (r, c, a) in enumerate(zip(rows, cols, acts)):
+        ref = edge_points(prob, int(r), int(c), int(a))
+        n = int(geo[off[i], 0])
+        got = geo[off[i] + 1: off[i] + 1 + n].astype(float)
+        assert np.allclose(got[0], ref[0], atol=1e-3) and np.allclose(got[-1], ref[-1], atol=1e-3)
+        assert _dist_to_polyline(got, ref).max() < 0.02             # on the same curve (cells)
+        assert n >= np.hypot(*np.diff(ref, axis=0).T).sum() - 1      # about one point per cell
+        ref_len = np.hypot(*np.diff(ref, axis=0).T).sum() * prob.res
+        assert lens[i] == pytest.approx(ref_len, rel=5e-3)
