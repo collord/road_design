@@ -158,23 +158,27 @@ def corridor_fields(prob: SearchProblem, start_rc, goal_rc, max_cost: float = ma
     The backward search is a forward search from the goal: every action's
     reverse is an action with identical cost, so cost-to-come from the goal
     to (i, j, h+pi) equals cost-to-go from (i, j, h) to the goal. F is built
-    one heading at a time to keep memory to two (rows, cols) arrays.
+    one heading at a time to keep memory to two per-cell arrays. Each search is given the
+    other end as its goal (only recorded, not stopped at), so both cover the same cells and
+    their state indices agree.
     """
     with stage("Dijkstra from the start") as row:
-        fwd = run_search(prob, start_rc, max_cost=max_cost)
+        fwd = run_search(prob, start_rc, goal_rc, max_cost=max_cost)
         row["settled"] = int(fwd.n_expanded)
     with stage("Dijkstra from the goal") as row:
-        bwd = run_search(prob, goal_rc, max_cost=max_cost)
+        bwd = run_search(prob, goal_rc, start_rc, max_cost=max_cost)
         row["settled"] = int(bwd.n_expanded)
+    assert np.array_equal(fwd.cells, bwd.cells)
     nh = prob.n_theta
-    F = np.full((prob.nr, prob.nc), np.inf)
-    best_h = np.full((prob.nr, prob.nc), -1, dtype=np.int16)
+    F = np.full(fwd.cells.size, np.inf)
+    best_h = np.full(fwd.cells.size, -1, dtype=np.int16)
     for h in range(nh):
-        tot = fwd.G[:, :, h] + bwd.G[:, :, (h + nh // 2) % nh]
+        tot = fwd.G[:, h] + bwd.G[:, (h + nh // 2) % nh]
         better = tot < F
         F[better] = tot[better]
         best_h[better] = h
-    return Fields(fwd, bwd, F, best_h, float(F.min()))
+    F = fwd.to_grid(F, np.inf)
+    return Fields(fwd, bwd, F, fwd.to_grid(best_h, np.int16(-1)), float(F.min()))
 
 
 def route_through(prob: SearchProblem, fields: Fields, rc) -> tuple[list, int]:
@@ -228,17 +232,18 @@ def _shared_edge_fraction(prob: SearchProblem, a, b) -> float:
 
 
 def crop_problem(prob: SearchProblem, r0: int, r1: int, c0: int, c1: int) -> SearchProblem:
-    """The search problem restricted to rows r0:r1, cols c0:c1 (copies)."""
+    """The search problem restricted to rows r0:r1, cols c0:c1 (copies of the rasters; the
+    hairpin and bend tables are shared, through a cropped lookup)."""
     import dataclasses
 
     sl = (slice(r0, r1), slice(c0, c1))
     cp = lambda a: np.ascontiguousarray(a[sl])  # noqa: E731
-    hp = prob.hp if prob.hp.shape[:2] != (prob.nr, prob.nc) else cp(prob.hp)
-    bend = prob.bend if prob.bend is None or prob.bend.shape[:2] != (prob.nr, prob.nc) else cp(prob.bend)
+    look = cp(prob.macro_lookup) if prob.macro_lookup is not None else None
     return dataclasses.replace(
         prob, nr=r1 - r0, nc=c1 - c0, open_=cp(prob.open_), gx=cp(prob.gx), gy=cp(prob.gy), zs=cp(prob.zs),
         soil=cp(prob.soil), z_raw=cp(prob.z_raw), channel=cp(prob.channel), area=cp(prob.area),
-        chdist=cp(prob.chdist), hp=hp, bend=bend)
+        chdist=cp(prob.chdist), macro_lookup=look,
+        open_tables=cp(prob.open_tables) if prob.open_tables is not None else None)
 
 
 def locally_optimal(prob: SearchProblem, edges, via_idx: int, window: float, tol: float,
@@ -282,8 +287,17 @@ def locally_optimal(prob: SearchProblem, edges, via_idx: int, window: float, tol
     return sub <= (1 + tol) * best, {"window_cost": sub, "shortest": best, "settled": int(res.n_expanded)}
 
 
+@numba.njit(cache=True, inline="always")
+def _pred(s, a, cells, lookup, dr, dc, h0, nc, nh):
+    """State index of the state that action a, arriving at state index s, left from."""
+    flat = cells[s // nh]
+    r = flat // nc
+    c = flat - r * nc
+    return lookup[(r - dr[a]) * nc + (c - dc[a])] * nh + h0[a]
+
+
 @numba.njit(cache=True)
-def _branch_costs(G, parent, order, on_route, dr, dc, h0, nc, nh):
+def _branch_costs(G, parent, order, on_route, cells, lookup, dr, dc, h0, nc, nh):
     """For every state, the cost-to-come at which its tree path last runs on
     the route (states visited in order of increasing cost, so each parent is
     done before its children)."""
@@ -295,11 +309,7 @@ def _branch_costs(G, parent, order, on_route, dr, dc, h0, nc, nh):
         p = parent[s]
         if p < 0:
             continue
-        cell = s // nh
-        r = cell // nc
-        c = cell - r * nc
-        prev = ((r - dr[p]) * nc + (c - dc[p])) * nh + h0[p]
-        out[s] = out[prev]
+        out[s] = out[_pred(s, p, cells, lookup, dr, dc, h0, nc, nh)]
     return out
 
 
@@ -309,11 +319,11 @@ def _tree_branch(res, prob: SearchProblem, states) -> np.ndarray:
     order = idx[np.argsort(G[idx], kind="stable")]
     del idx
     on = np.zeros(G.shape[0], dtype=np.bool_)
-    nh = prob.n_theta
     for r, c, h in states:
-        on[(r * prob.nc + c) * nh + h] = True
+        on[res.state(r, c, h)] = True
     L = prob.lat
-    return _branch_costs(G, res.parent.ravel(), order, on, L.dr, L.dc, L.h0, prob.nc, nh).reshape(res.G.shape)
+    return _branch_costs(G, res.parent.ravel(), order, on, res.cells, res.lookup, L.dr, L.dc, L.h0, prob.nc,
+                         prob.n_theta).reshape(res.G.shape)
 
 
 def shared_cost_fraction(prob: SearchProblem, fields: Fields, edges) -> np.ndarray:
@@ -325,14 +335,15 @@ def shared_cost_fraction(prob: SearchProblem, fields: Fields, edges) -> np.ndarr
     r, c, a = edges[-1]
     states.append((r + int(L.dr[a]), c + int(L.dc[a]), int(L.h1[a])))
     af = _tree_branch(fields.fwd, prob, states)
-    hb = np.where(fields.best_h >= 0, fields.best_h, 0).astype(np.int64)
-    rr, cc = np.indices(hb.shape)
-    share = af[rr, cc, hb].astype(np.float64)
+    k = np.arange(fields.fwd.cells.size)
+    hb = np.maximum(fields.best_h.reshape(-1)[fields.fwd.cells], 0).astype(np.int64)
+    share = af[k, hb].astype(np.float64)
     del af
     back = [(r, c, (h + nh // 2) % nh) for r, c, h in states]
     ab = _tree_branch(fields.bwd, prob, back)
-    share += ab[rr, cc, (hb + nh // 2) % nh]
+    share += ab[k, (hb + nh // 2) % nh]
     del ab
+    share = fields.fwd.to_grid(share, 0.0)
     with np.errstate(invalid="ignore", divide="ignore"):
         return np.where(np.isfinite(fields.F) & (fields.F > 0), share / fields.F, 1.0)
 
@@ -352,10 +363,11 @@ class Alternative:
 
 
 @numba.njit(cache=True)
-def _plateau_chains(fpar, bpar, dr, dc, h0, rev, nc, nh, Gf, Gb, length, res, F_max, min_cost):
+def _plateau_chains(fpar, bpar, cells, lookup, dr, dc, h0, rev, nc, nh, Gf, Gb, length, res, F_max, min_cost):
     """Plateaus: chains of edges that are in both search trees. Edge u -> v (action a) is in
     the forward tree when v's parent is a, and in the backward tree when u-reversed's parent
     is rev[a]. Each state has at most one plateau edge in and one out, so plateaus are chains.
+    States are state indices of the two searches (which cover the same cells).
     Returns, for chains whose route costs at most F_max and whose own cost is at least min_cost:
     (head state, tail state, number of edges, length m, plateau cost, route cost)."""
     n = fpar.shape[0]
@@ -366,15 +378,11 @@ def _plateau_chains(fpar, bpar, dr, dc, h0, rev, nc, nh, Gf, Gb, length, res, F_
         a = fpar[v]
         if a < 0:
             continue
-        cell = v // nh
-        r = cell // nc
-        c = cell - r * nc
-        ur = r - dr[a]
-        uc = c - dc[a]
+        u = _pred(v, a, cells, lookup, dr, dc, h0, nc, nh)
         uh = h0[a]
-        urev = (ur * nc + uc) * nh + (uh + half) % nh
+        urev = u - uh + (uh + half) % nh
         if bpar[urev] == rev[a]:
-            nxt[(ur * nc + uc) * nh + uh] = v
+            nxt[u] = v
             has_in[v] = True
     n_heads = 0
     for u in range(n):
@@ -419,7 +427,8 @@ def plateaus(prob: SearchProblem, fields: Fields, F_max: float, min_cost: float)
     """Plateaus of the two search trees (see _plateau_chains), as arrays, cheapest route first."""
     L = prob.lat
     h, t, k, ln, pc, rc = _plateau_chains(
-        fields.fwd.parent.reshape(-1), fields.bwd.parent.reshape(-1), L.dr.astype(np.int64),
+        fields.fwd.parent.reshape(-1), fields.bwd.parent.reshape(-1), fields.fwd.cells,
+        fields.fwd.lookup, L.dr.astype(np.int64),
         L.dc.astype(np.int64), L.h0.astype(np.int64), L.rev.astype(np.int64), prob.nc, prob.n_theta,
         fields.fwd.G.reshape(-1), fields.bwd.G.reshape(-1), L.length.astype(np.float64), float(prob.res),
         float(F_max), float(min_cost))
@@ -429,11 +438,10 @@ def plateaus(prob: SearchProblem, fields: Fields, F_max: float, min_cost: float)
 
 
 def route_through_state(prob: SearchProblem, fields: Fields, state: int) -> list:
-    """Edges of the cheapest route through a given state: start -> state on the forward tree,
-    state -> goal on the backward tree."""
-    nh, nc = prob.n_theta, prob.nc
-    cell, h = divmod(int(state), nh)
-    r, c = divmod(cell, nc)
+    """Edges of the cheapest route through a given state (a state index of the searches):
+    start -> state on the forward tree, state -> goal on the backward tree."""
+    nh = prob.n_theta
+    r, c, h = fields.fwd.rc(state)
     head = reconstruct(fields.fwd, prob.lat, (r, c, h))
     tail = reconstruct(fields.bwd, prob.lat, (r, c, (h + nh // 2) % nh))
     return head + reverse_edges(tail, prob.lat)
@@ -480,12 +488,12 @@ def _alternatives_plateau(prob: SearchProblem, fields: Fields, log=None) -> list
             break
         # The plateau's middle state: walk half its edges back from the tail along the forward tree.
         x = int(tail)
+        fpar = fields.fwd.parent.reshape(-1)
         for _ in range(int(k) // 2):
-            cell, h = divmod(x, nh)
-            a = int(fields.fwd.parent.reshape(-1)[x])
-            r, c = divmod(cell, prob.nc)
-            x = ((r - int(prob.lat.dr[a])) * prob.nc + (c - int(prob.lat.dc[a]))) * nh + int(prob.lat.h0[a])
-        rc = divmod(x // nh, prob.nc)
+            r, c, _h = fields.fwd.rc(x)
+            a = int(fpar[x])
+            x = fields.fwd.state(r - int(prob.lat.dr[a]), c - int(prob.lat.dc[a]), int(prob.lat.h0[a]))
+        rc = fields.fwd.rc(x)[:2]
         if dist[rc] < p.D_alt:
             stats["near"] += 1
             continue

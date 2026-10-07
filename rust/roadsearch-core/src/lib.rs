@@ -6,7 +6,7 @@
 //! copied, and the GIL is released while searching.
 
 use lattice_search::{search as lsearch, Action, CellIndex, Lattice, SearchSpec, ZeroHeuristic};
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray4, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
@@ -72,20 +72,22 @@ struct TerrArrays<'py> {
     gx: PyReadonlyArray2<'py, f64>,
     gy: PyReadonlyArray2<'py, f64>,
     zs: PyReadonlyArray2<'py, f64>,
-    hp: PyReadonlyArray4<'py, f32>,
+    hp: PyReadonlyArray3<'py, f32>,
     table: PyReadonlyArray2<'py, f64>,
     z_raw: PyReadonlyArray2<'py, f64>,
     channel: PyReadonlyArray2<'py, u8>,
     area: PyReadonlyArray2<'py, f64>,
     chdist: PyReadonlyArray2<'py, f64>,
-    bend: PyReadonlyArray4<'py, f32>,
+    bend: PyReadonlyArray3<'py, f32>,
+    macro_lookup: PyReadonlyArray2<'py, i32>,
     params: CostParams,
     ds: f64,
     dg: f64,
 }
 
 /// The terrain tuple (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base, z_raw, channel,
-/// area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel, C_vert, C_turn).
+/// area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel, C_vert, C_turn, macro_lookup);
+/// hp and bend are (cells, headings, slots), their rows given by macro_lookup (nr, nc).
 fn terrain_from<'py>(terr: &Bound<'py, PyTuple>) -> PyResult<TerrArrays<'py>> {
     Ok(TerrArrays {
         open: item(terr, 0, "open_")?,
@@ -101,6 +103,7 @@ fn terrain_from<'py>(terr: &Bound<'py, PyTuple>) -> PyResult<TerrArrays<'py>> {
         area: item(terr, 13, "area")?,
         chdist: item(terr, 14, "chdist")?,
         bend: item(terr, 22, "bend")?,
+        macro_lookup: item(terr, 26, "macro_lookup")?,
         params: CostParams {
             res: item(terr, 8, "res")?,
             g_max: item(terr, 9, "g_max")?,
@@ -119,9 +122,9 @@ fn terrain_from<'py>(terr: &Bound<'py, PyTuple>) -> PyResult<TerrArrays<'py>> {
     })
 }
 
-fn shape4(a: &PyReadonlyArray4<f32>) -> [usize; 4] {
+fn shape3(a: &PyReadonlyArray3<f32>) -> [usize; 3] {
     let s = a.shape();
-    [s[0], s[1], s[2], s[3]]
+    [s[0], s[1], s[2]]
 }
 
 impl<'py> TerrArrays<'py> {
@@ -135,6 +138,7 @@ impl<'py> TerrArrays<'py> {
             ("channel", self.channel.shape()),
             ("area", self.area.shape()),
             ("chdist", self.chdist.shape()),
+            ("macro_lookup", self.macro_lookup.shape()),
         ] {
             if s != [nr, nc] {
                 return Err(PyValueError::new_err(format!("{name} has shape {s:?}, open_ has ({nr}, {nc})")));
@@ -152,8 +156,9 @@ impl<'py> TerrArrays<'py> {
         };
         let ts = self.table.shape();
         let section = SectionTable { data: self.table.as_slice()?, ns: ts[0], ng: ts[1], ds: self.ds, dg: self.dg };
-        let hp = MacroTable::new(self.hp.as_slice()?, shape4(&self.hp));
-        let bend = MacroTable::new(self.bend.as_slice()?, shape4(&self.bend));
+        let look = Grid::new(self.macro_lookup.as_slice()?, nr, nc);
+        let hp = MacroTable::new(self.hp.as_slice()?, shape3(&self.hp), look);
+        let bend = MacroTable::new(self.bend.as_slice()?, shape3(&self.bend), look);
         Ok((nr, nc, terrain, section, hp, bend))
     }
 }

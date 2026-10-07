@@ -154,19 +154,20 @@ def feature_rows(grid: Grid, run_id, route_id, rank, route, conflicts, prob):
 def hairpin_candidate_rows(grid: Grid, prob, run_id) -> list[dict]:
     """One point per node with any feasible hairpin: cheapest cost, its
     heading (degrees, east = 0, CCW) and side, and how many are feasible."""
-    if prob.hp.shape[:2] != (prob.nr, prob.nc):
+    if prob.hp.shape[0] == 0 or prob.macro_lookup is None:
         return []
-    hp = prob.hp.min(axis=3)
-    finite = np.isfinite(hp)
-    cells = np.argwhere(finite.any(axis=2))
-    if not len(cells):
+    hp = prob.hp.min(axis=2)                      # (table cells, headings)
+    rows = np.flatnonzero(np.isfinite(hp).any(axis=1))
+    if not len(rows):
         return []
-    sub = hp[cells[:, 0], cells[:, 1]]
+    # Table rows follow the cells with a lookup entry, in row-major order.
+    cells = np.argwhere(prob.macro_lookup >= 0)[rows]
+    sub = hp[rows]
     h = np.argmin(sub, axis=1)
     vec = heading_vectors(prob.n_theta)
     ang = np.degrees(np.arctan2(vec[:, 1], vec[:, 0]))
     return [dict(feature_type="hairpin_candidate", run_id=run_id, cost=float(sub[i, h[i]]),
-                 heading_deg=float(ang[h[i]]), side="left", n_feasible=int(finite[r, c].sum()),
+                 heading_deg=float(ang[h[i]]), side="left", n_feasible=int(np.isfinite(sub[i]).sum()),
                  pt=np.array([[r, c]], dtype=float))
             for i, (r, c) in enumerate(cells)]
 

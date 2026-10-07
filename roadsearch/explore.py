@@ -33,17 +33,18 @@ TREE_SPACING_M = 50.0   # via cells kept for drawing routes: a grid this far apa
 
 
 @numba.njit(cache=True)
-def _mark_ancestors(parent, dr, dc, h0, nc, nh, seeds, mark):
-    """Mark every state on the tree path from a source to each seed state."""
+def _mark_ancestors(parent, cells, lookup, dr, dc, h0, nc, nh, seeds, mark):
+    """Mark every state on the tree path from a source to each seed state (state indices)."""
     for s in seeds:
         while s >= 0 and not mark[s]:
             mark[s] = True
             a = parent[s]
             if a < 0:
                 break
-            cell, h = divmod(s, nh)
-            r, c = divmod(cell, nc)
-            s = ((r - dr[a]) * nc + (c - dc[a])) * nh + h0[a]
+            flat = cells[s // nh]
+            r = flat // nc
+            c = flat - r * nc
+            s = lookup[(r - dr[a]) * nc + (c - dc[a])] * nh + h0[a]
 
 
 @numba.njit(cache=True)
@@ -149,20 +150,23 @@ def _cumulative(order, par, elen):
 
 
 def _one_tree(prob: SearchProblem, res, seeds: np.ndarray) -> dict:
+    """The tree of one search restricted to the paths to `seeds` (state indices). Nodes are
+    numbered by state index; "cell" is the flat grid cell (row * nc + col)."""
     L = prob.lat
     nh, nc = prob.n_theta, prob.nc
     parent = res.parent.reshape(-1)
     mark = np.zeros(parent.shape[0], dtype=np.bool_)
-    _mark_ancestors(parent, L.dr.astype(np.int64), L.dc.astype(np.int64), L.h0.astype(np.int64), nc, nh,
-                    seeds.astype(np.int64), mark)
+    _mark_ancestors(parent, res.cells, res.lookup, L.dr.astype(np.int64), L.dc.astype(np.int64),
+                    L.h0.astype(np.int64), nc, nh, seeds.astype(np.int64), mark)
     ids = np.flatnonzero(mark)
     act = parent[ids]
-    cell, h = np.divmod(ids, nh)
+    k, h = np.divmod(ids, nh)
+    cell = res.cells[k]
     r, c = np.divmod(cell, nc)
     par = np.full(ids.shape, -1, dtype=np.int64)
     has = act >= 0
     a = act[has]
-    pid = ((r[has] - L.dr[a]) * nc + (c[has] - L.dc[a])) * nh + L.h0[a]
+    pid = res.lookup[(r[has] - L.dr[a]) * nc + (c[has] - L.dc[a])].astype(np.int64) * nh + L.h0[a]
     par[has] = np.searchsorted(ids, pid)
     assert np.array_equal(ids[par[has]], pid)
     # Edge lengths: lattice length for primitives and crossings, the centerline for macro-actions.
@@ -200,8 +204,9 @@ def corridor_tree(prob: SearchProblem, fields, rel_max: float = TREE_REL_MAX,
         ok &= (rr % step == 0) & (cc % step == 0)
     cells = np.flatnonzero(ok)
     hb = fields.best_h.reshape(-1)[cells].astype(np.int64)
-    fwd = _one_tree(prob, fields.fwd, cells * nh + hb)
-    bwd = _one_tree(prob, fields.bwd, cells * nh + (hb + nh // 2) % nh)
+    k = fields.fwd.lookup[cells].astype(np.int64)        # both searches cover the same cells
+    fwd = _one_tree(prob, fields.fwd, k * nh + hb)
+    bwd = _one_tree(prob, fields.bwd, k * nh + (hb + nh // 2) % nh)
     best_h = np.where(ok, fields.best_h, -1).astype(np.int16)
     return {"fwd": fwd, "bwd": bwd, "best_h": best_h, "n_theta": nh, "rel_max": rel_max}
 

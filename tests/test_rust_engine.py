@@ -74,3 +74,22 @@ def test_max_cost_matches(prob):
     a = run_search(prob, (40, 40), engine="numba", max_cost=2e5)
     b = run_search(prob, (40, 40), engine="rust", max_cost=2e5)
     assert np.array_equal(a.closed, b.closed) and np.array_equal(a.G, b.G)
+
+
+def test_results_and_tables_hold_only_open_cells(prob):
+    from roadsearch.pipeline import crop_problem
+
+    res = run_search(prob, (5, 5), (84, 80), astar=True)
+    open_cells = np.flatnonzero(prob.open_)
+    extra = {5 * prob.nc + 5, 84 * prob.nc + 80} - set(open_cells.tolist())
+    assert res.cells.size == open_cells.size + len(extra)
+    assert res.G.shape == (res.cells.size, prob.n_theta)
+    assert (res.lookup[res.cells] == np.arange(res.cells.size)).all()
+    assert (res.lookup >= 0).sum() == res.cells.size
+    # One table row per cell open when the tables were built, in row-major order.
+    assert prob.hp.shape[0] == prob.bend.shape[0] == int((prob.macro_lookup >= 0).sum())
+    assert (np.flatnonzero(prob.macro_lookup.reshape(-1) >= 0) == np.flatnonzero(prob.open_tables)).all()
+    # A cropped problem shares the tables and crops the lookup.
+    sub = crop_problem(prob, 10, 60, 20, 70)
+    assert sub.hp is prob.hp and sub.macro_lookup.shape == (50, 50)
+    assert (sub.macro_lookup == prob.macro_lookup[10:60, 20:70]).all()

@@ -149,30 +149,33 @@ def bend_core(r, c, ux, uy, X, Y, L1, R, dth, L2, res, nr, nc, open_, zs, gx, gy
 
 
 @numba.njit(cache=True, parallel=True)
-def _bend_table(nr, nc, nh, vx, vy, BX, BY, BL1, BL2, BDT, R, res, open_, zs, gx, gy, soil, zr, bp, drain):
+def _bend_table(cells, nr, nc, nh, vx, vy, BX, BY, BL1, BL2, BDT, R, res, open_, zs, gx, gy, soil, zr, bp,
+                drain):
     ns = BX.shape[1]
-    table = np.full((nr, nc, nh, ns), np.inf, dtype=np.float32)
-    for r in prange(nr):
+    table = np.full((cells.size, nh, ns), np.inf, dtype=np.float32)
+    for i in prange(cells.size):
         out = np.empty(BEND_N)
-        for c in range(nc):
-            if not open_[r, c]:
-                continue
+        r = cells[i] // nc
+        c = cells[i] - r * nc
+        if open_[r, c]:
             for h in range(nh):
                 vlen = math.hypot(vx[h], vy[h])
                 for j in range(ns):
                     cost = bend_core(r, c, vx[h] / vlen, vy[h] / vlen, BX[h, j], BY[h, j], BL1[h, j], R,
                                      BDT[h, j], BL2[h, j], res, nr, nc, open_, zs, gx, gy, soil, zr, bp, drain, out)
                     if cost < math.inf:
-                        table[r, c, h, j] = cost
+                        table[i, h, j] = cost
     return table
 
 
-def bend_table(terrain_arrays, p: Params, res: float, geo: BendGeometry, drainage=None) -> np.ndarray:
-    """Left-bend cost per (row, col, heading, slot); inf where infeasible."""
+def bend_table(terrain_arrays, p: Params, res: float, geo: BendGeometry, drainage=None, cells=None) -> np.ndarray:
+    """Left-bend cost per (cell, heading, slot) for the given flat cells (default: the open
+    ones, row-major); inf where infeasible."""
     open_, zs, gx, gy, soil, zr = terrain_arrays
     vecs = heading_vectors(p.N_theta).astype(np.float64)
     nr, nc = zs.shape
-    return _bend_table(nr, nc, p.N_theta, vecs[:, 0].copy(), vecs[:, 1].copy(), geo.X, geo.Y, geo.L1, geo.L2,
+    cells = np.flatnonzero(open_) if cells is None else np.asarray(cells, dtype=np.int64)
+    return _bend_table(cells.astype(np.int64), nr, nc, p.N_theta, vecs[:, 0].copy(), vecs[:, 1].copy(), geo.X, geo.Y, geo.L1, geo.L2,
                        geo.dth, geo.R, res, open_, zs, gx, gy, np.nan_to_num(soil), zr, bend_params(p, res),
                        _drain(p, drainage, zs.shape))
 

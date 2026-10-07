@@ -67,26 +67,34 @@ impl<'a, T: Copy> Grid<'a, T> {
     }
 }
 
-/// Macro-action costs per (row, col, heading, slot), float32, infinite where infeasible.
+/// Macro-action costs per (table cell, heading, slot), float32, infinite where infeasible;
+/// `lookup` gives each grid cell's row in the table (-1: none). Tables hold only the cells
+/// that were open when they were built.
 #[derive(Clone, Copy, Debug)]
 pub struct MacroTable<'a> {
     pub data: &'a [f32],
-    pub shape: [usize; 4],
+    /// (cells, headings, slots)
+    pub shape: [usize; 3],
+    pub lookup: Grid<'a, i32>,
 }
 
 impl<'a> MacroTable<'a> {
-    pub fn new(data: &'a [f32], shape: [usize; 4]) -> Self {
+    pub fn new(data: &'a [f32], shape: [usize; 3], lookup: Grid<'a, i32>) -> Self {
         assert_eq!(data.len(), shape.iter().product::<usize>());
-        MacroTable { data, shape }
+        MacroTable { data, shape, lookup }
     }
 
     #[inline(always)]
     fn get(&self, r: i64, c: i64, h: usize, s: usize) -> f64 {
-        let [a, b, nh, ns] = self.shape;
-        if r < 0 || c < 0 || r as usize >= a || c as usize >= b || h >= nh || s >= ns {
+        let [n, nh, ns] = self.shape;
+        if r < 0 || c < 0 || r as usize >= self.lookup.nr || c as usize >= self.lookup.nc || h >= nh || s >= ns {
             return f64::INFINITY;
         }
-        self.data[((r as usize * b + c as usize) * nh + h) * ns + s] as f64
+        let k = self.lookup.at(r, c);
+        if k < 0 || k as usize >= n {
+            return f64::INFINITY;
+        }
+        self.data[(k as usize * nh + h) * ns + s] as f64
     }
 }
 

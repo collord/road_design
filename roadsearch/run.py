@@ -63,7 +63,12 @@ def make_run_id(payload: dict) -> str:
     return hashlib.sha1(blob).hexdigest()[:10]
 
 
-BYTES_PER_STATE = 26   # two Dijkstra fields (cost, parent, closed) + hairpin table
+BYTES_PER_STATE = 26   # two Dijkstra fields (cost, parent, closed) + hairpin table; picks resolutions
+# What a run holds, for the memory check: per searched state, the two corridor searches and the
+# last A* (cost, parent, closed: 11 bytes each) and the hairpin and bend tables (16); per grid
+# cell, the terrain rasters and lookups.
+SEARCH_BYTES_PER_STATE = 50
+BYTES_PER_CELL = 150
 
 
 def resolution_for(bounds, p: Params, region_area: float | None = None, floor: float = 1.0) -> float:
@@ -79,13 +84,18 @@ def resolution_for(bounds, p: Params, region_area: float | None = None, floor: f
     return float(NICE_RESOLUTIONS[-1])
 
 
-def check_memory(grid: Grid, p: Params, what: str = "working grid") -> None:
-    """Refuse a grid whose search memory is over max_memory_gb, or more than the machine has free."""
-    need = grid.shape[0] * grid.shape[1] * p.N_theta * BYTES_PER_STATE / 1e9
-    if need > p.max_memory_gb:
-        raise MemoryError(f"{what} needs ~{need:.1f} GB of search memory, over max_memory_gb = "
+def check_memory(grid: Grid, p: Params, what: str = "working grid", n_search: int | None = None) -> None:
+    """Refuse a grid over the max_memory_gb budget (the measure resolution_for chooses by), or
+    one that would not fit in the memory the machine has free. Searches and tables hold only
+    the searched cells (n_search; default all of them)."""
+    n_cells = grid.shape[0] * grid.shape[1]
+    budget = n_cells * p.N_theta * BYTES_PER_STATE / 1e9
+    if budget > p.max_memory_gb:
+        raise MemoryError(f"{what} needs ~{budget:.1f} GB of search memory, over max_memory_gb = "
                           f"{p.max_memory_gb:g}; use a coarser --resolution, a tighter clip, or raise it")
-    memguard.require(need * 1e9 / memguard.GB, what, memguard.FLOOR_GB)
+    n_search = n_cells if n_search is None else n_search
+    need = (n_search * p.N_theta * SEARCH_BYTES_PER_STATE + n_cells * BYTES_PER_CELL) / memguard.GB
+    memguard.require(need, what, memguard.FLOOR_GB)
 
 
 def _region_bounds(grid: Grid, mask: np.ndarray, pad: float):
@@ -287,9 +297,9 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
             t0 = time.time()
             with stage('fine: load the grid'):
                 grid, ginfo = load_grid(dem, p, res, bounds)
-            check_memory(grid, p)
             if clip == "auto":
                 region_mask = _resample_mask(cgrid, cregion, grid)
+            check_memory(grid, p, n_search=int(region_mask.sum()) if region_mask is not None else None)
             record["grid"] = ginfo
             n_search = int(region_mask.sum()) if region_mask is not None else grid.shape[0] * grid.shape[1]
             log(f"working grid {grid.shape[0]} x {grid.shape[1]} at {grid.res:g} m "

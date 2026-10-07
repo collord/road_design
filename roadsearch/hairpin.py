@@ -505,14 +505,14 @@ def best_hairpin(r, c, ux, uy, k, vlen, res, nr, nc, open_, zs, gx, gy, soil, zr
 
 
 @numba.njit(cache=True, parallel=True)
-def _hairpin_table(nr, nc, nh, vx, vy, slots, res, open_, zs, gx, gy, soil, zr, hp, drain):
-    table = np.full((nr, nc, nh, N_SLOTS), np.inf, dtype=np.float32)
-    for r in prange(nr):
+def _hairpin_table(cells, nr, nc, nh, vx, vy, slots, res, open_, zs, gx, gy, soil, zr, hp, drain):
+    table = np.full((cells.size, nh, N_SLOTS), np.inf, dtype=np.float32)
+    for i in prange(cells.size):
         out = np.empty(HP_N)
         tmp = np.empty(HP_N)
-        for c in range(nc):
-            if not open_[r, c]:
-                continue
+        r = cells[i] // nc
+        c = cells[i] - r * nc
+        if open_[r, c]:
             for h in range(nh):
                 vlen = math.hypot(vx[h], vy[h])
                 for j in range(N_SLOTS):
@@ -522,7 +522,7 @@ def _hairpin_table(nr, nc, nh, vx, vy, slots, res, open_, zs, gx, gy, soil, zr, 
                     cost = best_hairpin(r, c, vx[h] / vlen, vy[h] / vlen, k, vlen, res, nr, nc, open_, zs,
                                         gx, gy, soil, zr, hp, drain, out, tmp)
                     if cost < math.inf:
-                        table[r, c, h, j] = cost
+                        table[i, h, j] = cost
     return table
 
 
@@ -566,15 +566,17 @@ def _drain(p: Params, drainage, shape):
             np.array(p.culvert_area_breaks, dtype=np.float64), np.array(p.culvert_costs, dtype=np.float64))
 
 
-def hairpin_table(terrain_arrays, p: Params, res: float, drainage=None) -> np.ndarray:
-    """Left-hairpin cost per (row, col, heading, slot); inf where infeasible.
+def hairpin_table(terrain_arrays, p: Params, res: float, drainage=None, cells=None) -> np.ndarray:
+    """Left-hairpin cost per (cell, heading, slot) for the given flat cells (default: the open
+    ones, row-major); inf where infeasible.
 
     terrain_arrays: (open_, zs, gx, gy, soil, z_raw); drainage: (channel, area_ha).
     """
     open_, zs, gx, gy, soil, zr = terrain_arrays
     vecs = heading_vectors(p.N_theta).astype(np.float64)
     nr, nc = zs.shape
-    return _hairpin_table(nr, nc, p.N_theta, vecs[:, 0].copy(), vecs[:, 1].copy(), hairpin_slots(p, res), res,
+    cells = np.flatnonzero(open_) if cells is None else np.asarray(cells, dtype=np.int64)
+    return _hairpin_table(cells.astype(np.int64), nr, nc, p.N_theta, vecs[:, 0].copy(), vecs[:, 1].copy(), hairpin_slots(p, res), res,
                           open_, zs, gx, gy, np.nan_to_num(soil), zr, hairpin_params(p, res),
                           _drain(p, drainage, zs.shape))
 

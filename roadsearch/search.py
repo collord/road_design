@@ -75,11 +75,14 @@ class SearchProblem:
     params: Params
     lat: LatticeArrays
     cost: CostTable
-    hp: np.ndarray       # (nr, nc, nh, slots) left-hairpin cost, float32, inf if infeasible
+    hp: np.ndarray       # (cells, nh, slots) left-hairpin cost, float32, inf if infeasible
     lam_fill: float = math.nan   # current price of crossing fill per m3 (section 8)
-    bend: np.ndarray | None = None          # (nr, nc, nh, slots) left-bend cost, float32
+    bend: np.ndarray | None = None          # (cells, nh, slots) left-bend cost, float32
     bend_geo: BendGeometry | None = None
     open_tables: np.ndarray | None = None   # the mask the hairpin and bend tables were built on
+    # (nr, nc) int32: row of each grid cell in the hairpin and bend tables, -1 where they have
+    # none. The tables hold the cells open when they were built, so memory follows the corridor.
+    macro_lookup: np.ndarray | None = None
 
     @property
     def n_theta(self) -> int:
@@ -115,8 +118,10 @@ class SearchProblem:
                 np.array(p.culvert_area_breaks, dtype=np.float64),
                 np.array(p.culvert_costs, dtype=np.float64),
                 float(lam), p.w, p.f_rock, p.H_fill_max, p.fill_tol,
-                self.bend if self.bend is not None else np.full((1, 1, 1, 1), np.inf, dtype=np.float32),
-                p.C_travel, p.C_vertical, p.C_turn)
+                self.bend if self.bend is not None else np.full((0, 1, 1), np.inf, dtype=np.float32),
+                p.C_travel, p.C_vertical, p.C_turn,
+                self.macro_lookup if self.macro_lookup is not None
+                else np.full((self.nr, self.nc), -1, dtype=np.int32))
 
 
 def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool = True,
@@ -137,18 +142,22 @@ def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool =
 
     slots = hairpin_slots(p, g.res) if hairpins else None
     z_raw = np.ascontiguousarray(g.z, dtype=np.float64)
+    cells = np.flatnonzero(open_)
+    lookup = np.full(open_.size, -1, dtype=np.int32)
+    lookup[cells] = np.arange(cells.size, dtype=np.int32)
+    lookup = lookup.reshape(open_.shape)
     if hairpins:
-        with stage("hairpin table", cells=int(open_.sum())):
-            hp = hairpin_table((open_, zs, gx, gy, soil, z_raw), p, g.res, (channel, area))
+        with stage("hairpin table", cells=int(cells.size)):
+            hp = hairpin_table((open_, zs, gx, gy, soil, z_raw), p, g.res, (channel, area), cells)
     else:
-        hp = np.full((1, 1, 1, 1), np.inf, dtype=np.float32)
+        hp = np.full((0, 1, 1), np.inf, dtype=np.float32)
     bend_geo = bend = None
     if bends:
         from .bend import bend_geometry, bend_table
 
         with stage("bend table"):
             bend_geo = bend_geometry(p, g.res)
-            bend = bend_table((open_, zs, gx, gy, soil, z_raw), p, g.res, bend_geo, (channel, area))
+            bend = bend_table((open_, zs, gx, gy, soil, z_raw), p, g.res, bend_geo, (channel, area), cells)
     return SearchProblem(
         nr=g.shape[0], nc=g.shape[1], open_=open_, gx=gx, gy=gy, zs=zs, soil=soil,
         z_raw=z_raw, channel=channel, area=area, chdist=chdist,
@@ -157,6 +166,7 @@ def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool =
                            p.L_cross_max / g.res if crossings else 0.0, bend_geo, p.move_max_cells,
                            p.kink_max_deg),
         cost=build_cost_table(p), hp=hp, bend=bend, bend_geo=bend_geo, open_tables=open_.copy(),
+        macro_lookup=lookup,
     )
 
 
@@ -218,7 +228,7 @@ def _eval_fill(r, c, p, lat, terr):
     p_len = lat[4]
     (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base,
      z_raw, channel, area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel,
-     C_vert, C_turn) = terr
+     C_vert, C_turn, mlook) = terr
     nr, nc = open_.shape
     Lc = p_len[p]
     if chdist[r, c] > Lc:
@@ -353,7 +363,7 @@ def _eval_action(r, c, p, lat, terr):
      p_slot, p_turn) = lat
     (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base,
      z_raw, channel, area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel,
-     C_vert, C_turn) = terr
+     C_vert, C_turn, mlook) = terr
     nr, nc = open_.shape
     kind = p_kind[p]
     if kind == ACTION_HP_LEFT or kind == ACTION_BEND_L:
@@ -362,8 +372,9 @@ def _eval_action(r, c, p, lat, terr):
         if not (_cell_open(open_, r, c, nr, nc) and _cell_open(open_, r + p_dr[p], c + p_dc[p], nr, nc)):
             return math.inf
         tab = hp if kind == ACTION_HP_LEFT else bend
-        if r < tab.shape[0] and c < tab.shape[1]:
-            return float(tab[r, c, p_h0[p], p_slot[p]])
+        k = mlook[r, c]
+        if 0 <= k < tab.shape[0]:
+            return float(tab[k, p_h0[p], p_slot[p]])
         return math.inf
     if kind == ACTION_FILL:
         return _eval_fill(r, c, p, lat, terr)
@@ -577,19 +588,71 @@ def _search(nh, lat, terr, sources, goal_r, goal_c, astar, max_cost):
 
 @dataclass
 class SearchResult:
-    G: np.ndarray          # (nr, nc, nh) cost-to-come
-    parent: np.ndarray     # (nr, nc, nh) action used to arrive, -1 at sources/unreached
-    closed: np.ndarray     # (nr, nc, nh) bool
+    """Per-state results on the cells a search covered (the open cells and the source and goal
+    cells), n_theta values per cell, so memory follows the searched area, not the grid.
+
+    A *state index* is row * n_theta + h, row being the cell's row in `cells`; `lookup`
+    maps a grid cell to that row. Two searches of the same problem that include the same
+    source and goal cells cover the same cells, so their state indices agree."""
+
+    cells: np.ndarray       # (n,) flat grid index (row * nc + col) of each searched cell, ascending
+    lookup: np.ndarray      # (nr * nc,) int32: row of each grid cell in `cells`, -1 if not searched
+    G: np.ndarray           # (n, n_theta) cost to come, inf where not reached
+    parent: np.ndarray      # (n, n_theta) int16 action used to arrive, -1 at sources and unreached
+    closed: np.ndarray      # (n, n_theta) bool
+    nr: int
+    nc: int
     n_expanded: int
     goal_state: tuple[int, int, int] | None
 
     @property
+    def n_theta(self) -> int:
+        return self.G.shape[1]
+
+    def row(self, r, c) -> int:
+        """Row of cell (r, c) in `cells`, -1 if it was not searched."""
+        if not (0 <= r < self.nr and 0 <= c < self.nc):
+            return -1
+        return int(self.lookup[r * self.nc + c])
+
+    def state(self, r, c, h) -> int:
+        """State index of (r, c, h), -1 if the cell was not searched."""
+        k = self.row(r, c)
+        return -1 if k < 0 else k * self.n_theta + int(h)
+
+    def g(self, r, c, h) -> float:
+        k = self.row(r, c)
+        return math.inf if k < 0 else float(self.G[k, h])
+
+    def parent_of(self, r, c, h) -> int:
+        k = self.row(r, c)
+        return -1 if k < 0 else int(self.parent[k, h])
+
+    def rc(self, state) -> tuple[int, int, int]:
+        """(row, col, heading) of a state index."""
+        k, h = divmod(int(state), self.n_theta)
+        r, c = divmod(int(self.cells[k]), self.nc)
+        return r, c, h
+
+    @property
     def goal_cost(self) -> float:
-        return float(self.G[self.goal_state]) if self.goal_state else math.inf
+        return self.g(*self.goal_state) if self.goal_state else math.inf
+
+    def to_grid(self, values: np.ndarray, fill) -> np.ndarray:
+        """A per-cell array (one value per searched cell) on the whole grid."""
+        out = np.full(self.nr * self.nc, fill, dtype=np.asarray(values).dtype)
+        out[self.cells] = values
+        return out.reshape(self.nr, self.nc)
 
     def min_over_headings(self, closed_only=False) -> np.ndarray:
         G = np.where(self.closed, self.G, np.inf) if closed_only else self.G
-        return G.min(axis=2)
+        return self.to_grid(G.min(axis=1), np.inf)
+
+
+def _cell_lookup(cells: np.ndarray, n: int) -> np.ndarray:
+    lookup = np.full(n, -1, dtype=np.int32)
+    lookup[cells] = np.arange(cells.size, dtype=np.int32)
+    return lookup
 
 
 def _default_engine() -> str:
@@ -614,7 +677,7 @@ def rust_args(prob: SearchProblem):
                 for i, a in enumerate(prob.lat_tuple()))
     t = list(prob.terr_tuple())
     for i, dt in {0: np.uint8, 1: f8, 2: f8, 3: f8, 4: np.float32, 5: f8, 11: f8, 12: np.uint8, 13: f8,
-                  14: f8, 15: f8, 16: f8, 22: np.float32}.items():
+                  14: f8, 15: f8, 16: f8, 22: np.float32, 26: np.int32}.items():
         t[i] = np.ascontiguousarray(t[i], dtype=dt)
     for i in (6, 7, 8, 9, 10, 17, 18, 19, 20, 21, 23, 24, 25):
         t[i] = float(t[i])
@@ -622,26 +685,30 @@ def rust_args(prob: SearchProblem):
 
 
 def _search_rust(prob: SearchProblem, sources, gr, gc, astar, max_cost):
-    """roadsearch_core.search, its per-cell results spread back onto the whole grid."""
     import roadsearch_core
 
-    nh = prob.n_theta
     lat, terr = rust_args(prob)
-    cells, g, par, cl, n_exp, gs = roadsearch_core.search(nh, lat, terr, sources, gr, gc, astar, float(max_cost))
-    n = prob.nr * prob.nc * nh
-    idx = (cells[:, None] * nh + np.arange(nh)).reshape(-1)
-    G = np.full(n, np.inf)
-    G[idx] = g
-    parent = np.full(n, -1, dtype=np.int16)
-    parent[idx] = par
-    closed = np.zeros(n, dtype=np.uint8)
-    closed[idx] = cl
-    return G, parent, closed, n_exp, gs
+    return roadsearch_core.search(prob.n_theta, lat, terr, sources, gr, gc, astar, float(max_cost))
+
+
+def _search_numba(prob: SearchProblem, sources, gr, gc, astar, max_cost):
+    """The numba kernel, its whole-grid arrays cut down to the cells the Rust kernel covers."""
+    nh = prob.n_theta
+    G, parent, closed, n_exp, gs = _search(nh, prob.lat_tuple(), prob.terr_tuple(), sources, gr, gc, astar,
+                                           max_cost)
+    active = prob.open_.reshape(-1) != 0
+    active[np.asarray(sources) // nh] = True
+    if gr >= 0:
+        active[gr * prob.nc + gc] = True
+    cells = np.flatnonzero(active)
+    take = lambda a: a.reshape(-1, nh)[cells].reshape(-1)  # noqa: E731
+    return cells, take(G), take(parent), take(closed), n_exp, gs
 
 
 def run_search(prob: SearchProblem, source_rc, goal_rc=None, astar=False, max_cost=math.inf,
                source_heading: int | None = None, engine: str | None = None) -> SearchResult:
-    """Search from cell source_rc (all headings, or only source_heading)."""
+    """Search from cell source_rc (all headings, or only source_heading). With goal_rc, its
+    cheapest settled state is reported (A* stops there); either way the goal cell is covered."""
     nh = prob.n_theta
     r0, c0 = source_rc
     hs = range(nh) if source_heading is None else [source_heading]
@@ -650,20 +717,16 @@ def run_search(prob: SearchProblem, source_rc, goal_rc=None, astar=False, max_co
     if astar and goal_rc is None:
         raise ValueError("A* needs a goal")
     engine = engine or ENGINE
-    if engine == "rust":
-        G, parent, closed, n_exp, gs = _search_rust(prob, sources, gr, gc, astar, max_cost)
-    elif engine == "numba":
-        G, parent, closed, n_exp, gs = _search(nh, prob.lat_tuple(), prob.terr_tuple(),
-                                               sources, gr, gc, astar, max_cost)
-    else:
+    if engine not in ("rust", "numba"):
         raise ValueError(f"unknown search engine {engine!r} (numba or rust)")
-    shape = (prob.nr, prob.nc, nh)
+    kernel = _search_rust if engine == "rust" else _search_numba
+    cells, G, parent, closed, n_exp, gs = kernel(prob, sources, gr, gc, astar, max_cost)
     goal = None
     if gs >= 0:
         cell, h = divmod(int(gs), nh)
         goal = (cell // prob.nc, cell % prob.nc, h)
-    return SearchResult(G.reshape(shape), parent.reshape(shape), closed.reshape(shape).astype(bool),
-                        int(n_exp), goal)
+    return SearchResult(cells, _cell_lookup(cells, prob.nr * prob.nc), G.reshape(-1, nh), parent.reshape(-1, nh),
+                        closed.reshape(-1, nh).astype(bool), prob.nr, prob.nc, int(n_exp), goal)
 
 
 def reconstruct(res: SearchResult, lat: LatticeArrays, state) -> list[tuple[int, int, int]]:
@@ -671,7 +734,7 @@ def reconstruct(res: SearchResult, lat: LatticeArrays, state) -> list[tuple[int,
     r, c, h = state
     edges = []
     while True:
-        p = int(res.parent[r, c, h])
+        p = res.parent_of(r, c, h)
         if p < 0:
             break
         r, c, h = r - int(lat.dr[p]), c - int(lat.dc[p]), int(lat.h0[p])
