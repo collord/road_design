@@ -169,6 +169,7 @@ def corridor_fields(prob: SearchProblem, start_rc, goal_rc, max_cost: float = ma
         bwd = run_search(prob, goal_rc, start_rc, max_cost=max_cost)
         row["settled"] = int(bwd.n_expanded)
     assert np.array_equal(fwd.cells, bwd.cells)
+    fwd.closed = bwd.closed = None          # not needed downstream: a byte per state each
     nh = prob.n_theta
     F = np.full(fwd.cells.size, np.inf)
     best_h = np.full(fwd.cells.size, -1, dtype=np.int16)
@@ -371,7 +372,7 @@ def _plateau_chains(fpar, bpar, cells, lookup, dr, dc, h0, rev, nc, nh, Gf, Gb, 
     Returns, for chains whose route costs at most F_max and whose own cost is at least min_cost:
     (head state, tail state, number of edges, length m, plateau cost, route cost)."""
     n = fpar.shape[0]
-    nxt = np.full(n, -1, dtype=np.int64)
+    nxt = np.full(n, -1, dtype=np.int32)          # state indices fit (plateaus() checks)
     has_in = np.zeros(n, dtype=np.bool_)
     half = nh // 2
     for v in range(n):
@@ -426,6 +427,7 @@ def _plateau_chains(fpar, bpar, cells, lookup, dr, dc, h0, rev, nc, nh, Gf, Gb, 
 def plateaus(prob: SearchProblem, fields: Fields, F_max: float, min_cost: float) -> dict:
     """Plateaus of the two search trees (see _plateau_chains), as arrays, cheapest route first."""
     L = prob.lat
+    assert fields.fwd.parent.size < 2**31, "too many states for 32-bit plateau links"
     h, t, k, ln, pc, rc = _plateau_chains(
         fields.fwd.parent.reshape(-1), fields.bwd.parent.reshape(-1), fields.fwd.cells,
         fields.fwd.lookup, L.dr.astype(np.int64),
