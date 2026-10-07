@@ -144,3 +144,21 @@ def test_extra_runs_and_a_reference_line(tmp_path):
     t = r["runs"][m["runs"][0]["run_id"]]
     assert t["construction"] > 0 and t["length"] == pytest.approx(r["profile"]["length"], rel=1e-6)
     assert set(r["profile"]["grades"]) == {"100", "200"} and r["g_max"] == [0.1, 0.12]
+
+
+def test_load_centerline_chains_overlapping_and_gapped_parts(tmp_path):
+    import geopandas as gpd
+    import numpy as np
+    from shapely.geometry import LineString
+
+    from roadsearch.profile import load_centerline
+
+    # Three parts along y = 0, out of order: the second starts 40 m back along the first;
+    # the third starts 25 m past the second's end and is digitized backwards.
+    parts = [LineString([(0, 0), (500, 0)]), LineString([(1000, 0), (1500, 0)]), LineString([(1000 - 25, 0), (460, 0)])]
+    path = tmp_path / "line.gpkg"
+    gpd.GeoDataFrame(geometry=parts, crs=UTM).to_file(path)
+    xy, joints = load_centerline(path, UTM)
+    x = xy[:, 0] if xy[0, 0] < xy[-1, 0] else xy[::-1, 0]
+    assert (np.diff(x) > 0).all() and x[0] == 0 and x[-1] == 1500        # one way, no doubling back
+    assert sorted(j.get("overlap_m", j.get("gap_m")) for j in joints) == [25.0, 40.0]

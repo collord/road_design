@@ -6,6 +6,7 @@
     python -m roadsearch sweep --dem DEM --start X,Y --goal X,Y [--k 0,0.1,1,10,100] [run options]
     python -m roadsearch animate RUN_ID [RUN_ID ...] [--factors 0,1,...]
     python -m roadsearch burn RUN_ID [--rank 1] [--res 2]
+    python -m roadsearch profile LINE --dem DEM --resolution M [--run RUN_DIR] [--gpkg G --prefix P]
     python -m roadsearch tree RUN_ID [RUN_ID ...]
     python -m roadsearch merge SRC [SRC ...] --out DEST
     python -m roadsearch example NAME [--k K] [--out DIR]     (examples.toml)
@@ -231,6 +232,17 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_profile(args) -> int:
+    from .profile import profile_report
+
+    p = params_from_args(args)
+    out = Path(args.out) if args.out else Path(args.line).with_suffix("").parent / (Path(args.line).stem + "_profile")
+    s = profile_report(args.dem, args.line, p, args.resolution, args.label, out, args.run, args.gpkg, args.prefix)
+    print((out / "summary.md").read_text(encoding="utf-8"))
+    print(f"wrote {out / 'profile.png'}, summary.md and summary.json" + (f"; layers in {args.gpkg}" if args.gpkg else ""))
+    return 0
+
+
 def cmd_burn(args) -> int:
     from .burn import burn_route
 
@@ -363,6 +375,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run-ids", nargs="*", default=None, help="these runs, in this order (default: all in the root)")
     sp.add_argument("--labels", default=None, help="';'-separated label per run (default: from the parameters that differ)")
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("profile", help="cost and profile an existing or proposed road (a centerline file), "
+                                        "optionally beside a run's routes")
+    sp.add_argument("line", help="centerline file (any vector format; multi-part lines are chained)")
+    sp.add_argument("--dem", required=True)
+    sp.add_argument("--resolution", type=float, required=True, help="working resolution (m), e.g. the run's")
+    sp.add_argument("--label", default="reference road")
+    sp.add_argument("--run", default=None, help="a run folder whose routes to cost beside it")
+    sp.add_argument("--out", default=None, help="folder for profile.png and the summary (default: next to the line)")
+    sp.add_argument("--gpkg", default=None, help="also write the line and its profile points to this GeoPackage")
+    sp.add_argument("--prefix", default=None, help="layer name prefix in --gpkg")
+    add_param_arguments(sp)
+    sp.set_defaults(func=cmd_profile)
 
     sp = sub.add_parser("burn", help="burn a route into the DEM: design surface and cut/fill rasters")
     sp.add_argument("run_id")

@@ -198,17 +198,11 @@ def tree_data(run_dir: str | Path) -> dict | None:
 def reference_data(path: str | Path, label: str, run_dirs: list[Path]) -> dict:
     """A reference centerline (e.g. the as-built road): costed on each run's terrain with
     that run's parameters, plus its grade and curve profile."""
-    from shapely.geometry import LineString, MultiLineString
-    from shapely.ops import linemerge
-
     from .polyline import RunTerrain, evaluate_polyline, profile_metrics
+    from .profile import load_centerline
 
     recs = [json.loads((d / "params.json").read_text(encoding="utf-8")) for d in run_dirs]
-    gdf = gpd.read_file(path).to_crs(recs[0]["grid"]["working_crs"])
-    geom = linemerge(list(gdf.geometry)) if len(gdf) > 1 else gdf.geometry.iloc[0]
-    if isinstance(geom, MultiLineString):
-        geom = max(geom.geoms, key=lambda g: g.length)
-    xy = np.asarray(LineString(geom).coords)[:, :2]
+    xy, _ = load_centerline(path, recs[0]["grid"]["working_crs"])     # parts chained, overlaps cut
     start = np.asarray(recs[0]["inputs"]["start"], float)
     if np.hypot(*(xy[-1] - start)) < np.hypot(*(xy[0] - start)):
         xy = xy[::-1]                                   # run it from the start toward the goal
