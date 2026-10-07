@@ -151,25 +151,21 @@ def feature_rows(grid: Grid, run_id, route_id, rank, route, conflicts, prob):
     return rows
 
 
-def hairpin_candidate_rows(grid: Grid, prob, run_id) -> list[dict]:
-    """One point per node with any feasible hairpin: cheapest cost, its
-    heading (degrees, east = 0, CCW) and side, and how many are feasible."""
+def write_hairpin_rasters(run_dir: Path, grid: Grid, prob) -> None:
+    """Where hairpins fit: hairpin_min_cost.tif, the cheapest feasible left hairpin at each
+    node (any heading and leg spacing), and hairpin_n_feasible.tif, the number of headings with
+    a feasible one. (These were point features, one per node: hundreds of thousands per run.)"""
     if prob.hp.shape[0] == 0 or prob.macro_lookup is None:
-        return []
+        return
     hp = prob.hp.min(axis=2)                      # (table cells, headings)
-    rows = np.flatnonzero(np.isfinite(hp).any(axis=1))
-    if not len(rows):
-        return []
-    # Table rows follow the cells with a lookup entry, in row-major order.
-    cells = np.argwhere(prob.macro_lookup >= 0)[rows]
-    sub = hp[rows]
-    h = np.argmin(sub, axis=1)
-    vec = heading_vectors(prob.n_theta)
-    ang = np.degrees(np.arctan2(vec[:, 1], vec[:, 0]))
-    return [dict(feature_type="hairpin_candidate", run_id=run_id, cost=float(sub[i, h[i]]),
-                 heading_deg=float(ang[h[i]]), side="left", n_feasible=int(np.isfinite(sub[i]).sum()),
-                 pt=np.array([[r, c]], dtype=float))
-            for i, (r, c) in enumerate(cells)]
+    cells = np.flatnonzero(prob.macro_lookup.reshape(-1) >= 0)
+    n = np.isfinite(hp).sum(axis=1)
+    cost = np.full(grid.shape[0] * grid.shape[1], np.nan, dtype=np.float32)
+    cost[cells] = np.where(n > 0, hp.min(axis=1), np.nan)
+    count = np.zeros(cost.size, dtype=np.uint8)
+    count[cells] = n
+    write_raster(run_dir / "hairpin_min_cost.tif", cost.reshape(grid.shape), grid)
+    write_raster(run_dir / "hairpin_n_feasible.tif", count.reshape(grid.shape), grid)
 
 
 def _merge_write(path: Path, gdf: gpd.GeoDataFrame, run_id: str, sort_cols) -> None:
@@ -198,7 +194,6 @@ def write_vectors(out: Path, grid: Grid, run_id: str, routes, prob) -> dict:
                                               for s in rt.segments])))
         feat += feature_rows(grid, run_id, rt.route_id, rank, rt, conflicts, prob)
         counts[rt.route_id] = len(conflicts)
-    feat += hairpin_candidate_rows(grid, prob, run_id)
     crs = grid.crs.to_wkt()
     routes_gdf = gpd.GeoDataFrame(pd.DataFrame(seg_rows, columns=ROUTE_COLUMNS), geometry=seg_geom, crs=crs)
     _merge_write(out / "routes.parquet", routes_gdf, run_id, ["run_id", "rank", "seq"])
@@ -258,6 +253,8 @@ def merge_outputs(sources: list[Path], dest: Path) -> list[str]:
             if not (src / name).exists():
                 continue
             gdf = gpd.read_parquet(src / name)
+            if gdf.empty and not (dest / name).exists():
+                gdf.to_parquet(dest / name, index=False)       # keep the (empty) file and its columns
             for run_id, part in gdf.groupby("run_id", sort=True):
                 _merge_write(dest / name, gpd.GeoDataFrame(part, geometry="geometry", crs=gdf.crs), run_id, sort_cols)
     return sorted(set(merged))

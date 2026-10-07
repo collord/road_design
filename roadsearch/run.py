@@ -19,7 +19,7 @@ from . import memguard
 from .exclusion import ExclusionError, normalize_spec, split_spec
 from .explore import write_corridor_tree
 from .masshaul import TrueCost, true_cost
-from .outputs import write_field_rasters, write_params_json, write_vectors
+from .outputs import write_field_rasters, write_hairpin_rasters, write_params_json, write_vectors
 from .params import Params
 from .pipeline import alternatives, avoid_self_overlap, corridor_fields, fill_price_iteration
 from .preprocess import ConnectivityError, EndpointError, preprocess
@@ -361,6 +361,12 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
 
     with stage('write field rasters'):
         write_field_rasters(run_dir, grid, fields, explored)
+        write_hairpin_rasters(run_dir, grid, prob)
+    # Nothing below prices an edge: route shapes come from each macro's own design, not the
+    # tables. Dropping them here lowers the memory peak of the output stage.
+    prob.hp = prob.hp[:0]
+    if prob.bend is not None:
+        prob.bend = prob.bend[:0]
     if tree:
         with stage('write corridor tree'):
             write_corridor_tree(run_dir, prob, fields)

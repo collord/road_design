@@ -49,13 +49,16 @@ def test_run_writes_all_outputs(tmp_path):
         assert segs["length"].sum() == pytest.approx(r["length"])
         assert segs["cost_total"].sum() == pytest.approx(r["cost_true"], rel=1e-9)
         assert np.all(np.diff(segs["station_start"].to_numpy()) > 0)
-    assert "hairpin_candidate" in set(feats["feature_type"])
     run_dir = out / "runs" / run_id
     for name in ["dem_smoothed", "slope", "soil_depth", "exclusion_code", "reachable", "contributing_area_ha",
-                 "corridor_field", "cost_to_come_forward", "cost_to_come_backward", "explored_astar"]:
+                 "corridor_field", "cost_to_come_forward", "cost_to_come_backward", "explored_astar",
+                 "hairpin_min_cost", "hairpin_n_feasible"]:
         assert (run_dir / f"{name}.tif").exists(), name
     assert (run_dir / "quicklook.png").exists()
     assert not (run_dir / "corridor_tree.npz").exists()            # display only: with --tree
+    with rasterio.open(run_dir / "hairpin_n_feasible.tif") as ds:
+        assert ds.read(1).max() > 0                                # hairpins fit somewhere
+    assert "hairpin_candidate" not in set(feats["feature_type"])  # a raster now, not points
     rec = json.loads((run_dir / "params.json").read_text())
     assert rec["params"]["g_max"] == 0.1 and rec["dem"]["crs_epsg"] == 32611
     assert rec["routes"][0]["rank"] == 1
