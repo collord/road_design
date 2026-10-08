@@ -1,6 +1,6 @@
 # Road search in Rust and in the browser: design
 
-Status: agreed 2026-10-07. Phase 1 in progress.
+Status: agreed 2026-10-07. Phase 1 done (5d11c07); phase 2 next.
 
 ## Goal
 
@@ -93,7 +93,7 @@ full searches finish.
 | crate | contents | status |
 |---|---|---|
 | `lattice-search` | generic sparse heading-lattice Dijkstra and A* (traits for edge cost and estimate) | done |
-| `road-cost` | the road cost model as an `EdgeCost`; hairpin and bend macro costs (to be ported: built in parallel or lazily, cached per cell) | phase 1 |
+| `road-cost` | the road cost model as an `EdgeCost`; hairpin and bend macro designs and tables (`macros`) | done (lazy per-cell costs: phase 4) |
 | `terrain` | smoothing, gradients, slope mask, flow accumulation, channels, saddles | phase 2 |
 | `tin-graph` | triangulation, extra nodes, graph costing, corridor field, distinct corridors, Monte Carlo | phase 3 |
 | `roadsearch-core` | Python bindings (PyO3) | done; grows with each phase |
@@ -133,8 +133,10 @@ Quadric-error decimation (`meshopt-rs`) is available if a non-heightfield mesh i
 
 ## Phases
 
-1. **Macro tables in Rust**: hairpin and bend costs, built in parallel for full searches or lazily per
-   cell for A* and chunks; parity with numba. Plus the event stream and progress reporting.
+1. **Macro tables in Rust** (done): hairpin and bend costs built in parallel, same feasibility as
+   numba and float32 costs equal but for last-bit differences, about 3x faster. Event stream
+   (`events.jsonl`), progress and cancellation from the Rust search, `roadsearch status` (done).
+   Computing macro costs lazily per cell moves to phase 4, where the chunked fine search needs it.
 2. **Preprocessing in Rust**: smoothing, gradients, slope mask, flow accumulation, channels.
 3. **Triangulated coarse graph**: triangulation, extra nodes, costing, corridor field, distinct
    corridors, Monte Carlo; compared with the lattice coarse pass.
