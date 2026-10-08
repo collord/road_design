@@ -84,6 +84,11 @@ class Params:
     tin_max_shared: float
     tin_buffer: float
     tin_hairpin_cost: float
+    cost_samples: float
+    cost_sigma: float
+    cost_sigma_edge: float
+    tin_node_samples: float
+    tin_node_density: float
 
     def __post_init__(self) -> None:
         if len(self.culvert_costs) != len(self.culvert_area_breaks) + 1:
@@ -148,6 +153,16 @@ def _coerce(name: str, value: Any) -> Any:
     return str(value)
 
 
+# Parameters that were renamed: old name -> new name (runs record the names of their day).
+RENAMED = {"tin_mc_samples": "cost_samples", "tin_mc_sigma": "cost_sigma", "tin_mc_sigma_edge": "cost_sigma_edge",
+           "tin_cost_samples": "cost_samples", "tin_cost_sigma": "cost_sigma",
+           "tin_cost_sigma_edge": "cost_sigma_edge"}
+
+
+def _renamed(d: dict) -> dict:
+    return {RENAMED.get(k, k): v for k, v in d.items()}
+
+
 def load_params(
     params_file: str | Path | None = None,
     overrides: dict[str, Any] | None = None,
@@ -157,6 +172,7 @@ def load_params(
     with open(defaults_file, "rb") as fh:
         raw = tomllib.load(fh)
     known = {f.name for f in fields(Params)}
+    raw = _renamed(raw)
     missing = known - raw.keys()
     if missing:
         raise ValueError(f"{defaults_file} is missing parameters: {sorted(missing)}")
@@ -168,6 +184,7 @@ def load_params(
     if overrides:
         layers.append(("overrides", overrides))
     for source, layer in [(str(defaults_file), raw)] + layers:
+        layer = _renamed(layer)
         unknown = layer.keys() - known
         if unknown:
             raise ValueError(f"unknown parameters in {source}: {sorted(unknown)}")

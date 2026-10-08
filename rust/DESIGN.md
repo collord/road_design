@@ -44,9 +44,17 @@ Two problems with the current method drive this, beyond speed:
    - each candidate is kept if it is within a stretch bound of the best and dissimilar from those kept.
    The cutoff for keeping a corridor is generous: fine-searching one corridor too many is cheap, and
    dropping the true best is not.
-6. **Uncertainty by Monte Carlo**: sample the uncertain unit costs (the cost unit, soil depth, rock
-   fraction, fuel) and re-cost the graph for each sample. Report how often each corridor wins. Nodes
-   used by most samples are constrictions, which also places the fine stage's gates.
+6. **Sampling, both optional.**
+   - *Node sampling* (`tin_node_samples`): random nodes added to the terrain-informed ones, the
+     graph rebuilt and searched again. How often each corridor wins when the nodes move, and new
+     corridors the fixed nodes missed, which join the fine search's region. In the browser, node
+     batches arriving one after another are the convergence to watch.
+   - *Cost sampling* (`cost_samples`): the uncertain unit costs (the cost unit, operating weight,
+     local ground) perturbed and the coarse stage re-costed: how often each corridor still wins. A
+     sensitivity check, not odds: the spreads are judgments, and it inherits the coarse model's
+     biases (on Stibnite the graph preferred a ridge corridor in 94% of cost samples; the fine search
+     then found the valley cheaper). Implemented on the graph, where costs stay split into
+     construction and operating parts; the lattice coarse pass would need its tables split too.
 
 ### Fine stage: the heading lattice, per corridor, in chunks
 
@@ -148,8 +156,10 @@ Quadric-error decimation (`meshopt-rs`) is available if a non-heightfield mesh i
    search's region. On Stibnite (10.5%) it covers the whole DEM in 12 s (154,000 nodes, 1.4 million
    edges) and found the valley route the lattice coarse pass had excluded; the fine search confirmed
    it at 14.99 M against 17.04 M for the best ridge route at the same resolution, in 6 minutes all
-   told. To do: turning cost on graph edges (the graph favors winding routes without it), Monte
-   Carlo over unit costs, corridor-field-graded penalties, a comparison on Red Mountain.
+   told. Since then (`tin-2`): turning costs on the graph (a search over directed edges), penalties
+   graded by the corridor field, node and cost sampling. On Red Mountain (20 m radius, 9%, k = 1,
+   turning) the graph stage found the same best and second routes as the lattice coarse pass, to
+   the unit, and better third and fourth ones, in 7 minutes all told (the lattice run, 100).
 4. **Browser**: the WebAssembly crate, a Web Worker, the viewer in TypeScript (Vite, still a static
    site), streamed convergence, weighted-A* candidates and exact refinement, chunked fine search.
 5. **Browser input and output**, and a memory budget for a whole run in a tab.

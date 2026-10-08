@@ -30,3 +30,25 @@ def test_clip_tin_runs_end_to_end(tmp_path):
     assert (run_dir / "clip_region.tif").exists() and rec["routes"][0]["cost_true"] > 0
     # The graph's estimate is the same order as the fine search's cost.
     assert 0.3 < co["corridors"][0]["cost"] / rec["routes"][0]["cost_true"] < 3.0
+
+
+def test_node_and_cost_sampling(tmp_path):
+    """Both samplings are optional; with them, every sample is counted once (a corridor's share,
+    or a new corridor), and a new corridor joins the fine search's region."""
+    from roadsearch.params import load_params
+    from roadsearch.tin import tin_corridor
+
+    path, s, g = dem_file(tmp_path)
+    p = load_params(overrides={"tin_res": 5.0, "tin_buffer": 100.0, "tin_block": 25.0, "tin_edge_max": 60.0,
+                               "tin_node_samples": 3, "tin_node_density": 4000.0, "cost_samples": 8})
+    grid, region, info, gdf = tin_corridor(path, p, s, g, [], log=lambda m: None)
+    kept = gdf[gdf.found_by != "sampled"]
+    new = gdf[gdf.found_by == "sampled"]
+    assert info["node_samples"] == 3 and info["node_sample_nodes"] > 0
+    node_total = kept.node_sample_share.sum() + new.node_sample_share.sum()
+    assert abs(node_total - 1.0) < 1e-9
+    assert abs(kept.cost_sample_share.sum() + info["cost_sample_share_none"] - 1.0) < 1e-9
+    # Without sampling, no shares.
+    p0 = load_params(overrides={"tin_res": 5.0, "tin_buffer": 100.0, "tin_block": 25.0, "tin_edge_max": 60.0})
+    _, _, info0, gdf0 = tin_corridor(path, p0, s, g, [], log=lambda m: None)
+    assert gdf0.node_sample_share.isna().all() and info0["node_sample_share_new"] is None

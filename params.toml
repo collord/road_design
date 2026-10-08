@@ -116,3 +116,17 @@ tin_buffer = 600.0     # fine-search region: corridors buffered by this (m); dou
                        # reaches the region's edge
 tin_hairpin_cost = -1.0  # allowance per hairpin a steep graph edge implies; -1: from the road
                        # parameters, (C_base + C_travel) (pi + 2) R_hp + C_turn pi
+# Node sampling (optional, the graph only): random nodes added to the graph, rebuilt and searched
+# again: how often each corridor wins when the nodes move, and new corridors the fixed nodes
+# missed (added to the fine search's region).
+tin_node_samples = 0   # node samples (0: none); each rebuilds the graph (seconds to a minute)
+tin_node_density = 20.0  # random nodes per km2 in each node sample
+
+# Cost sampling (optional): the coarse stage re-costed with the uncertain unit costs perturbed, to
+# see how often each corridor still wins: a sensitivity check (the spreads are judgments too).
+# Implemented for --clip tin; the lattice coarse pass would need its macro tables split into
+# construction and operating parts.
+cost_samples = 0       # cost samples (0: none)
+cost_sigma = 0.3       # spread (sigma of the log) of the sampled factors on all construction costs and
+                       # on all operating costs, independently
+cost_sigma_edge = 0.2  # ... and of an independent factor on each graph edge (local ground)

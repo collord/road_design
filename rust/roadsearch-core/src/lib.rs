@@ -541,11 +541,20 @@ fn terrain_reachable<'py>(py: Python<'py>, open: PyReadonlyArray2<'py, bool>, r:
 
 /// The coarse stage on a sparse graph (tin-graph). Rasters (nr x nc): z (working DEM), zs (smoothed),
 /// gx, gy, open (u8), area (ha); section: the cost-per-meter table with its steps (ds, dg).
-/// edge: (g_max, C_travel, C_vertical, A_min, hairpin allowance, culvert breaks, culvert costs);
-/// tin: (tolerance m, k, edge_max cells, block cells, channel node ha, n_alt, penalty, stretch, max_shared).
-/// Returns (rows, cols, kinds, field, routes, n_edges); each route is (node indices, cost,
-/// construction, operating, length m, hairpins, how).
+/// edge: (g_max, C_travel, C_vertical, A_min, hairpin allowance, C_turn, culvert breaks, culvert costs);
+/// tin: (tolerance m, k, edge_max cells, block cells, channel node ha, n_alt, penalty, stretch, max_shared);
+/// cost_samples: (samples, sigma construction, sigma operating, sigma per edge, seed);
+/// node_samples: (samples, random nodes per sample, seed); near: cells within which a route counts
+/// as a corridor's. progress(i, which) is called after each node sample (which: corridor index,
+/// or the number of corridors for a new one).
+///
+/// Returns (rows, cols, kinds, field, routes, cost_none, node_none, n_edges): the graph's nodes and
+/// corridor field; each route is (rows, cols, cost, construction, operating, length m, hairpins,
+/// turning rad, how, cost-sample share, node-sample share), the corridors first and then the new
+/// ones node sampling found; *_none is the share of samples that were none of the corridors (NaN
+/// without samples).
 #[pyfunction]
+#[pyo3(signature = (rasters, section, ds, dg, res, start, goal, edge, tin, cost_samples, node_samples, near, progress=None))]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn tin_corridors<'py>(
     py: Python<'py>,
@@ -558,12 +567,18 @@ fn tin_corridors<'py>(
     goal: (usize, usize),
     edge: &Bound<'py, PyTuple>,
     tin: &Bound<'py, PyTuple>,
+    cost_samples: &Bound<'py, PyTuple>,
+    node_samples: &Bound<'py, PyTuple>,
+    near: f64,
+    progress: Option<Py<PyAny>>,
 ) -> PyResult<(
     Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<i64>>,
     Bound<'py, PyArray1<u8>>,
     Bound<'py, PyArray1<f64>>,
-    Vec<(Bound<'py, PyArray1<i64>>, f64, f64, f64, f64, u32, String)>,
+    Vec<(Bound<'py, PyArray1<i64>>, Bound<'py, PyArray1<i64>>, f64, f64, f64, f64, u32, f64, String, f64, f64)>,
+    f64,
+    f64,
     usize,
 )> {
     let z: PyReadonlyArray2<f64> = item(rasters, 0, "z")?;
@@ -592,37 +607,80 @@ fn tin_corridors<'py>(
         section: SectionTable { data: section.as_slice()?, ns: ts[0], ng: ts[1], ds, dg },
         res,
     };
-    let ef = floats::<5>(&PyTuple::new(py, (0..5).map(|i| edge.get_item(i)).collect::<PyResult<Vec<_>>>()?)?, "edge params")?;
-    let breaks: PyReadonlyArray1<f64> = item(edge, 5, "culvert breaks")?;
-    let costs: PyReadonlyArray1<f64> = item(edge, 6, "culvert costs")?;
+    let ef = floats::<6>(&PyTuple::new(py, (0..6).map(|i| edge.get_item(i)).collect::<PyResult<Vec<_>>>()?)?, "edge params")?;
+    let breaks: PyReadonlyArray1<f64> = item(edge, 6, "culvert breaks")?;
+    let costs: PyReadonlyArray1<f64> = item(edge, 7, "culvert costs")?;
     let e = tin_graph::EdgeParams {
         g_max: ef[0], c_travel: ef[1], c_vertical: ef[2], a_min: ef[3], hairpin_cost: ef[4],
         culvert_breaks: breaks.as_slice()?.to_vec(), culvert_costs: costs.as_slice()?.to_vec(),
     };
+    let c_turn = ef[5];
     let tf = floats::<9>(tin, "tin params")?;
     let p = tin_graph::TinParams {
         tolerance: tf[0], k: tf[1] as usize, edge_max: tf[2], block: tf[3] as usize, channel_node_area: tf[4],
         n_alt: tf[5] as usize, penalty: tf[6], stretch: tf[7], max_shared: tf[8],
     };
-    let (graph, cor) = py.detach(|| {
+    let cf = floats::<5>(cost_samples, "cost sample params")?;
+    let mcp = tin_graph::McParams {
+        samples: cf[0] as usize, sigma_construction: cf[1], sigma_operating: cf[2], sigma_edge: cf[3], seed: cf[4] as u64,
+        near,
+    };
+    let nf = floats::<3>(node_samples, "node sample params")?;
+    let nsp = tin_graph::NodeSampling { samples: nf[0] as usize, nodes: nf[1] as usize, seed: nf[2] as u64, near };
+    let mut error: Option<PyErr> = None;
+    let (graph, cor, cost_wins, node_res) = py.detach(|| {
         let nodes = tin_graph::build_nodes(&t, &p, start, goal);
         let g = tin_graph::build_graph(&t, &e, &p, nodes);
-        let c = tin_graph::corridors(&g, &p, 0, 1);
-        (g, c)
+        let c = tin_graph::corridors(&g, &p, c_turn, 0, 1);
+        let cw = if mcp.samples > 0 && !c.routes.is_empty() {
+            Some(tin_graph::monte_carlo(&g, &c.routes, c_turn, 0, 1, &mcp).wins)
+        } else {
+            None
+        };
+        let nr_ = if nsp.samples > 0 && !c.routes.is_empty() {
+            let mut report = |i: usize, who: usize| {
+                if let Some(cb) = progress.as_ref() {
+                    if error.is_none() {
+                        Python::attach(|py| {
+                            if let Err(e) = cb.call1(py, (i, who)) {
+                                error = Some(e);
+                            }
+                        });
+                    }
+                }
+            };
+            Some(tin_graph::node_samples(&t, &e, &p, c_turn, start, goal, &c.routes, &nsp, &mut report))
+        } else {
+            None
+        };
+        (g, c, cw, nr_)
     });
+    if let Some(e) = error {
+        return Err(e);
+    }
     let rows: Vec<i64> = graph.nodes.iter().map(|n| n.r as i64).collect();
     let cols: Vec<i64> = graph.nodes.iter().map(|n| n.c as i64).collect();
     let kinds: Vec<u8> = graph.nodes.iter().map(|n| n.kind).collect();
-    let routes = cor
-        .routes
-        .into_iter()
-        .map(|r| {
-            let nodes: Vec<i64> = r.nodes.iter().map(|&i| i as i64).collect();
-            (nodes.into_pyarray(py), r.cost, r.construction, r.operating, r.length, r.hairpins, r.how.to_string())
-        })
-        .collect();
-    Ok((rows.into_pyarray(py), cols.into_pyarray(py), kinds.into_pyarray(py), cor.field.into_pyarray(py), routes,
-        graph.edges.len()))
+    let k = cor.routes.len();
+    let share = |w: &Option<Vec<f64>>, i: usize| w.as_ref().map_or(f64::NAN, |w| w[i]);
+    let node_wins = node_res.as_ref().map(|r| r.wins.clone());
+    let mut out = Vec::new();
+    let mut push = |r: &tin_graph::Route, cs: f64, ns: f64| {
+        let rr: Vec<i64> = r.coords.iter().map(|c| c.0 as i64).collect();
+        let cc: Vec<i64> = r.coords.iter().map(|c| c.1 as i64).collect();
+        out.push((rr.into_pyarray(py), cc.into_pyarray(py), r.cost, r.construction, r.operating, r.length, r.hairpins,
+                  r.turning, r.how.to_string(), cs, ns));
+    };
+    for (i, r) in cor.routes.iter().enumerate() {
+        push(r, share(&cost_wins, i), share(&node_wins, i));
+    }
+    if let Some(res_) = &node_res {
+        for (r, sh) in &res_.found {
+            push(r, f64::NAN, *sh);
+        }
+    }
+    Ok((rows.into_pyarray(py), cols.into_pyarray(py), kinds.into_pyarray(py), cor.field.into_pyarray(py), out,
+        share(&cost_wins, k), share(&node_wins, k), graph.edges.len()))
 }
 
 #[pymodule]

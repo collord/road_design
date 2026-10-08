@@ -24,9 +24,15 @@ from shapely.ops import unary_union
 from .params import Params
 from .preprocess import ConnectivityError, preprocess
 from .terrain import load_grid
+from . import events
 from .timing import stage
 
-KINDS = {0: "triangulation", 1: "channel", 2: "saddle", 3: "background", 4: "endpoint"}
+KINDS = {0: "triangulation", 1: "channel", 2: "saddle", 3: "background", 4: "endpoint", 5: "sampled"}
+
+# Recorded in a --clip tin run's inputs (so in its id): bump it when the graph or its corridor
+# search changes what corridors it finds. (The first version, with no turning cost on the graph,
+# recorded nothing.) tin-2: turning cost on the graph, penalties graded by the corridor field.
+COARSE_ENGINE = "tin-2"   # node sampling (optional) adds corridors only when asked for
 
 
 def hairpin_allowance(p: Params) -> float:
@@ -52,28 +58,50 @@ def tin_corridor(dem, p: Params, start, goal, exclude, log=print, buffer: float 
     rasters = (f8(grid.z), f8(t.z_smooth), f8(t.dzdx), f8(t.dzdy), np.ascontiguousarray(t.code == 0, dtype=np.uint8),
                f8(np.nan_to_num(t.area_ha)))
     table = build_cost_table(p)
-    edge = (p.g_max, p.C_travel, p.C_vertical, p.A_min, hairpin_allowance(p),
+    edge = (p.g_max, p.C_travel, p.C_vertical, p.A_min, hairpin_allowance(p), p.C_turn,
             np.array(p.culvert_area_breaks, dtype=np.float64), np.array(p.culvert_costs, dtype=np.float64))
     tin = (p.tin_tolerance, p.tin_k, p.tin_edge_max / res, p.tin_block / res, p.tin_channel_ha, p.tin_alternatives,
            p.tin_penalty, p.tin_stretch, p.tin_max_shared)
+    near = buffer / res
+    cost_s = (p.cost_samples, p.cost_sigma, p.cost_sigma, p.cost_sigma_edge, 20261007)
+    open_km2 = float((t.code == 0).sum()) * res**2 / 1e6
+    node_s = (p.tin_node_samples, round(p.tin_node_density * open_km2), 20261008)
+
+    def sampled(i, which):
+        events.emit("node_sample", sample=int(i) + 1, of=int(p.tin_node_samples), corridor=int(which))
+
     with stage("graph and corridors") as row:
-        rows, cols, kinds, field, routes, n_edges = roadsearch_core.tin_corridors(
+        rows, cols, kinds, field, routes, cost_none, node_none, n_edges = roadsearch_core.tin_corridors(
             rasters, np.ascontiguousarray(table.table), table.ds, table.dg, res, tuple(map(int, t.start_rc)),
-            tuple(map(int, t.goal_rc)), edge, tin)
+            tuple(map(int, t.goal_rc)), edge, tin, cost_s, node_s, near, sampled)
         row.update(nodes=int(rows.size), edges=int(n_edges), corridors=len(routes))
     if not routes:
         raise ConnectivityError("no route on the coarse graph between the endpoints")
-    xy = lambda idx: [grid.xy(float(rows[i]), float(cols[i])) for i in idx]  # noqa: E731
-    lines = [LineString(xy(r[0])) for r in routes]
-    recs = [{"rank": k + 1, "cost": r[1], "construction": r[2], "operating": r[3], "length_m": r[4], "hairpins": r[5],
-             "found_by": r[6]} for k, r in enumerate(routes)]
+    nan = lambda v: None if v != v else v  # noqa: E731
+    lines = [LineString([grid.xy(float(r_), float(c_)) for r_, c_ in zip(r[0], r[1])]) for r in routes]
+    recs = [{"rank": k + 1, "cost": r[2], "construction": r[3], "operating": r[4], "length_m": r[5], "hairpins": r[6],
+             "turning_deg": math.degrees(r[7]), "found_by": r[8], "cost_sample_share": nan(r[9]),
+             "node_sample_share": nan(r[10])} for k, r in enumerate(routes)]
     gdf = gpd.GeoDataFrame(recs, geometry=lines, crs=grid.crs)
     region = features.rasterize([(unary_union([l.buffer(buffer) for l in lines]), 1)], out_shape=grid.shape,
                                 transform=grid.transform, fill=0, dtype="uint8").astype(bool)
     info = {"tin_res_m": res, "nodes": int(rows.size), "node_kinds": {KINDS[k]: int((kinds == k).sum()) for k in KINDS},
-            "edges": int(n_edges), "buffer_m": buffer, "region_cells": int(region.sum()), "corridors": recs}
+            "edges": int(n_edges), "buffer_m": buffer, "region_cells": int(region.sum()), "corridors": recs,
+            "cost_samples": int(p.cost_samples), "cost_sample_share_none": nan(cost_none),
+            "node_samples": int(p.tin_node_samples), "node_sample_nodes": int(node_s[1]),
+            "node_sample_share_new": nan(node_none)}
     best = recs[0]
     log(f"coarse graph at {res:g} m: {rows.size:,} nodes, {n_edges:,} edges; {len(routes)} corridors, best "
         f"{best['cost']:,.0f} ({best['length_m'] / 1000:.1f} km, {best['hairpins']} hairpins); "
         f"region {region.sum() * res**2 / 1e6:.1f} km2")
+    pct = lambda v: "-" if v is None else f"{100 * v:.0f}%"  # noqa: E731
+    if p.tin_node_samples > 0:
+        new = sum(r["found_by"] == "sampled" for r in recs)
+        log(f"node samples ({int(p.tin_node_samples)}, {node_s[1]:,} random nodes each): corridor shares "
+            + ", ".join(f"{r['rank']}: {pct(r['node_sample_share'])}" for r in recs if r["found_by"] != "sampled")
+            + f"; new corridors {new} ({pct(nan(node_none))} of samples)")
+    if p.cost_samples > 0:
+        log(f"cost samples ({int(p.cost_samples)}): corridor shares "
+            + ", ".join(f"{r['rank']}: {pct(r['cost_sample_share'])}" for r in recs if r["found_by"] != "sampled")
+            + f", none of them: {pct(nan(cost_none))}")
     return grid, region, info, gdf

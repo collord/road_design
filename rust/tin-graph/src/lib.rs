@@ -28,6 +28,8 @@ pub const KIND_CHANNEL: u8 = 1;
 pub const KIND_SADDLE: u8 = 2;
 pub const KIND_BACKGROUND: u8 = 3;
 pub const KIND_ENDPOINT: u8 = 4;
+/// Added at random by node sampling.
+pub const KIND_SAMPLED: u8 = 5;
 
 /// Settings of the graph and its corridors.
 #[derive(Clone, Debug)]
@@ -412,7 +414,8 @@ impl PartialOrd for Item {
     }
 }
 
-/// Dijkstra from `source` with edge weights `w`: (distance, parent edge index or u32::MAX).
+/// Dijkstra over nodes from `source` with edge weights `w`: (distance, parent edge or u32::MAX).
+/// No turning costs; see [`search_directed`] for those.
 pub fn dijkstra(g: &Graph, w: &[f64], source: usize) -> (Vec<f64>, Vec<u32>) {
     let n = g.nodes.len();
     let mut dist = vec![f64::INFINITY; n];
@@ -437,21 +440,139 @@ pub fn dijkstra(g: &Graph, w: &[f64], source: usize) -> (Vec<f64>, Vec<u32>) {
     (dist, par)
 }
 
-fn other(g: &Graph, k: u32, u: usize) -> usize {
-    let (a, b) = g.edges[k as usize];
-    if a as usize == u { b as usize } else { a as usize }
+// --- directed edges: states that know where they came from, so turns can be charged -------------
+//
+// Undirected edge k = (u, v), u < v, gives directed edges 2k (u -> v) and 2k + 1 (v -> u).
+
+#[inline(always)]
+fn tail(g: &Graph, d: u32) -> usize {
+    let (a, b) = g.edges[(d / 2) as usize];
+    (if d % 2 == 0 { a } else { b }) as usize
 }
 
-/// Edges of the tree path from the source to `node` (in order from the source).
-fn tree_path(g: &Graph, par: &[u32], node: usize) -> Vec<u32> {
-    let mut out = Vec::new();
-    let mut u = node;
-    while par[u] != u32::MAX {
-        out.push(par[u]);
-        u = other(g, par[u], u);
+#[inline(always)]
+fn head(g: &Graph, d: u32) -> usize {
+    let (a, b) = g.edges[(d / 2) as usize];
+    (if d % 2 == 0 { b } else { a }) as usize
+}
+
+/// The directed edge leaving u along undirected edge k.
+#[inline(always)]
+fn out_of(g: &Graph, u: usize, k: u32) -> u32 {
+    if g.edges[k as usize].0 as usize == u { 2 * k } else { 2 * k + 1 }
+}
+
+/// Heading change (radians, 0..pi) from directed edge a to directed edge b (b leaves a's head).
+fn turn_angle(g: &Graph, a: u32, b: u32) -> f64 {
+    let (p, q, r) = (&g.nodes[tail(g, a)], &g.nodes[head(g, a)], &g.nodes[head(g, b)]);
+    let (ax, ay) = (q.c as f64 - p.c as f64, q.r as f64 - p.r as f64);
+    let (bx, by) = (r.c as f64 - q.c as f64, r.r as f64 - q.r as f64);
+    let na = ax.hypot(ay) * bx.hypot(by);
+    if na == 0.0 {
+        return 0.0;
+    }
+    ((ax * bx + ay * by) / na).clamp(-1.0, 1.0).acos()
+}
+
+/// A search over directed edges: dist[d] is the cheapest cost of arriving at head(d) along d,
+/// counting edge weights and c_turn per radian of turn between consecutive edges.
+pub struct DirectedSearch {
+    pub dist: Vec<f64>,
+    /// The directed edge before d, or u32::MAX if d leaves the source.
+    pub prev: Vec<u32>,
+}
+
+/// Dijkstra over directed edges from `source`. A route may not double straight back along the
+/// edge it arrived on.
+pub fn search_directed(g: &Graph, w: &[f64], c_turn: f64, source: usize) -> DirectedSearch {
+    let nd = 2 * g.edges.len();
+    let mut dist = vec![f64::INFINITY; nd];
+    let mut prev = vec![u32::MAX; nd];
+    let mut heap = BinaryHeap::new();
+    for &(_, k) in &g.adj[g.start[source]..g.start[source + 1]] {
+        let d = out_of(g, source, k);
+        if w[k as usize] < dist[d as usize] {
+            dist[d as usize] = w[k as usize];
+            heap.push(Item(w[k as usize], d));
+        }
+    }
+    while let Some(Item(cost, d)) = heap.pop() {
+        if cost > dist[d as usize] {
+            continue;
+        }
+        let v = head(g, d);
+        for &(_, k2) in &g.adj[g.start[v]..g.start[v + 1]] {
+            if k2 == d / 2 {
+                continue;
+            }
+            let d2 = out_of(g, v, k2);
+            let nc = cost + c_turn * turn_angle(g, d, d2) + w[k2 as usize];
+            if nc < dist[d2 as usize] {
+                dist[d2 as usize] = nc;
+                prev[d2 as usize] = d;
+                heap.push(Item(nc, d2));
+            }
+        }
+    }
+    DirectedSearch { dist, prev }
+}
+
+/// Directed edges from the source to d, in order.
+fn directed_path(s: &DirectedSearch, d: u32) -> Vec<u32> {
+    let mut out = vec![d];
+    let mut x = d;
+    while s.prev[x as usize] != u32::MAX {
+        x = s.prev[x as usize];
+        out.push(x);
     }
     out.reverse();
     out
+}
+
+/// The cheapest arrival at node v: (cost, directed edge), or (inf, MAX).
+fn best_arrival(g: &Graph, s: &DirectedSearch, v: usize) -> (f64, u32) {
+    let mut best = (f64::INFINITY, u32::MAX);
+    for &(_, k) in &g.adj[g.start[v]..g.start[v + 1]] {
+        let d = out_of(g, v, k) ^ 1; // arriving at v along k
+        if s.dist[d as usize] < best.0 {
+            best = (s.dist[d as usize], d);
+        }
+    }
+    best
+}
+
+/// The best route through node v from the two searches: (cost, arriving edge, leaving edge).
+/// fwd is from the start; bwd from the goal, so bwd.dist[b ^ 1] is the cost from v's next node
+/// back to the goal including edge b.
+fn through(g: &Graph, fwd: &DirectedSearch, bwd: &DirectedSearch, c_turn: f64, v: usize, start: usize, goal: usize) -> (f64, u32, u32) {
+    if v == start {
+        let (c, d) = best_arrival(g, bwd, v);
+        return (c, u32::MAX, if d == u32::MAX { u32::MAX } else { d ^ 1 });
+    }
+    if v == goal {
+        let (c, d) = best_arrival(g, fwd, v);
+        return (c, d, u32::MAX);
+    }
+    let mut best = (f64::INFINITY, u32::MAX, u32::MAX);
+    let nbrs = &g.adj[g.start[v]..g.start[v + 1]];
+    for &(_, ka) in nbrs {
+        let a = out_of(g, v, ka) ^ 1;
+        let ga = fwd.dist[a as usize];
+        if !ga.is_finite() || ga >= best.0 {
+            continue;
+        }
+        for &(_, kb) in nbrs {
+            if kb == ka {
+                continue;
+            }
+            let b = out_of(g, v, kb);
+            let c = ga + c_turn * turn_angle(g, a, b) + bwd.dist[(b ^ 1) as usize];
+            if c < best.0 {
+                best = (c, a, b);
+            }
+        }
+    }
+    best
 }
 
 /// A route on the graph.
@@ -459,104 +580,399 @@ fn tree_path(g: &Graph, par: &[u32], node: usize) -> Vec<u32> {
 pub struct Route {
     /// Nodes from the start to the goal.
     pub nodes: Vec<usize>,
+    /// Undirected edges, in order.
     pub edges: Vec<u32>,
+    /// Edge costs plus turning (in the operating part).
     pub cost: f64,
     pub construction: f64,
     pub operating: f64,
     pub length: f64,
     pub hairpins: u32,
-    /// How it was found: "best", "saddle" or "penalty".
+    /// Total heading change at the nodes, radians.
+    pub turning: f64,
+    /// How it was found: "best", "saddle", "penalty" or "sampled".
     pub how: &'static str,
+    /// The nodes' cells (row, col): routes from different graphs compare by these.
+    pub coords: Vec<(usize, usize)>,
 }
 
-fn make_route(g: &Graph, edges: Vec<u32>, start: usize, how: &'static str) -> Route {
-    let mut nodes = vec![start];
-    let (mut cost, mut cons, mut op, mut len, mut hp) = (0.0, 0.0, 0.0, 0.0, 0u32);
-    for &k in &edges {
-        let u = *nodes.last().unwrap();
-        nodes.push(other(g, k, u));
-        let c = &g.costs[k as usize];
-        cost += c.total;
+fn make_route(g: &Graph, path: &[u32], c_turn: f64, how: &'static str) -> Route {
+    let mut nodes = vec![tail(g, path[0])];
+    let (mut cons, mut op, mut len, mut hp, mut turn) = (0.0, 0.0, 0.0, 0u32, 0.0);
+    for (i, &d) in path.iter().enumerate() {
+        nodes.push(head(g, d));
+        let c = &g.costs[(d / 2) as usize];
         cons += c.construction;
         op += c.operating;
         len += c.length;
         hp += c.hairpins;
+        if i > 0 {
+            turn += turn_angle(g, path[i - 1], d);
+        }
     }
-    Route { nodes, edges, cost, construction: cons, operating: op, length: len, hairpins: hp, how }
+    op += c_turn * turn;
+    let coords = route_coords(g, &nodes);
+    Route {
+        coords,
+        nodes,
+        edges: path.iter().map(|d| d / 2).collect(),
+        cost: cons + op,
+        construction: cons,
+        operating: op,
+        length: len,
+        hairpins: hp,
+        turning: turn,
+        how,
+    }
 }
 
 /// Share of route `a`'s length that runs on edges in `kept`.
-fn shared(g: &Graph, a: &Route, kept: &HashSet<u32>) -> f64 {
-    let tot: f64 = a.edges.iter().map(|&k| g.costs[k as usize].length).sum();
-    let sh: f64 = a.edges.iter().filter(|k| kept.contains(k)).map(|&k| g.costs[k as usize].length).sum();
+fn shared(g: &Graph, a: &[u32], kept: &HashSet<u32>) -> f64 {
+    let tot: f64 = a.iter().map(|&k| g.costs[k as usize].length).sum();
+    let sh: f64 = a.iter().filter(|k| kept.contains(k)).map(|&k| g.costs[k as usize].length).sum();
     if tot > 0.0 { sh / tot } else { 1.0 }
 }
 
-/// The corridor search: the best route, the corridor field (best route cost through each node),
-/// and up to n_alt distinct alternatives (saddle candidates first, then a penalty loop).
+/// The corridor search's result.
 pub struct Corridors {
     pub routes: Vec<Route>,
+    /// Cost of the best route through each node.
     pub field: Vec<f64>,
 }
 
-pub fn corridors(g: &Graph, p: &TinParams, start: usize, goal: usize) -> Corridors {
+/// How arbitrary a route's position at node v is: near 1 where a neighbor off the route is about
+/// as good (the route could have gone there), near 0 where every neighbor is much worse (a
+/// constriction: a saddle, a narrow bench, a crossing).
+fn arbitrariness(g: &Graph, field: &[f64], on_route: &HashSet<usize>, v: usize, best: f64, delta: f64) -> f64 {
+    let lateral = g.adj[g.start[v]..g.start[v + 1]]
+        .iter()
+        .map(|&(u, _)| u as usize)
+        .filter(|u| !on_route.contains(u))
+        .map(|u| field[u])
+        .fold(f64::INFINITY, f64::min);
+    if !lateral.is_finite() {
+        return 0.0;
+    }
+    (-((lateral / best - 1.0).max(0.0)) / delta).exp()
+}
+
+/// The best route, the corridor field, and up to n_alt distinct alternatives: routes forced
+/// through saddles (ranked by the field), then a penalty loop whose penalties are graded by how
+/// arbitrary each kept route's position was (constrictions are left open).
+pub fn corridors(g: &Graph, p: &TinParams, c_turn: f64, start: usize, goal: usize) -> Corridors {
     let w: Vec<f64> = g.costs.iter().map(|c| c.total).collect();
-    let (gf, pf) = dijkstra(g, &w, start);
-    let (gb, pb) = dijkstra(g, &w, goal);
-    let field: Vec<f64> = gf.iter().zip(&gb).map(|(a, b)| a + b).collect();
+    let fwd = search_directed(g, &w, c_turn, start);
+    let bwd = search_directed(g, &w, c_turn, goal);
+    let n = g.nodes.len();
+    let thr: Vec<(f64, u32, u32)> = (0..n).map(|v| through(g, &fwd, &bwd, c_turn, v, start, goal)).collect();
+    let field: Vec<f64> = thr.iter().map(|t| t.0).collect();
     let mut routes = Vec::new();
-    if !gf[goal].is_finite() {
+    let (best_cost, arrive) = best_arrival(g, &fwd, goal);
+    if !best_cost.is_finite() {
         return Corridors { routes, field };
     }
-    let best = make_route(g, tree_path(g, &pf, goal), start, "best");
+    let best = make_route(g, &directed_path(&fwd, arrive), c_turn, "best");
     let limit = (1.0 + p.stretch) * best.cost;
-    let mut kept_edges: Vec<HashSet<u32>> = vec![best.edges.iter().copied().collect()];
+    let mut kept: Vec<HashSet<u32>> = vec![best.edges.iter().copied().collect()];
     routes.push(best);
-    let distinct = |r: &Route, kept: &[HashSet<u32>]| kept.iter().all(|k| shared(g, r, k) <= p.max_shared);
+    let distinct = |edges: &[u32], kept: &[HashSet<u32>]| kept.iter().all(|k| shared(g, edges, k) <= p.max_shared);
     // Saddle candidates, cheapest forced route first.
-    let mut sad: Vec<usize> = (0..g.nodes.len())
-        .filter(|&i| g.nodes[i].kind == KIND_SADDLE && field[i] <= limit)
-        .collect();
+    let mut sad: Vec<usize> = (0..n).filter(|&i| g.nodes[i].kind == KIND_SADDLE && field[i] <= limit).collect();
     sad.sort_by(|&a, &b| field[a].total_cmp(&field[b]).then(a.cmp(&b)));
     for s in sad {
         if routes.len() > p.n_alt {
             break;
         }
-        let mut edges = tree_path(g, &pf, s);
-        let mut back = tree_path(g, &pb, s);
-        back.reverse();
-        edges.extend(back);
-        let r = make_route(g, edges, start, "saddle");
-        if r.cost <= limit && distinct(&r, &kept_edges) {
-            kept_edges.push(r.edges.iter().copied().collect());
+        let (_, a, b) = thr[s];
+        if a == u32::MAX || b == u32::MAX {
+            continue;
+        }
+        let mut path = directed_path(&fwd, a);
+        let back: Vec<u32> = directed_path(&bwd, b ^ 1).into_iter().rev().map(|d| d ^ 1).collect();
+        path.extend(back);
+        let r = make_route(g, &path, c_turn, "saddle");
+        if r.cost <= limit && distinct(&r.edges, &kept) {
+            kept.push(r.edges.iter().copied().collect());
             routes.push(r);
         }
     }
-    // Penalty loop: discourage the edges routes have used, search again.
+    // Penalty loop, graded by the field: discourage a kept route where it could as well have
+    // been elsewhere, not where it passes a constriction.
+    let delta = 0.02;
+    let best_cost = routes[0].cost;
     let mut wp = w.clone();
-    for r in &routes {
-        for &k in &r.edges {
-            wp[k as usize] *= p.penalty;
+    let penalize = |wp: &mut Vec<f64>, r: &Route| {
+        let on: HashSet<usize> = r.nodes.iter().copied().collect();
+        let arb: Vec<f64> = r.nodes.iter().map(|&v| arbitrariness(g, &field, &on, v, best_cost, delta)).collect();
+        for (i, &k) in r.edges.iter().enumerate() {
+            let a = arb[i].min(arb[i + 1]);
+            wp[k as usize] *= 1.0 + (p.penalty - 1.0) * a;
         }
+    };
+    for r in routes.clone().iter() {
+        penalize(&mut wp, r);
     }
     for _ in 0..4 * p.n_alt {
         if routes.len() > p.n_alt {
             break;
         }
-        let (d, par) = dijkstra(g, &wp, start);
-        if !d[goal].is_finite() {
+        let s = search_directed(g, &wp, c_turn, start);
+        let (c, a) = best_arrival(g, &s, goal);
+        if !c.is_finite() {
             break;
         }
-        let r = make_route(g, tree_path(g, &par, goal), start, "penalty");
-        for &k in &r.edges {
-            wp[k as usize] *= p.penalty;
-        }
-        if r.cost <= limit && distinct(&r, &kept_edges) {
-            kept_edges.push(r.edges.iter().copied().collect());
+        let r = make_route(g, &directed_path(&s, a), c_turn, "penalty");
+        penalize(&mut wp, &r);
+        if r.cost <= limit && distinct(&r.edges, &kept) {
+            kept.push(r.edges.iter().copied().collect());
             routes.push(r);
         }
     }
     Corridors { routes, field }
+}
+
+// --- sampling: cost uncertainty, and random node placements ------------------------------------
+
+/// Points along a route, bucketed, for "how much of this other route lies near it".
+pub struct Near {
+    cell: f64,
+    near: f64,
+    buckets: HashMap<(i64, i64), Vec<(f64, f64)>>,
+}
+
+impl Near {
+    /// `coords`: the route's nodes (row, col); `near`: the distance (cells) that counts as near.
+    pub fn new(coords: &[(usize, usize)], near: f64) -> Self {
+        let cell = near.max(1.0);
+        let mut buckets: HashMap<(i64, i64), Vec<(f64, f64)>> = HashMap::new();
+        let step = (0.5 * near).max(0.5);
+        for w in coords.windows(2) {
+            let (a, b) = ((w[0].0 as f64, w[0].1 as f64), (w[1].0 as f64, w[1].1 as f64));
+            let len = (b.0 - a.0).hypot(b.1 - a.1);
+            let n = ((len / step).ceil() as usize).max(1);
+            for i in 0..=n {
+                let f = i as f64 / n as f64;
+                let pt = (a.0 + f * (b.0 - a.0), a.1 + f * (b.1 - a.1));
+                buckets.entry(((pt.0 / cell) as i64, (pt.1 / cell) as i64)).or_default().push(pt);
+            }
+        }
+        Near { cell, near, buckets }
+    }
+
+    pub fn is_near(&self, r: f64, c: f64) -> bool {
+        let (br, bc) = ((r / self.cell) as i64, (c / self.cell) as i64);
+        (-1..=1).any(|dr| {
+            (-1..=1).any(|dc| {
+                self.buckets
+                    .get(&(br + dr, bc + dc))
+                    .is_some_and(|l| l.iter().any(|&(pr, pc)| (pr - r).hypot(pc - c) <= self.near))
+            })
+        })
+    }
+
+    /// Share of a route's length (its nodes, row and col) whose segments lie near this route.
+    pub fn share(&self, coords: &[(usize, usize)]) -> f64 {
+        let (mut tot, mut within) = (0.0, 0.0);
+        for w in coords.windows(2) {
+            let (a, b) = ((w[0].0 as f64, w[0].1 as f64), (w[1].0 as f64, w[1].1 as f64));
+            let len = (b.0 - a.0).hypot(b.1 - a.1);
+            tot += len;
+            let mid = (0.5 * (a.0 + b.0), 0.5 * (a.1 + b.1));
+            if self.is_near(a.0, a.1) && self.is_near(b.0, b.1) && self.is_near(mid.0, mid.1) {
+                within += len;
+            }
+        }
+        if tot > 0.0 { within / tot } else { 0.0 }
+    }
+}
+
+/// Which of the kept routes a route is: the one with the largest share of its length near it, if at
+/// least half (ties go to the earlier, cheaper one); routes.len() for none of them.
+fn classify(near: &[Near], coords: &[(usize, usize)]) -> usize {
+    let (mut who, mut most) = (near.len(), 0.5);
+    for (j, nr) in near.iter().enumerate() {
+        let sh = nr.share(coords);
+        if sh > most || (who == near.len() && sh >= most) {
+            who = j;
+            most = sh;
+        }
+    }
+    who
+}
+
+/// Uncertainty of the costs, as lognormal factors with mean 1 (a sensitivity check: the spreads
+/// are themselves judgments).
+#[derive(Clone, Debug)]
+pub struct McParams {
+    pub samples: usize,
+    /// Spread (sigma of the log) of one factor on all construction costs (the cost unit, rock...).
+    pub sigma_construction: f64,
+    /// ... of one factor on all operating costs (fuel, fleet, haul life).
+    pub sigma_operating: f64,
+    /// ... of an independent factor on each edge (local soil, rock, drainage).
+    pub sigma_edge: f64,
+    pub seed: u64,
+    /// A sample's route counts as a kept route when most of its length lies within this many
+    /// cells of it (the corridor buffer).
+    pub near: f64,
+}
+
+/// What the samples found: the share won by each kept route (index len() is "none of them").
+pub struct McResult {
+    pub wins: Vec<f64>,
+}
+
+fn splitmix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+fn uniform(seed: u64) -> f64 {
+    ((splitmix(seed) >> 11) as f64 + 0.5) / (1u64 << 53) as f64
+}
+
+/// A standard normal value from a seed (Box-Muller on two hashed uniforms).
+fn normal(seed: u64) -> f64 {
+    let (u1, u2) = (uniform(seed), uniform(seed ^ 0xD1B5_4A32_D192_ED03));
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+fn lognormal(sigma: f64, seed: u64) -> f64 {
+    if sigma == 0.0 { 1.0 } else { (sigma * normal(seed) - 0.5 * sigma * sigma).exp() }
+}
+
+fn route_coords(g: &Graph, nodes: &[usize]) -> Vec<(usize, usize)> {
+    nodes.iter().map(|&v| (g.nodes[v].r, g.nodes[v].c)).collect()
+}
+
+/// Cost sensitivity: re-cost the graph for sampled cost factors and count which kept route each
+/// sample's best route is.
+pub fn monte_carlo(g: &Graph, routes: &[Route], c_turn: f64, start: usize, goal: usize, mc: &McParams) -> McResult {
+    let near: Vec<Near> = routes.iter().map(|r| Near::new(&r.coords, mc.near)).collect();
+    let one = |i: usize| -> Option<usize> {
+        let base = splitmix(mc.seed ^ (i as u64).wrapping_mul(0xA24B_AED4_963E_E407));
+        let fc = lognormal(mc.sigma_construction, base ^ 1);
+        let fo = lognormal(mc.sigma_operating, base ^ 2);
+        let w: Vec<f64> = g
+            .costs
+            .iter()
+            .enumerate()
+            .map(|(k, c)| (c.construction * fc + c.operating * fo) * lognormal(mc.sigma_edge, base ^ (k as u64 + 3) << 1))
+            .collect();
+        let s = search_directed(g, &w, c_turn * fo, start);
+        let (cost, a) = best_arrival(g, &s, goal);
+        if !cost.is_finite() {
+            return None;
+        }
+        let path = directed_path(&s, a);
+        let mut nodes = vec![tail(g, path[0])];
+        nodes.extend(path.iter().map(|&d| head(g, d)));
+        Some(classify(&near, &route_coords(g, &nodes)))
+    };
+    let results: Vec<Option<usize>> = map_samples(mc.samples, one);
+    let mut wins = vec![0.0; routes.len() + 1];
+    let n = results.iter().filter(|r| r.is_some()).count().max(1) as f64;
+    for who in results.into_iter().flatten() {
+        wins[who] += 1.0 / n;
+    }
+    McResult { wins }
+}
+
+/// Random node placements: each sample adds `nodes` random open cells to the terrain-informed
+/// nodes, rebuilds the graph, and finds its best route.
+#[derive(Clone, Debug)]
+pub struct NodeSampling {
+    pub samples: usize,
+    pub nodes: usize,
+    pub seed: u64,
+    /// As McParams::near.
+    pub near: f64,
+}
+
+/// What the node samples found: the share each kept route won (index len(): none of them), and
+/// the routes that were none of them, distinct from each other (new corridors), with the share of
+/// samples each stands for.
+pub struct NodeSampleResult {
+    pub wins: Vec<f64>,
+    pub found: Vec<(Route, f64)>,
+}
+
+/// Run the node samples. Each builds its own graph, so samples run one after another (the graph
+/// build is itself parallel); `progress` is told after each (sample index, which route it was).
+#[allow(clippy::too_many_arguments)]
+pub fn node_samples(
+    t: &Rasters,
+    e: &EdgeParams,
+    p: &TinParams,
+    c_turn: f64,
+    start: (usize, usize),
+    goal: (usize, usize),
+    routes: &[Route],
+    ns: &NodeSampling,
+    progress: &mut dyn FnMut(usize, usize),
+) -> NodeSampleResult {
+    let mut near: Vec<Near> = routes.iter().map(|r| Near::new(&r.coords, ns.near)).collect();
+    let k_kept = routes.len();
+    let seed_nodes = build_nodes(t, p, start, goal);
+    let (nr, nc) = (t.nr(), t.nc());
+    let mut counts = vec![0usize; k_kept + 1];
+    let mut found: Vec<(Route, usize)> = Vec::new();
+    let mut done = 0usize;
+    for i in 0..ns.samples {
+        let mut nodes = seed_nodes.clone();
+        let mut seen: HashSet<usize> = nodes.iter().map(|n| n.r * nc + n.c).collect();
+        let base = splitmix(ns.seed ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let (mut added, mut tries) = (0usize, 0u64);
+        while added < ns.nodes && tries < 50 * ns.nodes as u64 + 100 {
+            let r = (uniform(base ^ (2 * tries)) * nr as f64) as usize;
+            let c = (uniform(base ^ (2 * tries + 1)) * nc as f64) as usize;
+            tries += 1;
+            if r < nr && c < nc && t.is_open(r as i64, c as i64) && seen.insert(r * nc + c) {
+                nodes.push(Node { r, c, kind: KIND_SAMPLED });
+                added += 1;
+            }
+        }
+        let g = build_graph(t, e, p, nodes);
+        let w: Vec<f64> = g.costs.iter().map(|c| c.total).collect();
+        let s = search_directed(&g, &w, c_turn, 0);
+        let (cost, a) = best_arrival(&g, &s, 1);
+        if !cost.is_finite() {
+            continue;
+        }
+        let r = make_route(&g, &directed_path(&s, a), c_turn, "sampled");
+        done += 1;
+        let who = classify(&near, &r.coords);
+        if who < k_kept {
+            counts[who] += 1;
+        } else if who < near.len() {
+            found[who - k_kept].1 += 1;
+            counts[k_kept] += 1;
+        } else {
+            near.push(Near::new(&r.coords, ns.near));
+            found.push((r, 1));
+            counts[k_kept] += 1;
+        }
+        progress(i, who);
+    }
+    let n = done.max(1) as f64;
+    NodeSampleResult {
+        wins: counts.iter().map(|&c| c as f64 / n).collect(),
+        found: found.into_iter().map(|(r, c)| (r, c as f64 / n)).collect(),
+    }
+}
+
+#[cfg(feature = "parallel")]
+fn map_samples<T: Send, F: Fn(usize) -> T + Sync + Send>(n: usize, f: F) -> Vec<T> {
+    use rayon::prelude::*;
+    (0..n).into_par_iter().map(f).collect()
+}
+
+#[cfg(not(feature = "parallel"))]
+fn map_samples<T, F: Fn(usize) -> T>(n: usize, f: F) -> Vec<T> {
+    (0..n).map(f).collect()
 }
 
 #[cfg(test)]
@@ -610,11 +1026,32 @@ mod tests {
         // The notch in the ridge is found as a saddle.
         assert!(saddles(&t.zs).iter().any(|&(r, c)| r == 20 && (c as i64 - 48).abs() <= 1));
         let g = build_graph(&t, &e, &p, nodes);
-        let c = corridors(&g, &p, 0, 1);
+        let c = corridors(&g, &p, 0.0, 0, 1);
         let best = &c.routes[0];
         // The best route crosses the ridge row near the notch, not straight over the top.
         let crossing = best.nodes.iter().map(|&i| g.nodes[i]).min_by_key(|n| (n.r as i64 - 20).abs()).unwrap();
         assert!((crossing.c as i64 - 48).abs() <= 6, "crossed at column {}", crossing.c);
-        assert!(c.field.iter().zip(0..).all(|(&f, i)| !f.is_finite() || f >= best.cost - 1e-6 || i > g.nodes.len()));
+        // No node's best route is cheaper than the best route.
+        assert!(c.field.iter().all(|&f| !f.is_finite() || f >= best.cost - 1e-6));
+        // Charging turns straightens the route.
+        let ct = corridors(&g, &p, 1e4, 0, 1);
+        assert!(ct.routes[0].turning <= best.turning + 1e-9);
+        assert!(ct.routes[0].cost >= best.cost - 1e-6);
+        // Monte Carlo: shares sum to one, and every sample's route starts at the start.
+        let mc = McParams { samples: 24, sigma_construction: 0.3, sigma_operating: 0.3, sigma_edge: 0.2, seed: 7, near: 4.0 };
+        let r = monte_carlo(&g, &c.routes, 0.0, 0, 1, &mc);
+        assert!((r.wins.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+        let again = monte_carlo(&g, &c.routes, 0.0, 0, 1, &mc);
+        assert_eq!(r.wins, again.wins); // deterministic for a seed
+        // Node sampling: every sample is one of the kept routes or a new one, and the best route
+        // (through the notch) keeps winning when nodes move.
+        let ns = NodeSampling { samples: 6, nodes: 150, seed: 3, near: 4.0 };
+        let mut seen = 0;
+        let res = node_samples(&t, &e, &p, 0.0, (5, 10), (35, 10), &c.routes, &ns, &mut |_, _| seen += 1);
+        assert_eq!(seen, 6);
+        let total: f64 = res.wins.iter().sum();
+        assert!((total - 1.0).abs() < 1e-9);
+        assert!(res.wins[0] >= 0.5, "best corridor share {}", res.wins[0]);
+        assert!((res.found.iter().map(|f| f.1).sum::<f64>() - res.wins[c.routes.len()]).abs() < 1e-9);
     }
 }
