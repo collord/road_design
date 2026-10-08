@@ -50,8 +50,37 @@ pub fn corridor_mask(nr: usize, nc: usize, res: f64, line: &[(f64, f64)], buffer
     line_distance(nr, nc, res, line).iter().map(|&d| u8::from(d <= buffer)).collect()
 }
 
+/// A corridor's own region: within `buffer` meters of its line and no farther from it than from
+/// any other corridor's line, give or take `slack` meters. Where corridors share a stretch both
+/// may use it; where they part, the ground between them is split at the midline, so each
+/// corridor's fine search stays its own and they cannot converge on one route.
+pub fn corridor_region(nr: usize, nc: usize, res: f64, own: &[(f64, f64)], others: &[Vec<(f64, f64)>], buffer: f64,
+                       slack: f64) -> Vec<u8> {
+    let (d_own, nearer) = own_ground(nr, nc, res, own, others, slack);
+    d_own.iter().zip(&nearer).map(|(&a, &n)| u8::from(a <= buffer && n)).collect()
+}
+
+/// Each cell's distance (m) from the own line, and whether it is no farther from it than from
+/// every other line, give or take `slack` m.
+pub fn own_ground(nr: usize, nc: usize, res: f64, own: &[(f64, f64)], others: &[Vec<(f64, f64)>], slack: f64)
+                  -> (Vec<f64>, Vec<bool>) {
+    let d_own = line_distance(nr, nc, res, own);
+    if others.is_empty() {
+        let n = d_own.len();
+        return (d_own, vec![true; n]);
+    }
+    let d_other = lines_distance(nr, nc, res, others);
+    let nearer = d_own.iter().zip(&d_other).map(|(&a, &b)| a <= b + slack).collect();
+    (d_own, nearer)
+}
+
 /// Distance (m) from every cell to the nearest cell a polyline of (row, col) points crosses.
 pub fn line_distance(nr: usize, nc: usize, res: f64, line: &[(f64, f64)]) -> Vec<f64> {
+    lines_distance(nr, nc, res, std::slice::from_ref(&line.to_vec()))
+}
+
+/// Distance (m) from every cell to the nearest cell any of the polylines crosses.
+pub fn lines_distance(nr: usize, nc: usize, res: f64, lines: &[Vec<(f64, f64)>]) -> Vec<f64> {
     let mut on = vec![false; nr * nc];
     let mut mark = |fr: f64, fc: f64| {
         let (r, c) = ((fr + 0.5).floor(), (fc + 0.5).floor());
@@ -59,15 +88,17 @@ pub fn line_distance(nr: usize, nc: usize, res: f64, line: &[(f64, f64)]) -> Vec
             on[r as usize * nc + c as usize] = true;
         }
     };
-    if let Some(&(r, c)) = line.first() {
-        mark(r, c);
-    }
-    for w in line.windows(2) {
-        let ((r0, c0), (r1, c1)) = (w[0], w[1]);
-        let n = (4.0 * (r1 - r0).hypot(c1 - c0)).ceil().max(1.0) as usize;
-        for k in 1..=n {
-            let f = k as f64 / n as f64;
-            mark(r0 + f * (r1 - r0), c0 + f * (c1 - c0));
+    for line in lines {
+        if let Some(&(r, c)) = line.first() {
+            mark(r, c);
+        }
+        for w in line.windows(2) {
+            let ((r0, c0), (r1, c1)) = (w[0], w[1]);
+            let n = (4.0 * (r1 - r0).hypot(c1 - c0)).ceil().max(1.0) as usize;
+            for k in 1..=n {
+                let f = k as f64 / n as f64;
+                mark(r0 + f * (r1 - r0), c0 + f * (c1 - c0));
+            }
         }
     }
     terrain::distance_to(&on, nr, nc, res, res)
@@ -132,6 +163,8 @@ pub struct Problem {
     pub vy: Vec<f64>,
     /// Current price of crossing fill per m3.
     pub lam_fill: f64,
+    /// Per-cell cost factors for the search (empty: none); see RoadCost::penalty.
+    pub penalty: Vec<f32>,
 }
 
 pub fn hairpin_params(p: &Params, res: f64) -> HairpinParams {
@@ -224,6 +257,7 @@ impl Problem {
             open_tables: open.clone(),
             open, gx, gy, zs, soil, z_raw, channel, area, chdist, lat, lattice, actions, table, ds, dg, hp_slots,
             bend_geo, table_cells, macro_lookup, n_bend_slots,
+            penalty: Vec::new(),
             params,
         })
     }
@@ -362,7 +396,34 @@ impl Problem {
             hairpins,
             bends,
             params: &cp,
+            penalty: if self.penalty.is_empty() { None } else { Some(Grid::new(&self.penalty, nr, nc)) },
         };
         f(&model)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corridors_share_a_common_stretch_and_split_where_they_part() {
+        // Two lines from (50, 10): A runs east along row 50, B turns north-east after column 30.
+        let a = vec![(50.0, 10.0), (50.0, 30.0), (50.0, 90.0)];
+        let b = vec![(50.0, 10.0), (50.0, 30.0), (10.0, 90.0)];
+        let (nr, nc, res) = (100, 100, 10.0);
+        let ra = corridor_region(nr, nc, res, &a, std::slice::from_ref(&b), 1000.0, 0.0);
+        let rb = corridor_region(nr, nc, res, &b, std::slice::from_ref(&a), 1000.0, 0.0);
+        let at = |m: &[u8], r: usize, c: usize| m[r * nc + c] != 0;
+        // The shared stretch: both.
+        assert!(at(&ra, 50, 20) && at(&rb, 50, 20));
+        // Near each line where they part: its own only.
+        assert!(at(&ra, 52, 85) && !at(&rb, 52, 85));
+        assert!(at(&rb, 13, 85) && !at(&ra, 13, 85));
+        // Every cell within the buffer belongs to one of them.
+        assert!((0..nr * nc).all(|k| ra[k] != 0 || rb[k] != 0));
+        // Without other corridors, the plain buffer.
+        let alone = corridor_region(nr, nc, res, &a, &[], 100.0, 0.0);
+        assert!(at(&alone, 50, 20) && at(&alone, 59, 50) && !at(&alone, 70, 50));
     }
 }

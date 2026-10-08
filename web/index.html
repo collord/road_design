@@ -61,6 +61,15 @@
           <select id="fine-which"><option value="best">the best</option><option value="all">all</option></select>
         </label>
       </div>
+      <label title="Ground nearer another corridor's line than this one's (stretches the corridors share stay their own). Costing it more keeps each corridor's fine route on its own ground unless the shared ground is much better; closing it can leave no way through where corridors cross. Reported costs never include the factor.">Other corridors' ground
+        <select id="fine-apart">
+          <option value="1">shared freely</option>
+          <option value="1.5">costs 1.5 times as much</option>
+          <option value="2" selected>costs twice as much</option>
+          <option value="3">costs 3 times as much</option>
+          <option value="Infinity">closed</option>
+        </select>
+      </label>
       <p class="muted">Each corridor's buffer is searched on the heading lattice, with hairpins, bends and fill crossings, as the command line's fine stage does. A corridor at 5 m takes a few minutes; Stop takes effect between searches.</p>
       <div class="row">
         <button id="refine" type="button" disabled>Refine</button>

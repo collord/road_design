@@ -282,18 +282,18 @@ async function run(p: Params) {
  * buffer, preprocessed there, and searched on the heading lattice with hairpins, bends and fill
  * crossings, as the command line's fine stage does over its corridors.
  */
-async function refine(p: Params, res: number, which: "best" | "all") {
+async function refine(p: Params, res: number, which: "best" | "all", apart: number) {
   if (!area?.routes?.length || !source) throw new Error("find corridors first");
   const buffer = get(p, "tin_buffer");
   const todo = which === "best" ? [0] : area.routes.map((_, i) => i);
   try {
-    for (const k of todo) await refineOne(k, p, res, buffer);
+    for (const k of todo) await refineOne(k, p, res, buffer, apart);
   } finally {
     stopPool();
   }
 }
 
-async function refineOne(k: number, p: Params, res: number, buffer: number) {
+async function refineOne(k: number, p: Params, res: number, buffer: number, apart: number) {
   const { grid: cg, startXY, goalXY, zScale } = area!;
   const routes = area!.routes!;
   const [bx0, by0, bx1, by1] = source!.info.bbox;
@@ -329,12 +329,26 @@ async function refineOne(k: number, p: Params, res: number, buffer: number) {
     }));
   const lr = new Float64Array(ys.map((y) => (fg.y1 - y) / res - 0.5));
   const lc = new Float64Array(xs.map((x) => (x - fg.x0) / res - 0.5));
+  // The other corridors' lines on this grid (NaN between lines): the ground nearer to them than to
+  // this corridor's line costs `apart` times as much in the search (or is closed).
+  const or: number[] = [], oc: number[] = [];
+  routes.forEach((o, j) => {
+    if (j === k) return;
+    o.rows.forEach((row, i) => {
+      or.push((fg.y1 - (cg.y1 - (row + 0.5) * cg.res)) / res - 0.5);
+      oc.push((cg.x0 + (o.cols[i] + 0.5) * cg.res - fg.x0) / res - 0.5);
+    });
+    or.push(NaN);
+    oc.push(NaN);
+  });
+  const otherRows = new Float64Array(or), otherCols = new Float64Array(oc);
   const paramsJson = JSON.stringify(p);
   const fs = timed(`${name}: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
-    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, false));
+    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, otherRows, otherCols, apart, false));
   await checkpoint();
   try {
-    await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer }, name);
+    await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer,
+                                 or: otherRows, oc: otherCols, apart }, name);
     const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
     const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
     let stage = "", tStage = 0;
@@ -380,7 +394,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (m.type === "open") await open(m);
       else if (m.type === "load") await load(m);
       else if (m.type === "run") await run(m.params);
-      else if (m.type === "refine") await refine(m.params, m.res, m.which);
+      else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);
         post({ type: "raster", layer: "channels", grid: area.grid, rgba: ch }, [ch.buffer]);

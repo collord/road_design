@@ -11,7 +11,7 @@ use wasm_bindgen::prelude::*;
 use road_fine::params::Params;
 use road_fine::masshaul::TrueCost;
 use road_fine::pipeline::find_route;
-use road_fine::problem::{corridor_mask, preprocess, Macros, Problem};
+use road_fine::problem::{own_ground, preprocess, Macros, Problem};
 use road_fine::route::Segment;
 
 fn js_err(e: impl std::fmt::Display) -> JsValue {
@@ -123,19 +123,40 @@ pub struct FineSession {
 impl FineSession {
     /// The DEM on the corridor's grid (row-major w x h, meters, NaN for nodata) at `res` m;
     /// parameters as JSON (Params.to_dict(), infinities as null); the coarse corridor as
-    /// (row, col) points on this grid, and the buffer (m) the search may use around it.
+    /// (row, col) points on this grid, and the buffer (m) the search may use around it. The
+    /// other corridors' lines (points, NaN between lines) mark the ground nearer to them than to
+    /// this corridor's line (within two cells): `apart` is the search's cost factor there (1: the
+    /// ground is shared freely; infinite: it is closed).
     #[wasm_bindgen(constructor)]
     pub fn new(z: &[f32], w: usize, h: usize, res: f64, params_json: &str, line_rows: &[f64], line_cols: &[f64],
-               buffer: f64, for_rows: bool) -> Result<FineSession, JsValue> {
+               buffer: f64, other_rows: &[f64], other_cols: &[f64], apart: f64, for_rows: bool)
+               -> Result<FineSession, JsValue> {
         if z.len() != w * h || w < 2 || h < 2 {
             return Err(js_err("the grid needs w x h values, at least 2 x 2"));
         }
         let p = Params::from_json(params_json).map_err(js_err)?;
         let line: Vec<(f64, f64)> = line_rows.iter().zip(line_cols).map(|(&r, &c)| (r, c)).collect();
-        let clip = corridor_mask(h, w, res, &line, buffer);
+        let mut others: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
+        let apart = if apart.is_nan() { 1.0 } else { apart.max(1.0) };
+        if apart > 1.0 {
+            for (&r, &c) in other_rows.iter().zip(other_cols) {
+                if r.is_nan() || c.is_nan() {
+                    others.push(Vec::new());
+                } else {
+                    others.last_mut().unwrap().push((r, c));
+                }
+            }
+        }
+        others.retain(|l| !l.is_empty());
+        let (d_own, nearer) = own_ground(h, w, res, &line, &others, 2.0 * res);
+        let closed = apart.is_infinite();
+        let clip: Vec<u8> = d_own.iter().zip(&nearer).map(|(&d, &n)| u8::from(d <= buffer && (n || !closed))).collect();
         let z: Vec<f64> = z.iter().map(|&v| v as f64).collect();
         let (inputs, excluded) = preprocess(z, h, w, res, &p, &clip);
-        let prob = Problem::new(inputs, p, if for_rows { Macros::Rows } else { Macros::Lazy }).map_err(js_err)?;
+        let mut prob = Problem::new(inputs, p, if for_rows { Macros::Rows } else { Macros::Lazy }).map_err(js_err)?;
+        if apart > 1.0 && !closed && !others.is_empty() {
+            prob.penalty = nearer.iter().map(|&n| if n { 1.0 } else { apart as f32 }).collect();
+        }
         Ok(FineSession { prob, excluded })
     }
 

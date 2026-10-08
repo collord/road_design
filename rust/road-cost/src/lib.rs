@@ -190,6 +190,10 @@ pub struct RoadCost<'a> {
     pub hairpins: MacroTable<'a>,
     pub bends: MacroTable<'a>,
     pub params: &'a CostParams,
+    /// A cost factor per cell (>= 1), for the search only: an edge costs the larger factor of
+    /// its two end cells times its cost (the same both ways). `edge_cost` stays unpenalized, for
+    /// pricing found routes. None: no penalty.
+    pub penalty: Option<Grid<'a, f32>>,
 }
 
 #[inline(always)]
@@ -448,7 +452,18 @@ impl<'a> RoadCost<'a> {
 impl EdgeCost for RoadCost<'_> {
     #[inline]
     fn cost(&self, r: i32, c: i32, action: usize) -> f64 {
-        self.edge_cost(r as i64, c as i64, action)
+        let cost = self.edge_cost(r as i64, c as i64, action);
+        match &self.penalty {
+            None => cost,
+            Some(p) => {
+                let (r, c) = (r as i64, c as i64);
+                let (r1, c1) = (r + self.actions.dr[action], c + self.actions.dc[action]);
+                let inside = |r: i64, c: i64| r >= 0 && c >= 0 && (r as usize) < p.nr && (c as usize) < p.nc;
+                let f0 = if inside(r, c) { p.at(r, c) } else { 1.0 };
+                let f1 = if inside(r1, c1) { p.at(r1, c1) } else { 1.0 };
+                cost * f0.max(f1) as f64
+            }
+        }
     }
 }
 

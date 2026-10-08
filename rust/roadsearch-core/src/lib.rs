@@ -231,7 +231,7 @@ fn search<'py>(
         return Err(PyValueError::new_err("A* needs a goal"));
     }
     let params = &ta.params;
-    let model = RoadCost { actions: &actions, terrain, section, hairpins: hp, bends: bend, params };
+    let model = RoadCost { actions: &actions, terrain, section, hairpins: hp, bends: bend, params, penalty: None };
     let mut error: Option<PyErr> = None;
     let res = py.detach(|| {
         let mut report = |p: &Progress| -> bool {
@@ -296,7 +296,7 @@ fn edge_costs<'py>(
     let (_, acts) = lattice_from(n_theta, lat)?;
     let ta = terrain_from(terr)?;
     let (_, _, terrain, section, hp, bend) = ta.views()?;
-    let model = RoadCost { actions: &acts, terrain, section, hairpins: hp, bends: bend, params: &ta.params };
+    let model = RoadCost { actions: &acts, terrain, section, hairpins: hp, bends: bend, params: &ta.params, penalty: None };
     let (r, c, a) = (rows.as_slice()?, cols.as_slice()?, actions.as_slice()?);
     if r.len() != c.len() || r.len() != a.len() {
         return Err(PyValueError::new_err("rows, cols and actions must have the same length"));

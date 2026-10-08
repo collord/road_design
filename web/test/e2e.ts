@@ -133,9 +133,14 @@ try {
     // The fine search of the best corridor (one example: it takes a minute or more).
     if (name === (process.env.FINE ?? "red-mountain")) {
       const tFine = Date.now();
+      // FINE_WHICH=all refines every corridor; FINE_APART sets the cost factor on other corridors' ground.
+      await evaluate(`(() => { document.querySelector("#fine-which").value = ${JSON.stringify(process.env.FINE_WHICH ?? "best")};
+        document.querySelector("#fine-apart").value = ${JSON.stringify(process.env.FINE_APART ?? "2")}; })()`);
       await evaluate(`document.querySelector("#refine").click()`);
       const fine = await until(`(${hasError}) || (!document.querySelector("#refine").disabled &&
-        document.querySelectorAll("#fine tr").length > 1 && "done")`, "the fine route", 900000);
+        document.querySelectorAll("#fine tr").length > 1 && "done")`, "the fine route", 3600000);
+      const table: string[] = await evaluate(`[...document.querySelectorAll("#fine tr")].map((r) => [...r.cells].map((c) => c.textContent.trim()).join(" | "))`);
+      for (const t of table) console.log(`    ${t}`);
       if (fine !== "done") throw new Error(fine);
       const row: string = await evaluate(`[...document.querySelectorAll("#fine tr")][1].textContent.trim()`);
       const logLine: string = await evaluate(`[...document.querySelectorAll("#log li")].map((li) => li.textContent).filter((t) => /^corridor 1 at/.test(t)).pop()`);

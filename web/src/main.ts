@@ -331,11 +331,14 @@ $("refine").addEventListener("click", () => {
   const res = Number($<HTMLInputElement>("fine-res").value);
   if (!(res > 0)) return;
   for (const b of ["load", "run", "refine"]) $<HTMLButtonElement>(b).disabled = true;
-  send({ type: "refine", params: params(), res, which: $<HTMLSelectElement>("fine-which").value as "best" | "all" });
+  send({ type: "refine", params: params(), res, which: $<HTMLSelectElement>("fine-which").value as "best" | "all",
+         apart: Number($<HTMLSelectElement>("fine-apart").value) });
 });
 
 $("run").addEventListener("click", () => {
   haveCorridors = false;
+  hiddenCorridors.clear();
+  hiddenFine.clear();
   clearFine();
   $<HTMLButtonElement>("load").disabled = true;
   $<HTMLButtonElement>("run").disabled = true;
@@ -458,7 +461,16 @@ $("download").addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
+$("fine").addEventListener("change", (e) => {
+  const box = e.target as HTMLInputElement;
+  if (box.dataset.fine === undefined) return;
+  const i = Number(box.dataset.fine);
+  if (box.checked) hiddenFine.delete(i); else hiddenFine.add(i);
+  showFine();
+});
+
 $("fine").addEventListener("click", (e) => {
+  if ((e.target as HTMLElement).tagName === "INPUT") return;
   const tr = (e.target as HTMLElement).closest<HTMLTableRowElement>("tr[data-index]");
   if (!tr) return;
   profileIndex = Number(tr.dataset.index);
@@ -466,49 +478,103 @@ $("fine").addEventListener("click", (e) => {
 });
 
 /** The fine routes, drawn over their corridors, and their table. */
+/** One color per corridor, for its coarse line, its fine route and its table rows. */
+const CORRIDOR_COLORS = ["#e11d48", "#2563eb", "#16a34a", "#d97706", "#9333ea", "#0891b2", "#be185d", "#4d7c0f"];
+const corridorColor = (i: number) => CORRIDOR_COLORS[i % CORRIDOR_COLORS.length];
+const swatch = (i: number) => `<span class="swatch" style="background:${corridorColor(i)}"></span>`;
+/** Corridors and fine routes switched off in their tables, by corridor index. */
+const hiddenCorridors = new Set<number>();
+const hiddenFine = new Set<number>();
+let lastCorridors: { grid: Grid; routes: RouteOut[] } | null = null;
+
+/** Share of route a's length within `tol` meters of route b (are two fine routes the same road?). */
+function sharedWith(a: FineOut, b: FineOut, tol = 20): number {
+  const key = (x: number, y: number) => `${Math.floor(x / tol)},${Math.floor(y / tol)}`;
+  const cells = new Map<string, number[]>();
+  b.x.forEach((x, i) => {
+    const k = key(x, b.y[i]);
+    (cells.get(k) ?? cells.set(k, []).get(k)!).push(i);
+  });
+  const near = (x: number, y: number) => {
+    const cx = Math.floor(x / tol), cy = Math.floor(y / tol);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (const j of cells.get(`${cx + dx},${cy + dy}`) ?? []) if (Math.hypot(b.x[j] - x, b.y[j] - y) <= tol) return true;
+      }
+    }
+    return false;
+  };
+  let shared = 0, total = 0;
+  for (let i = 1; i < a.x.length; i++) {
+    const len = Math.hypot(a.x[i] - a.x[i - 1], a.y[i] - a.y[i - 1]);
+    total += len;
+    if (near(0.5 * (a.x[i] + a.x[i - 1]), 0.5 * (a.y[i] + a.y[i - 1]))) shared += len;
+  }
+  return total > 0 ? shared / total : 0;
+}
+
 function showFine() {
-  const css = getComputedStyle(document.documentElement);
   const group = L.layerGroup();
   const sorted = [...fineRoutes].sort((a, b) => a.cost.total - b.cost.total);
   for (const f of sorted) {
+    if (hiddenFine.has(f.index)) continue;
     const pts = f.x.map((x, i) => [f.y[i], x] as [number, number]);
-    const best = f === sorted[0];
     // A dark casing under the line keeps it readable over imagery; a route still being refined is dashed.
-    L.polyline(pts, { color: "#111", weight: best ? 7 : 5, opacity: 0.55, interactive: false }).addTo(group);
-    L.polyline(pts, { color: (best ? css.getPropertyValue("--fine") : css.getPropertyValue("--fine-alt")).trim(),
-                      weight: best ? 4 : 3, dashArray: f.final ? undefined : "8 6" })
+    L.polyline(pts, { color: "#111", weight: 7, opacity: 0.55, interactive: false }).addTo(group);
+    L.polyline(pts, { color: corridorColor(f.index), weight: 4, dashArray: f.final ? undefined : "8 6" })
       .bindTooltip(`corridor ${f.index + 1}, fine: ${Math.round(f.cost.total).toLocaleString()}, ` +
                    `${(f.length / 1000).toFixed(1)} km, ${f.hairpins} hairpins`)
       .addTo(group);
   }
   setLayer("Fine routes", group);
+  // How much of each route is another's road: the largest share, and with which corridor.
+  const shares = sorted.map((f) => {
+    let best = 0, with_ = -1;
+    for (const g of fineRoutes) {
+      if (g === f || !g.final || !f.final) continue;
+      const s = sharedWith(f, g);
+      if (s > best) { best = s; with_ = g.index; }
+    }
+    return with_ < 0 ? "" : `${Math.round(100 * best)}% with ${with_ + 1}`;
+  });
   const head = "<tr><th>corridor</th><th>cost</th><th>build</th><th>operate</th><th>km</th><th>hairpins</th>" +
-               "<th>bends</th><th>crossings</th><th>s</th></tr>";
-  $("fine").innerHTML = head + sorted.map((f) =>
-    `<tr data-index="${f.index}"><td>${f.index + 1}${f.final ? "" : " (refining)"}</td><td>${Math.round(f.cost.total).toLocaleString()}</td>` +
+               "<th>bends</th><th>crossings</th><th>shares</th><th>s</th></tr>";
+  $("fine").innerHTML = head + sorted.map((f, i) =>
+    `<tr data-index="${f.index}"><td><input type="checkbox" data-fine="${f.index}" ${hiddenFine.has(f.index) ? "" : "checked"} ` +
+    `aria-label="show the fine route of corridor ${f.index + 1}">${swatch(f.index)}${f.index + 1}${f.final ? "" : " (refining)"}</td>` +
+    `<td>${Math.round(f.cost.total).toLocaleString()}</td>` +
     `<td>${Math.round(f.cost.construction).toLocaleString()}</td><td>${Math.round(f.cost.operating).toLocaleString()}</td>` +
     `<td>${(f.length / 1000).toFixed(2)}</td><td>${f.hairpins}</td><td>${f.bends}</td><td>${f.fill_crossings}</td>` +
-    `<td>${f.seconds.toFixed(0)}</td></tr>`).join("");
+    `<td>${shares[i]}</td><td>${f.seconds.toFixed(0)}</td></tr>`).join("");
   showProfile();
   $<HTMLButtonElement>("download").disabled = !fineRoutes.some((f) => f.final);
 }
 
 function showCorridors(g: Grid, routes: RouteOut[]) {
-  const css = getComputedStyle(document.documentElement);
+  lastCorridors = { grid: g, routes };
   const group = L.layerGroup();
   routes.forEach((r, i) => {
+    if (hiddenCorridors.has(i)) return;
     const pts = r.rows.map((row, k) => [g.y1 - (row + 0.5) * g.res, g.x0 + (r.cols[k] + 0.5) * g.res] as [number, number]);
-    L.polyline(pts, { color: (i === 0 ? css.getPropertyValue("--route") : css.getPropertyValue("--alt")).trim(),
-                      weight: i === 0 ? 4 : 2.5, opacity: i === 0 ? 1 : 0.8 })
-      .bindTooltip(`${i + 1} (${r.how}): ${Math.round(r.cost).toLocaleString()}, ${(r.length / 1000).toFixed(1)} km`)
+    L.polyline(pts, { color: corridorColor(i), weight: i === 0 ? 3 : 2.5, opacity: 0.85, dashArray: i === 0 ? undefined : "6 4" })
+      .bindTooltip(`corridor ${i + 1} (${r.how}): ${Math.round(r.cost).toLocaleString()}, ${(r.length / 1000).toFixed(1)} km`)
       .addTo(group);
   });
   setLayer("Corridors", group);
   const head = "<tr><th>#</th><th>found by</th><th>cost</th><th>km</th><th>hairpins</th><th>turning °</th></tr>";
   $("corridors").innerHTML = head + routes.map((r, i) =>
-    `<tr><td>${i + 1}</td><td>${r.how}</td><td>${Math.round(r.cost).toLocaleString()}</td>` +
+    `<tr><td><input type="checkbox" data-corridor="${i}" ${hiddenCorridors.has(i) ? "" : "checked"} ` +
+    `aria-label="show corridor ${i + 1}">${swatch(i)}${i + 1}</td><td>${r.how}</td><td>${Math.round(r.cost).toLocaleString()}</td>` +
     `<td>${(r.length / 1000).toFixed(1)}</td><td>${r.hairpins}</td><td>${Math.round(r.turning * 180 / Math.PI).toLocaleString()}</td></tr>`).join("");
 }
+
+$("corridors").addEventListener("change", (e) => {
+  const box = e.target as HTMLInputElement;
+  if (box.dataset.corridor === undefined) return;
+  const i = Number(box.dataset.corridor);
+  if (box.checked) hiddenCorridors.delete(i); else hiddenCorridors.add(i);
+  if (lastCorridors) showCorridors(lastCorridors.grid, lastCorridors.routes);
+});
 
 const stageStart = new Map<string, number>();
 worker.onmessage = (e: MessageEvent<FromWorker>) => {

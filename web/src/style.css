@@ -59,6 +59,9 @@ button.working::before { content: ""; margin-right: 6px; vertical-align: -2px; }
 .log .err { color: var(--goal); }
 .table-wrap { overflow-x: auto; }
 table.pick tr[data-index] { cursor: pointer; }
+.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 2px; vertical-align: -1px; }
+td input[type="checkbox"] { margin: 0 2px 0 0; vertical-align: -2px; }
+label.check { display: flex; gap: 6px; align-items: center; }
 table.pick tr.selected td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .profile { width: 100%; height: auto; display: block; margin-top: 8px; font-size: 11px; fill: var(--muted); }
 .profile text { fill: var(--muted); font-variant-numeric: tabular-nums; }

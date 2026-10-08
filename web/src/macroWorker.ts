@@ -4,7 +4,7 @@ import init, * as wasm from "./wasm/roadsearch_wasm.js";
 
 export type ToMacro =
   | { type: "setup"; z: Float32Array; w: number; h: number; res: number; params: string; lr: Float64Array;
-      lc: Float64Array; buffer: number }
+      lc: Float64Array; buffer: number; or: Float64Array; oc: Float64Array; apart: number }
   | { type: "rows"; a: number; b: number };
 
 export type FromMacro =
@@ -22,7 +22,7 @@ self.onmessage = async (e: MessageEvent<ToMacro>) => {
   try {
     if (m.type === "setup") {
       session?.free();
-      session = new wasm.FineSession(m.z, m.w, m.h, m.res, m.params, m.lr, m.lc, m.buffer, true);
+      session = new wasm.FineSession(m.z, m.w, m.h, m.res, m.params, m.lr, m.lc, m.buffer, m.or, m.oc, m.apart, true);
       post({ type: "ready", cells: session.cells() });
     } else if (m.type === "rows" && session) {
       const o = session.macro_rows(m.a, m.b) as { hp: Float32Array; bend: Float32Array };

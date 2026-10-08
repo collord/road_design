@@ -8,7 +8,7 @@ export type ToWorker =
       zUnits: string }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
-  | { type: "refine"; params: Params; res: number; which: "best" | "all" }
+  | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
   | { type: "stop" };
 
 export interface RouteOut {
