@@ -243,7 +243,7 @@ impl Session {
 
     /// The coarse graph and its corridors between two cells, in one call. `edge`: [g_max,
     /// C_travel, C_vertical, A_min (ha), hairpin allowance, C_turn]; `tin`: [tolerance m, k,
-    /// edge_max cells, block cells, channel node ha, alternatives, penalty, stretch, max_shared];
+    /// edge_max cells, block cells, channel node ha, alternatives, penalty, stretch, max_shared, separation cells];
     /// `section`: cost per meter over (sidehill, grade), ns x ng with steps ds, dg. Returns the
     /// routes; the graph and corridor field are then available from the getters.
     #[allow(clippy::too_many_arguments)]
@@ -272,7 +272,7 @@ impl Session {
         if start_r >= self.nr || start_c >= self.nc || goal_r >= self.nr || goal_c >= self.nc {
             return Err(JsValue::from_str("start or goal outside the area"));
         }
-        if edge.len() < 6 || tin.len() < 9 || section.len() != ns * ng {
+        if edge.len() < 6 || tin.len() < 10 || section.len() != ns * ng {
             return Err(JsValue::from_str("bad parameter arrays"));
         }
         self.edge_params = Some(tin_graph::EdgeParams {
@@ -282,7 +282,7 @@ impl Session {
         self.c_turn = edge[5];
         let p = tin_graph::TinParams {
             tolerance: tin[0], k: tin[1] as usize, edge_max: tin[2], block: tin[3] as usize, channel_node_area: tin[4],
-            n_alt: tin[5] as usize, penalty: tin[6], stretch: tin[7], max_shared: tin[8],
+            n_alt: tin[5] as usize, penalty: tin[6], stretch: tin[7], max_shared: tin[8], separation: tin[9],
         };
         self.section = section.to_vec();
         self.section_shape = (ns, ng, ds, dg);

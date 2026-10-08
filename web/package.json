@@ -6,7 +6,7 @@
   "description": "Road search in the browser: the Rust core (rust/roadsearch-wasm) in a Web Worker, Leaflet in UTM",
   "scripts": {
     "wasm": "cargo build --manifest-path ../rust/Cargo.toml -p roadsearch-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm ../rust/target/wasm32-unknown-unknown/release/roadsearch_wasm.wasm",
-    "data": "python -m roadsearch web-data --dest public",
+    "data": "cd .. && python -m roadsearch web-data --dest web/public",
     "dev": "vite",
     "build": "vite build",
     "check": "tsc --noEmit",

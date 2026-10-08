@@ -113,7 +113,9 @@ tin_channel_ha = 20.0  # channel nodes where the contributing area is at least t
 tin_alternatives = 4   # distinct corridors sought besides the best
 tin_penalty = 1.5      # weight factor on edges already used, in the search for alternatives
 tin_stretch = 0.25     # keep corridors costing at most (1 + this) x the best (graph estimate)
-tin_max_shared = 0.5   # ... sharing at most this fraction of their length with a kept corridor
+tin_max_shared = 0.5   # ... sharing at most this fraction of their length with a kept corridor:
+tin_separation = 300.0 # ... where sharing means running within this distance (m) of it (a fine search
+                       # moves that far within its buffer); 0: sharing graph edges
 tin_buffer = 600.0     # fine-search region: corridors buffered by this (m); doubled if the route
                        # reaches the region's edge
 tin_hairpin_cost = -1.0  # allowance per hairpin a steep graph edge implies; -1: from the road

@@ -47,7 +47,8 @@ for (const ex of examples) {
                                  hairpinAllowance(p), get(p, "C_turn")]);
   const tin = new Float64Array([get(p, "tin_tolerance"), get(p, "tin_k"), get(p, "tin_edge_max") / res,
                                 get(p, "tin_block") / res, get(p, "tin_channel_ha"), get(p, "tin_alternatives"),
-                                get(p, "tin_penalty"), get(p, "tin_stretch"), get(p, "tin_max_shared")]);
+                                get(p, "tin_penalty"), get(p, "tin_stretch"), get(p, "tin_max_shared"),
+                                get(p, "tin_separation") / res]);
   const sr = Math.floor((y1 - s[1]) / res), sc = Math.floor((s[0] - x0) / res);
   const gr = Math.floor((y1 - g[1]) / res), gc = Math.floor((g[0] - x0) / res);
   const routes = session.corridors(sr, sc, gr, gc, edge, new Float64Array(p.culvert_area_breaks),

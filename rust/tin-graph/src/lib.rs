@@ -50,8 +50,13 @@ pub struct TinParams {
     pub penalty: f64,
     /// Keep a route only if it costs at most (1 + stretch) times the best.
     pub stretch: f64,
-    /// Keep a route only if at most this share of its length runs on edges of a kept route.
+    /// Keep a route only if at most this share of its length runs on edges of a kept route, or,
+    /// with `separation` > 0, lies within `separation` cells of one.
     pub max_shared: f64,
+    /// Distance (cells) within which a route counts as running along a kept one; 0: shared edges.
+    /// Routes a few hundred meters apart share no edges yet are the same road to a fine search,
+    /// which moves that far within its buffer.
+    pub separation: f64,
 }
 
 /// Road cost settings for edges.
@@ -725,6 +730,8 @@ pub struct CorridorSearch {
     thr: Vec<(f64, u32, u32)>,
     limit: f64,
     kept: Vec<HashSet<u32>>,
+    /// The kept routes, for judging distance (separation > 0).
+    kept_near: Vec<Near>,
     /// Saddle candidates, cheapest forced route first, and the next to try.
     saddles: Vec<usize>,
     next_saddle: usize,
@@ -756,6 +763,7 @@ impl CorridorSearch {
             thr,
             limit: f64::INFINITY,
             kept: Vec::new(),
+            kept_near: Vec::new(),
             saddles: Vec::new(),
             next_saddle: 0,
             wp: None,
@@ -767,8 +775,7 @@ impl CorridorSearch {
         }
         let best = make_route(g, &directed_path(&s.fwd, arrive), c_turn, "best");
         s.limit = (1.0 + p.stretch) * best.cost;
-        s.kept.push(best.edges.iter().copied().collect());
-        s.routes.push(best);
+        s.keep(best);
         let mut sad: Vec<usize> = (0..n).filter(|&i| g.nodes[i].kind == KIND_SADDLE && s.field[i] <= s.limit).collect();
         sad.sort_by(|&a, &b| s.field[a].total_cmp(&s.field[b]).then(a.cmp(&b)));
         s.saddles = sad;
@@ -780,12 +787,18 @@ impl CorridorSearch {
         self.routes.is_empty() || self.routes.len() > self.p.n_alt || self.rounds >= 4 * self.p.n_alt
     }
 
-    fn distinct(&self, g: &Graph, edges: &[u32]) -> bool {
-        self.kept.iter().all(|k| shared(g, edges, k) <= self.p.max_shared)
+    fn distinct(&self, g: &Graph, r: &Route) -> bool {
+        if self.p.separation > 0.0 {
+            return self.kept_near.iter().all(|k| k.share_sampled(&r.coords) <= self.p.max_shared);
+        }
+        self.kept.iter().all(|k| shared(g, &r.edges, k) <= self.p.max_shared)
     }
 
     fn keep(&mut self, r: Route) -> &Route {
         self.kept.push(r.edges.iter().copied().collect());
+        if self.p.separation > 0.0 {
+            self.kept_near.push(Near::new(&r.coords, self.p.separation));
+        }
         self.routes.push(r);
         self.routes.last().unwrap()
     }
@@ -819,7 +832,7 @@ impl CorridorSearch {
             let back: Vec<u32> = directed_path(&self.bwd, b ^ 1).into_iter().rev().map(|d| d ^ 1).collect();
             path.extend(back);
             let r = make_route(g, &path, self.c_turn, "saddle");
-            if r.cost <= self.limit && self.distinct(g, &r.edges) {
+            if r.cost <= self.limit && self.distinct(g, &r) {
                 return Some(self.keep(r));
             }
         }
@@ -843,7 +856,7 @@ impl CorridorSearch {
             let r = make_route(g, &directed_path(&s, a), self.c_turn, "penalty");
             self.penalize(g, &mut wp, &r);
             self.wp = Some(wp);
-            if r.cost <= self.limit && self.distinct(g, &r.edges) {
+            if r.cost <= self.limit && self.distinct(g, &r) {
                 return Some(self.keep(r));
             }
         }
@@ -888,6 +901,26 @@ impl Near {
                     .is_some_and(|l| l.iter().any(|&(pr, pc)| (pr - r).hypot(pc - c) <= self.near))
             })
         })
+    }
+
+    /// Share of a route's length (its nodes, row and col) within `near` of this route, its segments
+    /// cut into pieces of at most half that and each piece judged by its midpoint.
+    pub fn share_sampled(&self, coords: &[(usize, usize)]) -> f64 {
+        let (mut tot, mut within) = (0.0, 0.0);
+        let step = (0.5 * self.near).max(0.5);
+        for w in coords.windows(2) {
+            let (a, b) = ((w[0].0 as f64, w[0].1 as f64), (w[1].0 as f64, w[1].1 as f64));
+            let len = (b.0 - a.0).hypot(b.1 - a.1);
+            tot += len;
+            let n = ((len / step).ceil() as usize).max(1);
+            for i in 0..n {
+                let f = (i as f64 + 0.5) / n as f64;
+                if self.is_near(a.0 + f * (b.0 - a.0), a.1 + f * (b.1 - a.1)) {
+                    within += len / n as f64;
+                }
+            }
+        }
+        if tot > 0.0 { within / tot } else { 0.0 }
     }
 
     /// Share of a route's length (its nodes, row and col) whose segments lie near this route.
@@ -1141,7 +1174,7 @@ mod tests {
         let e = EdgeParams { g_max: 0.1, c_travel: 1.0, c_vertical: 200.0, a_min: 2.0, culvert_breaks: vec![10.0],
                              culvert_costs: vec![50.0, 100.0], hairpin_cost: 500.0 };
         let p = TinParams { tolerance: 1.0, k: 12, edge_max: 8.0, block: 5, channel_node_area: 1e9, n_alt: 2,
-                            penalty: 1.5, stretch: 0.5, max_shared: 0.5 };
+                            penalty: 1.5, stretch: 0.5, max_shared: 0.5, separation: 0.0 };
         let nodes = build_nodes(&t, &p, (5, 10), (35, 10));
         // The notch in the ridge is found as a saddle.
         assert!(saddles(&t.zs).iter().any(|&(r, c)| r == 20 && (c as i64 - 48).abs() <= 1));

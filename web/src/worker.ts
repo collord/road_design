@@ -231,7 +231,8 @@ async function run(p: Params) {
                                  hairpinAllowance(p), get(p, "C_turn")]);
   const tin = new Float64Array([get(p, "tin_tolerance"), get(p, "tin_k"), get(p, "tin_edge_max") / res,
                                 get(p, "tin_block") / res, get(p, "tin_channel_ha"), get(p, "tin_alternatives"),
-                                get(p, "tin_penalty"), get(p, "tin_stretch"), get(p, "tin_max_shared")]);
+                                get(p, "tin_penalty"), get(p, "tin_stretch"), get(p, "tin_max_shared"),
+                                get(p, "tin_separation") / res]);
   const breaks = new Float64Array(p.culvert_area_breaks as number[]);
   const costs = new Float64Array(p.culvert_costs as number[]);
   const [sr, sc] = area.start, [gr, gc] = area.goal;
@@ -342,13 +343,15 @@ async function refineOne(k: number, p: Params, res: number, buffer: number, apar
     oc.push(NaN);
   });
   const otherRows = new Float64Array(or), otherCols = new Float64Array(oc);
+  // The best corridor searches its whole buffer: its route is the best there, whatever the others.
+  const own = k === 0 ? 1 : apart;
   const paramsJson = JSON.stringify(p);
   const fs = timed(`${name}: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
-    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, otherRows, otherCols, apart, false));
+    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, otherRows, otherCols, own, false));
   await checkpoint();
   try {
     await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer,
-                                 or: otherRows, oc: otherCols, apart }, name);
+                                 or: otherRows, oc: otherCols, apart: own }, name);
     const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
     const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
     let stage = "", tStage = 0;

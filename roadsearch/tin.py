@@ -38,7 +38,8 @@ KINDS = {0: "triangulation", 1: "channel", 2: "saddle", 3: "background", 4: "end
 # tin-4: nodata is filled from the nearest data before triangulating, not with the lowest value.
 # tin-5: turning angles from precomputed edge headings (atan2) rather than acos of a dot
 # product; identical corridors on the examples, but near-exact ties may resolve differently.
-COARSE_ENGINE = "tin-5"
+# tin-6: corridors distinct by distance (tin_separation), not by shared graph edges.
+COARSE_ENGINE = "tin-6"
 
 # What building the graph holds per cell of its window: the rasters (working and smoothed DEM,
 # gradients, slope, soil, area, codes...) and the graph's share. For the memory check.
@@ -104,7 +105,7 @@ def tin_corridor(dem, p: Params, start, goal, exclude, log=print, buffer: float 
     edge = (p.g_max, p.C_travel, p.C_vertical, p.A_min, hairpin_allowance(p), p.C_turn,
             np.array(p.culvert_area_breaks, dtype=np.float64), np.array(p.culvert_costs, dtype=np.float64))
     tin = (p.tin_tolerance, p.tin_k, p.tin_edge_max / res, p.tin_block / res, p.tin_channel_ha, p.tin_alternatives,
-           p.tin_penalty, p.tin_stretch, p.tin_max_shared)
+           p.tin_penalty, p.tin_stretch, p.tin_max_shared, p.tin_separation / res)
     near = buffer / res
     cost_s = (p.cost_samples, p.cost_sigma, p.cost_sigma, p.cost_sigma_edge, 20261007)
     open_km2 = float((t.code == 0).sum()) * res**2 / 1e6

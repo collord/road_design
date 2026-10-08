@@ -46,7 +46,7 @@ class RankedRoute:
 # ids (and the reuse of finished runs) of runs made before them don't change.
 _LATER_PARAMS = {"C_turn": 0.0, "tin_res": 15.0, "tin_margin": 10000.0, "tin_max_cells": 1e7, "tin_tolerance": 5.0, "tin_k": 16.0, "tin_edge_max": 600.0,
                  "tin_block": 300.0, "tin_channel_ha": 20.0, "tin_alternatives": 4.0, "tin_penalty": 1.5,
-                 "tin_stretch": 0.25, "tin_max_shared": 0.5, "tin_buffer": 600.0, "tin_hairpin_cost": -1.0,
+                 "tin_stretch": 0.25, "tin_max_shared": 0.5, "tin_separation": 300.0, "tin_buffer": 600.0, "tin_hairpin_cost": -1.0,
                  "cost_samples": 0.0, "cost_sigma": 0.3, "cost_sigma_edge": 0.2,
                  "tin_node_samples": 0.0, "tin_node_density": 20.0}
 

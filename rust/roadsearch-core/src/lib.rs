@@ -618,10 +618,10 @@ fn tin_corridors<'py>(
         culvert_breaks: breaks.as_slice()?.to_vec(), culvert_costs: costs.as_slice()?.to_vec(),
     };
     let c_turn = ef[5];
-    let tf = floats::<9>(tin, "tin params")?;
+    let tf = floats::<10>(tin, "tin params")?;
     let p = tin_graph::TinParams {
         tolerance: tf[0], k: tf[1] as usize, edge_max: tf[2], block: tf[3] as usize, channel_node_area: tf[4],
-        n_alt: tf[5] as usize, penalty: tf[6], stretch: tf[7], max_shared: tf[8],
+        n_alt: tf[5] as usize, penalty: tf[6], stretch: tf[7], max_shared: tf[8], separation: tf[9],
     };
     let cf = floats::<5>(cost_samples, "cost sample params")?;
     let mcp = tin_graph::McParams {

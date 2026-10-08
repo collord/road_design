@@ -84,6 +84,7 @@ class Params:
     tin_penalty: float
     tin_stretch: float
     tin_max_shared: float
+    tin_separation: float
     tin_buffer: float
     tin_hairpin_cost: float
     cost_samples: float
