@@ -7,6 +7,7 @@
     python -m roadsearch animate RUN_ID [RUN_ID ...] [--factors 0,1,...]
     python -m roadsearch burn RUN_ID [--rank 1] [--res 2]
     python -m roadsearch status [RUN_DIR | OUT_ROOT] [--watch 10]
+    python -m roadsearch web-data [--dest web/public]
     python -m roadsearch profile LINE --dem DEM --resolution M [--run RUN_DIR] [--gpkg G --prefix P]
     python -m roadsearch tree RUN_ID [RUN_ID ...]
     python -m roadsearch merge SRC [SRC ...] --out DEST
@@ -233,6 +234,14 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_web_data(args) -> int:
+    from .web import write_web_data
+
+    for path in write_web_data(args.dest):
+        print(f"wrote {path}")
+    return 0
+
+
 def cmd_status(args) -> int:
     import time as _time
 
@@ -396,6 +405,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run-ids", nargs="*", default=None, help="these runs, in this order (default: all in the root)")
     sp.add_argument("--labels", default=None, help="';'-separated label per run (default: from the parameters that differ)")
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("web-data", help="write the browser app's default parameters and examples (web/public)")
+    sp.add_argument("--dest", default="web/public")
+    sp.set_defaults(func=cmd_web_data)
 
     sp = sub.add_parser("status", help="where a run is: stage, search progress, memory, last log lines "
                                        "(from its events.jsonl)")

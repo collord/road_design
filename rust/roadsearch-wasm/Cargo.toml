@@ -1,0 +1,19 @@
+[package]
+name = "roadsearch-wasm"
+description = "Browser bindings (wasm-bindgen) for the road search: reprojection, hillshade, terrain preprocessing, the coarse graph and its corridors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "=0.2.129"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+delatin = "=0.2.1"
+terrain = { path = "../terrain" }
+road-cost = { path = "../road-cost", default-features = false }
+tin-graph = { path = "../tin-graph", default-features = false }

@@ -1,0 +1,25 @@
+{
+  "name": "roadsearch-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Road search in the browser: the Rust core (rust/roadsearch-wasm) in a Web Worker, Leaflet in UTM",
+  "scripts": {
+    "wasm": "cargo build --manifest-path ../rust/Cargo.toml -p roadsearch-wasm --target wasm32-unknown-unknown --release && wasm-bindgen --target web --out-dir src/wasm ../rust/target/wasm32-unknown-unknown/release/roadsearch_wasm.wasm",
+    "data": "python -m roadsearch web-data --dest public",
+    "dev": "vite",
+    "build": "vite build",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "geotiff": "^3.0.5",
+    "geotiff-geokeys-to-proj4": "^2026.10.7",
+    "leaflet": "^1.9.4",
+    "proj4": "^2.22.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.22",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4"
+  }
+}

@@ -1,0 +1,370 @@
+// The page: controls, the map (Leaflet in UTM meters) and the worker that runs the pipeline.
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import proj4 from "proj4";
+import "./style.css";
+import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
+import type { FromWorker, RouteOut, ToWorker } from "./messages";
+import type { Params } from "./params";
+import type { Grid, SourceInfo } from "./source";
+
+const MAX_CELLS = 12_000_000;
+
+interface Example { name: string; title: string; heading: string; dem: string; start: number[]; goal: number[]; params: Params }
+
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const map = L.map("map", { crs: L.CRS.Simple, minZoom: -10, maxZoom: 5, zoomSnap: 0.25, attributionControl: false });
+map.setView([0, 0], 0);
+const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+const send = (m: ToWorker) => worker.postMessage(m);
+
+let defaults: Params = {};
+let base: Params = {};             // the parameter set before the controls (an example's, or the defaults)
+let info: SourceInfo | null = null;
+let start: [number, number] | null = null;
+let goal: [number, number] | null = null;
+let picking: "start" | "goal" | null = null;
+let areaGrid: Grid | null = null;
+const layers = new Map<string, L.Layer>();
+const markers: { start?: L.CircleMarker; goal?: L.CircleMarker } = {};
+
+// ---------------------------------------------------------------- layers panel
+
+function setLayer(name: string, layer: L.Layer | null, visible = true) {
+  const old = layers.get(name);
+  if (old) map.removeLayer(old);
+  layers.delete(name);
+  let box = document.querySelector<HTMLInputElement>(`#layers input[data-name="${CSS.escape(name)}"]`);
+  if (!layer) {
+    box?.parentElement?.remove();
+    return;
+  }
+  layers.set(name, layer);
+  if (!box) {
+    const label = document.createElement("label");
+    box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.name = name;
+    box.addEventListener("change", () => {
+      const l = layers.get(name);
+      if (!l) return;
+      if (box!.checked) l.addTo(map); else map.removeLayer(l);
+    });
+    label.append(box, document.createTextNode(name));
+    $("layers").append(label);
+  }
+  box.checked = visible;
+  if (visible) layer.addTo(map);
+}
+
+function log(text: string, cls = "") {
+  const li = document.createElement("li");
+  li.textContent = text;
+  if (cls) li.className = cls;
+  $("log").append(li);
+  li.scrollIntoView({ block: "nearest" });
+}
+
+// ---------------------------------------------------------------- coordinates
+
+function utmDef(): string {
+  return info ? `+proj=utm +zone=${info.zone}${info.north ? "" : " +south"} +datum=WGS84 +units=m +no_defs` : "";
+}
+
+function formatPoint(p: [number, number]): string {
+  if ($<HTMLSelectElement>("coord-crs").value === "lonlat" && info) {
+    const [lon, lat] = proj4(utmDef(), "WGS84", p);
+    return `${lon.toFixed(6)}, ${lat.toFixed(6)}`;
+  }
+  return `${p[0].toFixed(1)}, ${p[1].toFixed(1)}`;
+}
+
+function parsePoint(text: string): [number, number] | null {
+  const v = text.split(/[,\s]+/).filter(Boolean).map(Number);
+  if (v.length !== 2 || v.some((x) => !Number.isFinite(x))) return null;
+  if ($<HTMLSelectElement>("coord-crs").value === "lonlat") {
+    if (!info) return null;
+    const [x, y] = proj4("WGS84", utmDef(), [v[0], v[1]]);
+    return [x, y];
+  }
+  return [v[0], v[1]];
+}
+
+function setEnd(which: "start" | "goal", p: [number, number]) {
+  if (which === "start") start = p; else goal = p;
+  const color = getComputedStyle(document.documentElement).getPropertyValue(which === "start" ? "--start" : "--goal");
+  markers[which]?.remove();
+  markers[which] = L.circleMarker([p[1], p[0]], { radius: 7, color: "#000", weight: 1.5, fillColor: color.trim(),
+                                                  fillOpacity: 1 }).addTo(map)
+    .bindTooltip(which === "start" ? "start" : "finish");
+  $<HTMLInputElement>(which === "start" ? "start-text" : "goal-text").value = formatPoint(p);
+  estimate();
+}
+
+// ---------------------------------------------------------------- controls
+
+function zUnits(): string { return $<HTMLSelectElement>("z_units").value; }
+
+function estimate() {
+  const loadBtn = $<HTMLButtonElement>("load");
+  if (!info || !start || !goal) { loadBtn.disabled = true; return; }
+  const m = Number($<HTMLInputElement>("margin").value) * 1000, res = Number($<HTMLInputElement>("res").value);
+  const [bx0, by0, bx1, by1] = info.bbox;
+  const w = (Math.min(Math.max(start[0], goal[0]) + m, bx1) - Math.max(Math.min(start[0], goal[0]) - m, bx0)) / res;
+  const h = (Math.min(Math.max(start[1], goal[1]) + m, by1) - Math.max(Math.min(start[1], goal[1]) - m, by0)) / res;
+  const cells = Math.max(0, w) * Math.max(0, h);
+  const over = cells > MAX_CELLS;
+  $("estimate").textContent = `${(cells / 1e6).toFixed(1)} million cells at ${res} m, about ` +
+    `${Math.round(cells * 70 / 1e6)} MB` + (over ? ` — over the limit of ${MAX_CELLS / 1e6} million: use larger cells or a smaller margin` : "");
+  loadBtn.disabled = over || res <= 0;
+}
+
+function params(): Params {
+  const p: Params = { ...defaults, ...base };
+  const g = Number($<HTMLInputElement>("g_max").value);
+  if (g > 0) p.g_max = g / 100;
+  const w = Number($<HTMLInputElement>("w").value);
+  if (w > 0) p.w = w;
+  const k = Number($<HTMLInputElement>("k").value);
+  for (const key of ["C_travel", "C_vertical", "C_turn"]) p[key] = (base[key] as number ?? defaults[key] as number) * k;
+  p.z_units = zUnits();
+  p.tin_res = Number($<HTMLInputElement>("res").value);
+  return p;
+}
+
+function setControls(p: Params) {
+  $<HTMLInputElement>("g_max").value = String(+(100 * (p.g_max as number)).toFixed(2));
+  $<HTMLInputElement>("w").value = String(p.w);
+  $<HTMLInputElement>("res").value = String(p.tin_res ?? 15);
+  $<HTMLInputElement>("margin").value = String((p.tin_margin as number ?? 10000) / 1000);
+  $<HTMLSelectElement>("z_units").value = String(p.z_units ?? "m");
+  $<HTMLInputElement>("k").value = "1";
+}
+
+function openDem(m: ToWorker & { type: "open" }) {
+  info = null; start = null; goal = null; areaGrid = null;
+  for (const name of [...layers.keys()]) setLayer(name, null);
+  markers.start?.remove(); markers.goal?.remove();
+  $("corridors").innerHTML = "";
+  $("log").innerHTML = "";
+  $<HTMLButtonElement>("run").disabled = true;
+  send(m);
+}
+
+$<HTMLInputElement>("file").addEventListener("change", (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (f) { base = {}; setControls(defaults); openDem({ type: "open", file: f, name: f.name, zUnits: zUnits() }); }
+});
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  drop.classList.remove("over");
+  const f = e.dataTransfer?.files[0];
+  if (f) { base = {}; setControls(defaults); openDem({ type: "open", file: f, name: f.name, zUnits: zUnits() }); }
+});
+
+let examples: Example[] = [];
+$<HTMLSelectElement>("example").addEventListener("change", (e) => {
+  const ex = examples.find((x) => x.name === (e.target as HTMLSelectElement).value);
+  if (!ex) return;
+  base = ex.params;
+  setControls(ex.params);
+  openDem({ type: "open", url: ex.dem, name: ex.title, zUnits: String(ex.params.z_units ?? "m"),
+            endpointsDem: [[ex.start[0], ex.start[1]], [ex.goal[0], ex.goal[1]]] });
+});
+
+for (const which of ["start", "goal"] as const) {
+  const btn = $<HTMLButtonElement>(which === "start" ? "pick-start" : "pick-goal");
+  btn.addEventListener("click", () => {
+    picking = picking === which ? null : which;
+    $("pick-start").classList.toggle("active", picking === "start");
+    $("pick-goal").classList.toggle("active", picking === "goal");
+  });
+  $<HTMLInputElement>(which === "start" ? "start-text" : "goal-text").addEventListener("change", (e) => {
+    const p = parsePoint((e.target as HTMLInputElement).value);
+    if (p) setEnd(which, p); else log(`could not read "${(e.target as HTMLInputElement).value}" as x, y`, "err");
+  });
+}
+$<HTMLSelectElement>("coord-crs").addEventListener("change", () => {
+  if (start) $<HTMLInputElement>("start-text").value = formatPoint(start);
+  if (goal) $<HTMLInputElement>("goal-text").value = formatPoint(goal);
+});
+map.on("click", (e: L.LeafletMouseEvent) => {
+  if (!picking) return;
+  setEnd(picking, [e.latlng.lng, e.latlng.lat]);
+  picking = null;
+  $("pick-start").classList.remove("active");
+  $("pick-goal").classList.remove("active");
+});
+for (const id of ["margin", "res"]) $(id).addEventListener("input", estimate);
+
+$("load").addEventListener("click", () => {
+  if (!start || !goal) return;
+  $<HTMLButtonElement>("run").disabled = true;
+  send({ type: "load", start, goal, margin: Number($<HTMLInputElement>("margin").value) * 1000,
+         res: Number($<HTMLInputElement>("res").value), maxCells: MAX_CELLS, zUnits: zUnits() });
+});
+$("run").addEventListener("click", () => {
+  for (const name of ["Slope mask", "Channels", "Saddles", "Triangulation", "Graph nodes (corridor field)",
+                      "Graph edges", "Corridors"]) setLayer(name, null);
+  $("corridors").innerHTML = "";
+  send({ type: "run", params: params() });
+});
+
+// ---------------------------------------------------------------- results
+
+function pointsLayer(g: Grid, rows: ArrayLike<number>, cols: ArrayLike<number>, color: (i: number) => string,
+                     size: number): CanvasLayer {
+  return new CanvasLayer((ctx, px, [x0, y0, x1, y1]) => {
+    const groups = new Map<string, number[]>();
+    for (let i = 0; i < rows.length; i++) {
+      const x = g.x0 + (cols[i] + 0.5) * g.res, y = g.y1 - (rows[i] + 0.5) * g.res;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      const c = color(i);
+      let a = groups.get(c);
+      if (!a) groups.set(c, (a = []));
+      a.push(x, y);
+    }
+    for (const [c, a] of groups) {
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      for (let k = 0; k < a.length; k += 2) {
+        const [u, v] = px(a[k], a[k + 1]);
+        ctx.rect(u - size / 2, v - size / 2, size, size);
+      }
+      ctx.fill();
+    }
+  });
+}
+
+function segmentsLayer(g: Grid, rows: ArrayLike<number>, cols: ArrayLike<number>, pairs: ArrayLike<number>,
+                       stroke: string, width: number, maxDraw = 400_000): CanvasLayer {
+  return new CanvasLayer((ctx, px, [x0, y0, x1, y1]) => {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    let drawn = 0;
+    for (let k = 0; k < pairs.length && drawn < maxDraw; k += 2) {
+      const a = pairs[k], b = pairs[k + 1];
+      const xa = g.x0 + (cols[a] + 0.5) * g.res, ya = g.y1 - (rows[a] + 0.5) * g.res;
+      const xb = g.x0 + (cols[b] + 0.5) * g.res, yb = g.y1 - (rows[b] + 0.5) * g.res;
+      if (Math.max(xa, xb) < x0 || Math.min(xa, xb) > x1 || Math.max(ya, yb) < y0 || Math.min(ya, yb) > y1) continue;
+      const [ua, va] = px(xa, ya), [ub, vb] = px(xb, yb);
+      ctx.moveTo(ua, va);
+      ctx.lineTo(ub, vb);
+      drawn++;
+    }
+    ctx.stroke();
+  });
+}
+
+function showCorridors(g: Grid, routes: RouteOut[]) {
+  const css = getComputedStyle(document.documentElement);
+  const group = L.layerGroup();
+  routes.forEach((r, i) => {
+    const pts = r.rows.map((row, k) => [g.y1 - (row + 0.5) * g.res, g.x0 + (r.cols[k] + 0.5) * g.res] as [number, number]);
+    L.polyline(pts, { color: (i === 0 ? css.getPropertyValue("--route") : css.getPropertyValue("--alt")).trim(),
+                      weight: i === 0 ? 4 : 2.5, opacity: i === 0 ? 1 : 0.8 })
+      .bindTooltip(`${i + 1} (${r.how}): ${Math.round(r.cost).toLocaleString()}, ${(r.length / 1000).toFixed(1)} km`)
+      .addTo(group);
+  });
+  setLayer("Corridors", group);
+  const head = "<tr><th>#</th><th>found by</th><th>cost</th><th>km</th><th>hairpins</th><th>turning °</th></tr>";
+  $("corridors").innerHTML = head + routes.map((r, i) =>
+    `<tr><td>${i + 1}</td><td>${r.how}</td><td>${Math.round(r.cost).toLocaleString()}</td>` +
+    `<td>${(r.length / 1000).toFixed(1)}</td><td>${r.hairpins}</td><td>${Math.round(r.turning * 180 / Math.PI).toLocaleString()}</td></tr>`).join("");
+}
+
+const stageStart = new Map<string, number>();
+worker.onmessage = (e: MessageEvent<FromWorker>) => {
+  const m = e.data;
+  switch (m.type) {
+    case "stage":
+      if (m.state === "start") stageStart.set(m.name, performance.now());
+      else log(`${m.name}: ${((m.ms ?? 0) / 1000).toFixed(2)} s`);
+      break;
+    case "info": {
+      info = m.info;
+      const i = m.info;
+      $("info").textContent = `${i.name}: ${i.width.toLocaleString()} x ${i.height.toLocaleString()} cells, ` +
+        `${i.geographic ? "latitude/longitude" : `projected (${i.units})`}, about ${i.resM.toFixed(1)} m; ` +
+        `working in UTM zone ${i.zone}${i.north ? "N" : "S"}` + (i.overviews ? `; ${i.overviews} overviews` : "") +
+        (i.warnings.length ? `. Note: ${i.warnings.join("; ")}` : "");
+      if (m.endpoints && m.endpoints.length === 2) { setEnd("start", m.endpoints[0]); setEnd("goal", m.endpoints[1]); }
+      estimate();
+      break;
+    }
+    case "raster": {
+      const names = { preview: "Terrain (whole DEM)", hillshade: "Terrain (area)", slope: "Slope mask",
+                      channels: "Channels" } as const;
+      setLayer(names[m.layer], rasterLayer(m.grid, m.rgba, m.layer === "preview" ? 0.9 : 1));
+      if (m.layer === "preview") map.fitBounds(boundsOf(m.grid));
+      break;
+    }
+    case "area":
+      areaGrid = m.grid;
+      map.fitBounds(boundsOf(m.grid));
+      log(`area: ${m.grid.w.toLocaleString()} x ${m.grid.h.toLocaleString()} cells at ${m.grid.res} m`);
+      $<HTMLButtonElement>("run").disabled = false;
+      break;
+    case "points": {
+      const g = m.grid, rows = new Uint32Array(m.cells.length), cols = new Uint32Array(m.cells.length);
+      m.cells.forEach((v, k) => { rows[k] = Math.floor(v / g.w); cols[k] = v % g.w; });
+      setLayer("Saddles", pointsLayer(g, rows, cols, () => "#7c3aed", 4), false);
+      break;
+    }
+    case "tin": {
+      const g = m.grid, n = m.points.length / 2;
+      const rows = new Uint32Array(n), cols = new Uint32Array(n);
+      for (let i = 0; i < n; i++) { cols[i] = m.points[2 * i]; rows[i] = m.points[2 * i + 1]; }
+      const seen = new Set<number>(), pairs: number[] = [];
+      for (let t = 0; t < m.triangles.length; t += 3) {
+        for (const [a, b] of [[m.triangles[t], m.triangles[t + 1]], [m.triangles[t + 1], m.triangles[t + 2]],
+                              [m.triangles[t + 2], m.triangles[t]]]) {
+          const key = Math.min(a, b) * n + Math.max(a, b);
+          if (!seen.has(key)) { seen.add(key); pairs.push(a, b); }
+        }
+      }
+      log(`triangulation: ${n.toLocaleString()} vertices, ${m.n.toLocaleString()} triangles`);
+      setLayer("Triangulation", segmentsLayer(g, rows, cols, pairs, "rgba(30,30,30,0.35)", 0.6));
+      break;
+    }
+    case "graph": {
+      const g = m.grid;
+      let fmin = Infinity;
+      for (const v of m.field) if (v < fmin) fmin = v;
+      log(`graph: ${m.rows.length.toLocaleString()} nodes, ${(m.pairs.length / 2).toLocaleString()} edges`);
+      setLayer("Graph nodes (corridor field)", pointsLayer(g, m.rows, m.cols, (i) => {
+        const f = m.field[i];
+        return Number.isFinite(f) ? rampColor((Math.round((f / fmin - 1) * 20) / 20)) : "rgba(120,120,120,0.4)";
+      }, 3));
+      setLayer("Graph edges", segmentsLayer(g, m.rows, m.cols, m.pairs, "rgba(80,80,160,0.25)", 0.5, 300_000), false);
+      setLayer("Triangulation", layers.get("Triangulation") ?? null, false);
+      break;
+    }
+    case "corridors":
+      showCorridors(m.grid, m.routes);
+      log(`corridors: ${m.routes.length}`);
+      break;
+    case "error":
+      log(m.message, "err");
+      break;
+  }
+};
+
+// ---------------------------------------------------------------- start
+
+(async () => {
+  defaults = await (await fetch("params.json")).json();
+  setControls(defaults);
+  examples = await (await fetch("examples.json")).json();
+  for (const ex of examples) {
+    const o = document.createElement("option");
+    o.value = ex.name;
+    o.textContent = ex.title;
+    $("example").append(o);
+  }
+  void areaGrid;
+})();

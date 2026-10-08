@@ -18,6 +18,8 @@
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 
+pub mod utm;
+
 /// numpy's pairwise summation for up to 128 values (what `phi_x.sum()` does for a kernel).
 fn np_sum(a: &[f64]) -> f64 {
     let n = a.len();
@@ -370,8 +372,190 @@ pub fn reachable(open: &[bool], nr: usize, nc: usize, r: usize, c: usize) -> Vec
     out
 }
 
+/// Shaded relief (0..255) as GDAL computes it: Horn's gradients, sun at `azimuth` degrees
+/// clockwise from north and `altitude` degrees up. NaN cells (and edges next to them) are 0.
+pub fn hillshade(z: &[f64], nr: usize, nc: usize, res: f64, azimuth: f64, altitude: f64, z_factor: f64) -> Vec<u8> {
+    let zen = (90.0 - altitude).to_radians();
+    let az = (360.0 - azimuth + 90.0).rem_euclid(360.0).to_radians();
+    let at = |r: i64, c: i64| -> f64 {
+        let r = r.clamp(0, nr as i64 - 1) as usize;
+        let c = c.clamp(0, nc as i64 - 1) as usize;
+        z[r * nc + c]
+    };
+    let mut out = vec![0u8; z.len()];
+    for r in 0..nr as i64 {
+        for c in 0..nc as i64 {
+            let (a_, b, c_) = (at(r - 1, c - 1), at(r - 1, c), at(r - 1, c + 1));
+            let (d, f) = (at(r, c - 1), at(r, c + 1));
+            let (g, h, i) = (at(r + 1, c - 1), at(r + 1, c), at(r + 1, c + 1));
+            let dzdx = ((c_ + 2.0 * f + i) - (a_ + 2.0 * d + g)) / (8.0 * res);
+            let dzdy = ((g + 2.0 * h + i) - (a_ + 2.0 * b + c_)) / (8.0 * res);
+            if !(dzdx.is_finite() && dzdy.is_finite()) {
+                continue;
+            }
+            let slope = (z_factor * dzdx.hypot(dzdy)).atan();
+            let aspect = dzdy.atan2(-dzdx);
+            let v = zen.cos() * slope.cos() + zen.sin() * slope.sin() * (az - aspect).cos();
+            out[r as usize * nc + c as usize] = (255.0 * v).clamp(1.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// Where a source raster is: its geotransform (x of the left edge, x step per column, y of the
+/// top edge, y step per row, negative for north-up), and whether x, y are degrees (longitude,
+/// latitude) or already meters in the target UTM zone.
+#[derive(Clone, Copy, Debug)]
+pub struct SourceGrid {
+    pub x0: f64,
+    pub dx: f64,
+    pub y0: f64,
+    pub dy: f64,
+    pub geographic: bool,
+}
+
+fn bilinear_nan(a: &[f32], w: usize, h: usize, fr: f64, fc: f64) -> f64 {
+    if fr < -0.5 || fc < -0.5 || fr > h as f64 - 0.5 || fc > w as f64 - 0.5 {
+        return f64::NAN;
+    }
+    let fr = fr.clamp(0.0, (h - 1) as f64);
+    let fc = fc.clamp(0.0, (w - 1) as f64);
+    let r0 = (fr as usize).min(h.saturating_sub(2));
+    let c0 = (fc as usize).min(w.saturating_sub(2));
+    let (r1, c1) = ((r0 + 1).min(h - 1), (c0 + 1).min(w - 1));
+    let (wr, wc) = (fr - r0 as f64, fc - c0 as f64);
+    let v = |r: usize, c: usize| a[r * w + c] as f64;
+    (1.0 - wr) * ((1.0 - wc) * v(r0, c0) + wc * v(r0, c1)) + wr * ((1.0 - wc) * v(r1, c0) + wc * v(r1, c1))
+}
+
+/// Resample a source window onto a north-up UTM grid (top-left corner x0, y1; square cells of
+/// `res` m; w x h), cell centers sampled bilinearly. When the target is coarser than the source,
+/// each target cell averages k x k bilinear samples across it (k up to 8). NaN where the source
+/// has none.
+#[allow(clippy::too_many_arguments)]
+pub fn reproject_to_utm(
+    src: &[f32],
+    sw: usize,
+    sh: usize,
+    g: &SourceGrid,
+    zone: u32,
+    north: bool,
+    x0: f64,
+    y1: f64,
+    res: f64,
+    w: usize,
+    h: usize,
+) -> Vec<f32> {
+    // Source cell size in meters (latitude degrees ~ 111 km).
+    let src_m = if g.geographic { g.dy.abs() * 111_000.0 } else { g.dy.abs() };
+    let k = ((res / src_m).ceil() as usize).clamp(1, 8);
+    let mut out = vec![f32::NAN; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let (mut sum, mut cnt) = (0.0, 0usize);
+            for a in 0..k {
+                for b in 0..k {
+                    let x = x0 + (j as f64 + (b as f64 + 0.5) / k as f64) * res;
+                    let y = y1 - (i as f64 + (a as f64 + 0.5) / k as f64) * res;
+                    let (sx, sy) = if g.geographic { utm::from_utm(x, y, zone, north) } else { (x, y) };
+                    let fc = (sx - g.x0) / g.dx - 0.5;
+                    let fr = (sy - g.y0) / g.dy - 0.5;
+                    let v = bilinear_nan(src, sw, sh, fr, fc);
+                    if v.is_finite() {
+                        sum += v;
+                        cnt += 1;
+                    }
+                }
+            }
+            if cnt * 2 > k * k {
+                out[i * w + j] = (sum / cnt as f64) as f32;
+            }
+        }
+    }
+    out
+}
+
+/// Resample a source raster onto a w x h target grid, where the source pixel position (fractional
+/// column and row, pixel centers at integers) of every `step`-th target cell center is given on a
+/// lattice (lw x lh, lw = (w - 1) / step + 2 or more, row-major) and interpolated in between. The
+/// lattice comes from a map projection evaluated by the caller (smooth, so a coarse lattice is
+/// exact to well under a centimeter). When the target is coarser than the source by `k`, each
+/// target cell averages k x k sub-samples (k <= 8). NaN where the source has none.
+#[allow(clippy::too_many_arguments)]
+pub fn resample_lattice(
+    src: &[f32],
+    sw: usize,
+    sh: usize,
+    lat_col: &[f32],
+    lat_row: &[f32],
+    lw: usize,
+    lh: usize,
+    step: usize,
+    w: usize,
+    h: usize,
+    k: usize,
+) -> Vec<f32> {
+    let k = k.clamp(1, 8);
+    let interp = |a: &[f32], ti: f64, tj: f64| -> f64 {
+        let (li, lj) = (ti / step as f64, tj / step as f64);
+        let (i0, j0) = ((li.floor().max(0.0) as usize).min(lh - 2), (lj.floor().max(0.0) as usize).min(lw - 2));
+        let (wi, wj) = (li - i0 as f64, lj - j0 as f64);
+        let v = |i: usize, j: usize| a[i * lw + j] as f64;
+        (1.0 - wi) * ((1.0 - wj) * v(i0, j0) + wj * v(i0, j0 + 1)) + wi * ((1.0 - wj) * v(i0 + 1, j0) + wj * v(i0 + 1, j0 + 1))
+    };
+    let mut out = vec![f32::NAN; w * h];
+    for i in 0..h {
+        for j in 0..w {
+            let (mut sum, mut cnt) = (0.0, 0usize);
+            for a in 0..k {
+                for b in 0..k {
+                    let ti = i as f64 + (a as f64 + 0.5) / k as f64 - 0.5;
+                    let tj = j as f64 + (b as f64 + 0.5) / k as f64 - 0.5;
+                    let v = bilinear_nan(src, sw, sh, interp(lat_row, ti, tj), interp(lat_col, ti, tj));
+                    if v.is_finite() {
+                        sum += v;
+                        cnt += 1;
+                    }
+                }
+            }
+            if cnt * 2 > k * k {
+                out[i * w + j] = (sum / cnt as f64) as f32;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lattice_resampling_reproduces_a_plane() {
+        // Source: z = 2 col + 3 row on 50 x 40 pixels. Target: the same pixels shifted by half a
+        // pixel, every other one: the lattice gives exact positions, so values are exact.
+        let (sw, sh) = (50usize, 40usize);
+        let src: Vec<f32> = (0..sw * sh).map(|q| (2 * (q % sw) + 3 * (q / sw)) as f32).collect();
+        let (w, h, step) = (20usize, 15usize, 4usize);
+        let (lw, lh) = ((w - 1) / step + 2, (h - 1) / step + 2);
+        let mut lc = vec![0.0f32; lw * lh];
+        let mut lr = vec![0.0f32; lw * lh];
+        for i in 0..lh {
+            for j in 0..lw {
+                lc[i * lw + j] = (2 * j * step) as f32 + 0.5;
+                lr[i * lw + j] = (2 * i * step) as f32 + 0.5;
+            }
+        }
+        let out = super::resample_lattice(&src, sw, sh, &lc, &lr, lw, lh, step, w, h, 1);
+        for i in 0..h {
+            for j in 0..w {
+                let want = 2.0 * (2.0 * j as f64 + 0.5) + 3.0 * (2.0 * i as f64 + 0.5);
+                assert!((out[i * w + j] as f64 - want).abs() < 1e-3, "({i},{j}) {} vs {want}", out[i * w + j]);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_core {
     use super::*;
 
     #[test]
