@@ -32,6 +32,8 @@ export interface FineOut {
   x: number[];
   y: number[];
   z: number[];
+  /** Ground elevation at each point (the final route; empty while refining). */
+  ground: number[];
   cost: { total: number; construction: number; operating: number; base: number; excavation: number; culverts: number;
           crossing_fill: number; fill_m3: number; borrow_m3: number; surrogate: number };
   length: number;

@@ -198,6 +198,13 @@ async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { 
   post({ type: "stage", name: stage, state: "end", ms: performance.now() - t0 });
 }
 
+/** The fine search's memory: per cell of a corridor's buffer (hairpin and bend caches, 128
+ *  float32 per cell at 32 headings, and the search's cost, parent and settled flags per heading),
+ *  per cell of its bounding box (the rasters), and the most one corridor may take. */
+const FINE_BYTES_PER_CELL = 900;
+const FINE_BYTES_PER_GRID_CELL = 80;
+const FINE_BUDGET = 1.5e9;
+
 /** Edges are costed in slices of about this long, between checkpoints. */
 const SLICE_MS = 150;
 
@@ -299,6 +306,19 @@ async function refineOne(k: number, p: Params, res: number, buffer: number) {
   for (let i = 0; i < xs.length; i++) {
     xmin = Math.min(xmin, xs[i]); xmax = Math.max(xmax, xs[i]); ymin = Math.min(ymin, ys[i]); ymax = Math.max(ymax, ys[i]);
   }
+  // Memory: about FINE_BYTES_PER_CELL per cell of the buffer (macro caches, search state) and
+  // FINE_BYTES_PER_GRID_CELL over its bounding box (rasters). Refuse rather than exhaust the tab.
+  let lineLength = 0;
+  for (let i = 1; i < xs.length; i++) lineLength += Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]);
+  const bufferCells = (2 * buffer * lineLength + Math.PI * buffer * buffer) / (res * res);
+  const boxCells = (xmax - xmin + 2 * buffer) * (ymax - ymin + 2 * buffer) / (res * res);
+  const need = bufferCells * FINE_BYTES_PER_CELL + boxCells * FINE_BYTES_PER_GRID_CELL;
+  if (need > FINE_BUDGET) {
+    const fit = res * Math.sqrt(need / FINE_BUDGET);
+    throw new Error(`${name} at ${res} m needs about ${(need / 1e9).toFixed(1)} GB (${(bufferCells / 1e6).toFixed(1)} million ` +
+      `cells in its ${buffer} m buffer), over the ${FINE_BUDGET / 1e9} GB the browser search allows: use cells of ` +
+      `${Math.ceil(fit)} m or more, or a smaller tin_buffer. (Long corridors will be searched in pieces later.)`);
+  }
   const x0 = Math.floor(Math.max(xmin - buffer, bx0) / res) * res, y1 = Math.ceil(Math.min(ymax + buffer, by1) / res) * res;
   const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(xmax + buffer, bx1) - x0) / res),
                      h: Math.ceil((y1 - Math.max(ymin - buffer, by0)) / res) };
@@ -321,7 +341,7 @@ async function refineOne(k: number, p: Params, res: number, buffer: number) {
     const cells = fs.cells(); // the session is busy (borrowed) while it searches
     const toUtm = (o: any, final: boolean): FineOut => ({
       index: k, res, final, x: o.cols.map((c: number) => fg.x0 + (c + 0.5) * res),
-      y: o.rows.map((row: number) => fg.y1 - (row + 0.5) * res), z: o.z, cost: o.cost, length: o.length,
+      y: o.rows.map((row: number) => fg.y1 - (row + 0.5) * res), z: o.z, ground: o.ground ?? [], cost: o.cost, length: o.length,
       hairpins: o.hairpins, bends: o.bends, fill_crossings: o.fill_crossings, segments: o.segments, history: o.history,
       seconds: (performance.now() - t0) / 1000, cells, macros_computed: o.macros_computed,
     });

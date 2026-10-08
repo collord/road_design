@@ -66,6 +66,8 @@ struct FineRoute {
     rows: Vec<f64>,
     cols: Vec<f64>,
     z: Vec<f64>,
+    /// Ground elevation at each point (the final route only).
+    ground: Vec<f64>,
     segments: Vec<SegmentOut>,
     history: Vec<IterationOut>,
     overlap_rounds: usize,
@@ -102,6 +104,7 @@ fn fine_route(segs: &[Segment], c: &TrueCost, lam_fill: f64) -> FineRoute {
         fill_crossings: count(road_fine::route::FILL_CROSSING),
         lam_fill,
         rows, cols, z, segments,
+        ground: Vec::new(),
         history: Vec::new(),
         overlap_rounds: 0,
         completed: true,
@@ -203,6 +206,7 @@ impl FineSession {
             iteration: h.iteration, lam_fill: h.lam_fill, surrogate: h.surrogate, true_cost: h.true_cost,
             n_crossings: h.n_crossings, settled: h.settled,
         }).collect();
+        out.ground = out.rows.iter().zip(&out.cols).map(|(&r, &c)| self.prob.ground_at(r, c)).collect();
         out.overlap_rounds = rounds.len();
         out.completed = it.completed;
         let (a, b) = self.prob.lazy_computed();

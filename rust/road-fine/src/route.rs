@@ -127,6 +127,11 @@ fn macro_points(seg: &[macros::Seg], r: i64, c: i64, u: (f64, f64), res: f64) ->
 }
 
 impl Problem {
+    /// Ground elevation (the working DEM, bilinear) at a (row, col) point.
+    pub fn ground_at(&self, fr: f64, fc: f64) -> f64 {
+        bil_clamped(&self.z_raw, self.nr, self.nc, fr, fc)
+    }
+
     /// (row, col, heading, slot) of the left hairpin equivalent to action p from (r, c).
     fn canonical_hairpin(&self, r: i64, c: i64, p: usize) -> (i64, i64, usize, usize) {
         let l = &self.lat;

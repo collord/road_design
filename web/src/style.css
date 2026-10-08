@@ -58,6 +58,10 @@ button.working::before { content: ""; margin-right: 6px; vertical-align: -2px; }
 .log { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .log .err { color: var(--goal); }
 .table-wrap { overflow-x: auto; }
+table.pick tr[data-index] { cursor: pointer; }
+table.pick tr.selected td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.profile { width: 100%; height: auto; display: block; margin-top: 8px; font-size: 11px; fill: var(--muted); }
+.profile text { fill: var(--muted); font-variant-numeric: tabular-nums; }
 table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; width: 100%; }
 th, td { padding: 2px 6px; border-bottom: 1px solid var(--rule); text-align: right; white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }

@@ -2,7 +2,7 @@
 // load the area, find corridors, and read the progress log and the corridor table.
 // Run with the dev server up: node test/e2e.ts [url] (from web/). CHROME overrides the browser path.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -142,6 +142,27 @@ try {
       console.log(`  fine: ${logLine} in ${((Date.now() - tFine) / 1000).toFixed(0)} s`);
       const steps: string[] = await evaluate(`[...document.querySelectorAll("#log li")].map((li) => li.textContent).filter((t) => /^corridor 1/.test(t))`);
       for (const t of steps) console.log(`    ${t}`);
+      const prof = await evaluate(`({ paths: document.querySelectorAll("#profile svg path").length,
+        note: document.querySelector("#profile-note").textContent, download: !document.querySelector("#download").disabled })`);
+      if (prof.paths !== 2 || !prof.download) throw new Error(`profile or download missing: ${JSON.stringify(prof)}`);
+      console.log(`  profile: ${prof.note}`);
+      // The GeoJSON download: lon/lat/z lines, a route and its segments.
+      await send("Page.setDownloadBehavior", { behavior: "allow", downloadPath: profile });
+      await evaluate(`document.querySelector("#download").click()`);
+      let file = "";
+      for (let i = 0; i < 40 && !file; i++) {
+        await sleep(250);
+        file = readdirSync(profile).find((f) => f.endsWith(".geojson")) ?? "";
+      }
+      if (!file) throw new Error("no GeoJSON downloaded");
+      const gj = JSON.parse(readFileSync(join(profile, file), "utf-8"));
+      const routesF = gj.features.filter((f: any) => f.properties.feature === "route");
+      const segsF = gj.features.filter((f: any) => f.properties.feature === "segment");
+      const [lon, lat, z] = routesF[0].geometry.coordinates[0];
+      if (!(Math.abs(lon) <= 180 && Math.abs(lat) <= 90 && Number.isFinite(z))) throw new Error(`bad coordinates ${lon} ${lat} ${z}`);
+      console.log(`  GeoJSON ${file}: ${routesF.length} route, ${segsF.length} segments, starts at ${lon}, ${lat}, ${z} m; ` +
+                  `cost ${routesF[0].properties.cost_total.toLocaleString()}`);
+      await evaluate(`document.querySelector("#profile").scrollIntoView()`);
       await shot(`${name}-fine`);
     }
     // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.

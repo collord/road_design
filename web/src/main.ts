@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import proj4 from "proj4";
 import "./style.css";
 import { BASEMAPS, ExportLayer, utmEpsg } from "./basemap";
+import { profileSummary, profileSvg } from "./profile";
 import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
 import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
 import type { Params } from "./params";
@@ -31,6 +32,7 @@ let picking: "start" | "goal" | null = null;
 let areaGrid: Grid | null = null;
 let haveCorridors = false;
 const fineRoutes: FineOut[] = [];
+let profileIndex: number | null = null;   // corridor whose fine route the profile shows
 const layers = new Map<string, L.Layer>();
 const markers: { start?: L.CircleMarker; goal?: L.CircleMarker } = {};
 
@@ -392,9 +394,76 @@ function segmentsLayer(g: Grid, rows: ArrayLike<number>, cols: ArrayLike<number>
 
 function clearFine() {
   fineRoutes.length = 0;
+  profileIndex = null;
   setLayer("Fine routes", null);
   $("fine").innerHTML = "";
+  $("profile").innerHTML = "";
+  $("profile-note").textContent = "";
+  $<HTMLButtonElement>("download").disabled = true;
 }
+
+/** The profile of the selected fine route (by default the cheapest finished one). */
+function showProfile() {
+  const done = fineRoutes.filter((f) => f.final && f.ground.length);
+  const f = done.find((x) => x.index === profileIndex) ??
+            [...done].sort((a, b) => a.cost.total - b.cost.total)[0];
+  $("profile").innerHTML = f ? profileSvg(f) : "";
+  $("profile-note").textContent = f ? profileSummary(f) + ". Shaded: hairpins (red), bends (blue), fill crossings (yellow)." : "";
+  for (const tr of document.querySelectorAll<HTMLTableRowElement>("#fine tr[data-index]")) {
+    tr.classList.toggle("selected", f !== undefined && Number(tr.dataset.index) === f.index);
+  }
+}
+
+/** The finished fine routes as GeoJSON (RFC 7946: longitude, latitude, design elevation), each
+ *  route with its costs, and its segments as separate features for styling by type or grade. */
+function fineGeoJson(): string {
+  const toLonLat = (x: number, y: number, z: number) => {
+    const [lon, lat] = proj4(utmDef(), "WGS84", [x, y]);
+    return [+lon.toFixed(7), +lat.toFixed(7), +z.toFixed(2)];
+  };
+  const done = fineRoutes.filter((f) => f.final).sort((a, b) => a.cost.total - b.cost.total);
+  const features: object[] = [];
+  done.forEach((f, rank) => {
+    const coords = f.x.map((x, i) => toLonLat(x, f.y[i], f.z[i]));
+    features.push({
+      type: "Feature", geometry: { type: "LineString", coordinates: coords },
+      properties: {
+        feature: "route", corridor: f.index + 1, rank: rank + 1, cell_m: f.res, length_m: Math.round(f.length),
+        cost_total: Math.round(f.cost.total), construction: Math.round(f.cost.construction),
+        operating: Math.round(f.cost.operating), base: Math.round(f.cost.base), excavation: Math.round(f.cost.excavation),
+        culverts: Math.round(f.cost.culverts), crossing_fill: Math.round(f.cost.crossing_fill),
+        fill_m3: Math.round(f.cost.fill_m3), borrow_m3: Math.round(f.cost.borrow_m3), hairpins: f.hairpins, bends: f.bends,
+        fill_crossings: f.fill_crossings,
+      },
+    });
+    f.segments.forEach((s, i) => {
+      const end = i + 1 < f.segments.length ? f.segments[i + 1].first : f.x.length - 1;
+      features.push({
+        type: "Feature", geometry: { type: "LineString", coordinates: coords.slice(s.first, end + 1) },
+        properties: { feature: "segment", corridor: f.index + 1, seq: i, kind: s.kind, length_m: +s.length.toFixed(1),
+                      grade: +s.grade.toFixed(4), cost: Math.round(s.cost) },
+      });
+    });
+  });
+  return JSON.stringify({ type: "FeatureCollection", features });
+}
+
+$("download").addEventListener("click", () => {
+  const blob = new Blob([fineGeoJson()], { type: "application/geo+json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  const stem = (info?.name ?? "dem").replace(/\.[^.]+$/, "").replace(/[^\w-]+/g, "_");
+  a.download = `fine_routes_${stem}.geojson`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+$("fine").addEventListener("click", (e) => {
+  const tr = (e.target as HTMLElement).closest<HTMLTableRowElement>("tr[data-index]");
+  if (!tr) return;
+  profileIndex = Number(tr.dataset.index);
+  showProfile();
+});
 
 /** The fine routes, drawn over their corridors, and their table. */
 function showFine() {
@@ -416,10 +485,12 @@ function showFine() {
   const head = "<tr><th>corridor</th><th>cost</th><th>build</th><th>operate</th><th>km</th><th>hairpins</th>" +
                "<th>bends</th><th>crossings</th><th>s</th></tr>";
   $("fine").innerHTML = head + sorted.map((f) =>
-    `<tr><td>${f.index + 1}${f.final ? "" : " (refining)"}</td><td>${Math.round(f.cost.total).toLocaleString()}</td>` +
+    `<tr data-index="${f.index}"><td>${f.index + 1}${f.final ? "" : " (refining)"}</td><td>${Math.round(f.cost.total).toLocaleString()}</td>` +
     `<td>${Math.round(f.cost.construction).toLocaleString()}</td><td>${Math.round(f.cost.operating).toLocaleString()}</td>` +
     `<td>${(f.length / 1000).toFixed(2)}</td><td>${f.hairpins}</td><td>${f.bends}</td><td>${f.fill_crossings}</td>` +
     `<td>${f.seconds.toFixed(0)}</td></tr>`).join("");
+  showProfile();
+  $<HTMLButtonElement>("download").disabled = !fineRoutes.some((f) => f.final);
 }
 
 function showCorridors(g: Grid, routes: RouteOut[]) {
