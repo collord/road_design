@@ -1,6 +1,6 @@
 # Road search in Rust and in the browser: design
 
-Status: agreed 2026-10-07. Phases 1 and 2 done; phase 3 next.
+Status: agreed 2026-10-07. Phases 1 and 2 done; phase 3's first version done (`--clip tin`).
 
 ## Goal
 
@@ -95,7 +95,7 @@ full searches finish.
 | `lattice-search` | generic sparse heading-lattice Dijkstra and A* (traits for edge cost and estimate) | done |
 | `road-cost` | the road cost model as an `EdgeCost`; hairpin and bend macro designs and tables (`macros`) | done (lazy per-cell costs: phase 4) |
 | `terrain` | smoothing, gradients, slope mask (exact distance transform), Priority-Flood flow accumulation, connected regions | done (saddles: phase 3) |
-| `tin-graph` | triangulation, extra nodes, graph costing, corridor field, distinct corridors, Monte Carlo | phase 3 |
+| `tin-graph` | triangulation and road-relevant nodes, edges costed on the DEM, corridor field, distinct corridors | first version done (Monte Carlo, turning on edges, field-graded penalties: to do) |
 | `roadsearch-core` | Python bindings (PyO3) | done; grows with each phase |
 | `roadsearch-wasm` | browser bindings (wasm-bindgen), the step and event API | phase 4 |
 
@@ -141,8 +141,15 @@ Quadric-error decimation (`meshopt-rs`) is available if a non-heightfield mesh i
    identical to the Python path; flow accumulation (Priority-Flood with an epsilon rise, D8) agrees
    on 99.96% of channel cells on Stibnite and is about 7x faster than pysheds. Runs record
    `terrain_engine` in their inputs (so in their ids) when Rust preprocessed them.
-3. **Triangulated coarse graph**: triangulation, extra nodes, costing, corridor field, distinct
-   corridors, Monte Carlo; compared with the lattice coarse pass.
+3. **Triangulated coarse graph** (first version done: `--clip tin`). Nodes: Delatin vertices of the
+   smoothed DEM, channel nodes, saddles, a background grid; edges to the k nearest neighbors (a
+   roadmap rather than triangle edges with Steiner points), costed on the DEM with the switchback
+   proxy. Corridors: the best route, saddle candidates, a penalty loop; buffered into the fine
+   search's region. On Stibnite (10.5%) it covers the whole DEM in 12 s (154,000 nodes, 1.4 million
+   edges) and found the valley route the lattice coarse pass had excluded; the fine search confirmed
+   it at 14.99 M against 17.04 M for the best ridge route at the same resolution, in 6 minutes all
+   told. To do: turning cost on graph edges (the graph favors winding routes without it), Monte
+   Carlo over unit costs, corridor-field-graded penalties, a comparison on Red Mountain.
 4. **Browser**: the WebAssembly crate, a Web Worker, the viewer in TypeScript (Vite, still a static
    site), streamed convergence, weighted-A* candidates and exact refinement, chunked fine search.
 5. **Browser input and output**, and a memory budget for a whole run in a tab.

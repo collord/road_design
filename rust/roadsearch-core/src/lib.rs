@@ -539,6 +539,92 @@ fn terrain_reachable<'py>(py: Python<'py>, open: PyReadonlyArray2<'py, bool>, r:
     grid2(py, out, nr, nc)
 }
 
+/// The coarse stage on a sparse graph (tin-graph). Rasters (nr x nc): z (working DEM), zs (smoothed),
+/// gx, gy, open (u8), area (ha); section: the cost-per-meter table with its steps (ds, dg).
+/// edge: (g_max, C_travel, C_vertical, A_min, hairpin allowance, culvert breaks, culvert costs);
+/// tin: (tolerance m, k, edge_max cells, block cells, channel node ha, n_alt, penalty, stretch, max_shared).
+/// Returns (rows, cols, kinds, field, routes, n_edges); each route is (node indices, cost,
+/// construction, operating, length m, hairpins, how).
+#[pyfunction]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn tin_corridors<'py>(
+    py: Python<'py>,
+    rasters: &Bound<'py, PyTuple>,
+    section: PyReadonlyArray2<'py, f64>,
+    ds: f64,
+    dg: f64,
+    res: f64,
+    start: (usize, usize),
+    goal: (usize, usize),
+    edge: &Bound<'py, PyTuple>,
+    tin: &Bound<'py, PyTuple>,
+) -> PyResult<(
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<i64>>,
+    Bound<'py, PyArray1<u8>>,
+    Bound<'py, PyArray1<f64>>,
+    Vec<(Bound<'py, PyArray1<i64>>, f64, f64, f64, f64, u32, String)>,
+    usize,
+)> {
+    let z: PyReadonlyArray2<f64> = item(rasters, 0, "z")?;
+    let zs: PyReadonlyArray2<f64> = item(rasters, 1, "zs")?;
+    let gx: PyReadonlyArray2<f64> = item(rasters, 2, "gx")?;
+    let gy: PyReadonlyArray2<f64> = item(rasters, 3, "gy")?;
+    let open: PyReadonlyArray2<u8> = item(rasters, 4, "open")?;
+    let area: PyReadonlyArray2<f64> = item(rasters, 5, "area")?;
+    let (nr, nc) = shape2(&z);
+    for (name, s) in [("zs", zs.shape()), ("gx", gx.shape()), ("gy", gy.shape()), ("open", open.shape()), ("area", area.shape())] {
+        if s != [nr, nc] {
+            return Err(PyValueError::new_err(format!("{name} has shape {s:?}, z has ({nr}, {nc})")));
+        }
+    }
+    if start.0 >= nr || start.1 >= nc || goal.0 >= nr || goal.1 >= nc {
+        return Err(PyValueError::new_err("start or goal outside the grid"));
+    }
+    let ts = section.shape();
+    let t = tin_graph::Rasters {
+        z: Grid::new(z.as_slice()?, nr, nc),
+        zs: Grid::new(zs.as_slice()?, nr, nc),
+        gx: Grid::new(gx.as_slice()?, nr, nc),
+        gy: Grid::new(gy.as_slice()?, nr, nc),
+        open: Grid::new(open.as_slice()?, nr, nc),
+        area: Grid::new(area.as_slice()?, nr, nc),
+        section: SectionTable { data: section.as_slice()?, ns: ts[0], ng: ts[1], ds, dg },
+        res,
+    };
+    let ef = floats::<5>(&PyTuple::new(py, (0..5).map(|i| edge.get_item(i)).collect::<PyResult<Vec<_>>>()?)?, "edge params")?;
+    let breaks: PyReadonlyArray1<f64> = item(edge, 5, "culvert breaks")?;
+    let costs: PyReadonlyArray1<f64> = item(edge, 6, "culvert costs")?;
+    let e = tin_graph::EdgeParams {
+        g_max: ef[0], c_travel: ef[1], c_vertical: ef[2], a_min: ef[3], hairpin_cost: ef[4],
+        culvert_breaks: breaks.as_slice()?.to_vec(), culvert_costs: costs.as_slice()?.to_vec(),
+    };
+    let tf = floats::<9>(tin, "tin params")?;
+    let p = tin_graph::TinParams {
+        tolerance: tf[0], k: tf[1] as usize, edge_max: tf[2], block: tf[3] as usize, channel_node_area: tf[4],
+        n_alt: tf[5] as usize, penalty: tf[6], stretch: tf[7], max_shared: tf[8],
+    };
+    let (graph, cor) = py.detach(|| {
+        let nodes = tin_graph::build_nodes(&t, &p, start, goal);
+        let g = tin_graph::build_graph(&t, &e, &p, nodes);
+        let c = tin_graph::corridors(&g, &p, 0, 1);
+        (g, c)
+    });
+    let rows: Vec<i64> = graph.nodes.iter().map(|n| n.r as i64).collect();
+    let cols: Vec<i64> = graph.nodes.iter().map(|n| n.c as i64).collect();
+    let kinds: Vec<u8> = graph.nodes.iter().map(|n| n.kind).collect();
+    let routes = cor
+        .routes
+        .into_iter()
+        .map(|r| {
+            let nodes: Vec<i64> = r.nodes.iter().map(|&i| i as i64).collect();
+            (nodes.into_pyarray(py), r.cost, r.construction, r.operating, r.length, r.hairpins, r.how.to_string())
+        })
+        .collect();
+    Ok((rows.into_pyarray(py), cols.into_pyarray(py), kinds.into_pyarray(py), cor.field.into_pyarray(py), routes,
+        graph.edges.len()))
+}
+
 #[pymodule]
 fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -551,5 +637,6 @@ fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(terrain_slope_mask, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_contributing_area, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_reachable, m)?)?;
+    m.add_function(wrap_pyfunction!(tin_corridors, m)?)?;
     Ok(())
 }

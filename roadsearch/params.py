@@ -72,6 +72,18 @@ class Params:
     clip_slack: float
     clip_buffer: float
     clip_coarse_margin: float
+    tin_res: float
+    tin_tolerance: float
+    tin_k: float
+    tin_edge_max: float
+    tin_block: float
+    tin_channel_ha: float
+    tin_alternatives: float
+    tin_penalty: float
+    tin_stretch: float
+    tin_max_shared: float
+    tin_buffer: float
+    tin_hairpin_cost: float
 
     def __post_init__(self) -> None:
         if len(self.culvert_costs) != len(self.culvert_area_breaks) + 1:

@@ -1,11 +1,13 @@
 # Rust core
 
-Three crates in one workspace, each usable on its own:
+Five crates in one workspace, each usable on its own:
 
 | crate | what it is | depends on |
 |---|---|---|
 | `lattice-search` | Dijkstra and A* over (row, col, heading) states on a sparse grid. Edge costs and the A* estimate are traits (`EdgeCost`, `Heuristic`); only the cells of a `CellIndex` (any mask, e.g. a corridor) hold states. `search_with_progress` reports every N settled states and can be stopped. No knowledge of roads. | nothing |
 | `road-cost` | The road cost model of `roadsearch/search.py` (earthwork from the section table, grade limits on the profile, culverts, fill crossings, hairpin and bend tables, truck travel, climb and turning), as an `EdgeCost`, plus the climb-aware `ClimbHeuristic`. `macros`: the hairpin and bend designs and their tables (`hairpin.py`, `bend.py`), built on all cores with the `parallel` feature (rayon, on by default; off for WebAssembly). | `lattice-search` |
+| `terrain` | DEM preprocessing: NaN-aware Gaussian smoothing, gradients, slope masks with an exact distance transform, Priority-Flood D8 flow accumulation, connected regions. | nothing |
+| `tin-graph` | The coarse stage on a sparse graph (`--clip tin`): Delatin triangulation vertices, channel, saddle and background nodes, edges costed on the DEM, two-way Dijkstra, corridor field, distinct corridors. | `road-cost`, `delatin` |
 | `roadsearch-core` | Python bindings (PyO3, numpy). `search` and `edge_costs` take the same lattice and terrain tuples as the numba kernel (`SearchProblem.lat_tuple()`, `terr_tuple()`, via `roadsearch.search.rust_args`); `search` takes an optional progress callback. `hairpin_table` and `bend_table` build the macro tables. | both |
 
 Search results (`roadsearch.search.SearchResult`) and the hairpin and bend tables hold only the

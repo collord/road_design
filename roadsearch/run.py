@@ -44,7 +44,9 @@ class RankedRoute:
 
 # Parameters added after runs were made: left out of the run id at their default, so the
 # ids (and the reuse of finished runs) of runs made before them don't change.
-_LATER_PARAMS = {"C_turn": 0.0}
+_LATER_PARAMS = {"C_turn": 0.0, "tin_res": 15.0, "tin_tolerance": 5.0, "tin_k": 16.0, "tin_edge_max": 600.0,
+                 "tin_block": 300.0, "tin_channel_ha": 20.0, "tin_alternatives": 4.0, "tin_penalty": 1.5,
+                 "tin_stretch": 0.25, "tin_max_shared": 0.5, "tin_buffer": 600.0, "tin_hairpin_cost": -1.0}
 
 
 def _id_params(p: Params) -> dict:
@@ -293,6 +295,7 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
         return record
 
     buffer = p.clip_buffer
+    tin_buffer = p.tin_buffer
     attempts = 0
     while True:
         attempts += 1
@@ -317,12 +320,23 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
                 del cfields
                 bounds = _region_bounds(cgrid, cregion, 0.0)
                 res = resolution or resolution_for(bounds, p, float(cregion.sum()) * cgrid.res**2)
+            elif clip == "tin":
+                from .tin import tin_corridor
+
+                t0 = time.time()
+                with stage('coarse graph'):
+                    cgrid, cregion, cinfo, ccorr = tin_corridor(dem, p, start, goal, exclude, log, tin_buffer)
+                timings["coarse_s"] = time.time() - t0
+                record["coarse"] = cinfo
+                ccorr.to_file(run_dir / "coarse_corridors.geojson", driver="GeoJSON")
+                bounds = _region_bounds(cgrid, cregion, 0.0)
+                res = resolution or resolution_for(bounds, p, float(cregion.sum()) * cgrid.res**2)
             else:
                 raise ValueError(f"unknown clip mode {clip!r}")
             t0 = time.time()
             with stage('fine: load the grid'):
                 grid, ginfo = load_grid(dem, p, res, bounds)
-            if clip == "auto":
+            if clip in ("auto", "tin"):
                 region_mask = _resample_mask(cgrid, cregion, grid)
             check_memory(grid, p, n_search=int(region_mask.sum()) if region_mask is not None else None)
             record["grid"] = ginfo
@@ -363,10 +377,14 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
         allowed = region_mask if region_mask is not None else np.ones(prob.open_.shape, bool)
         if clip != "none" and touches_boundary(prob, it.best.edges, terrain.start_rc, allowed):
             record.setdefault("clip_warnings", []).append(
-                f"attempt {attempts}: best route reaches the clip boundary (buffer {buffer:g} m)")
+                f"attempt {attempts}: best route reaches the clip boundary "
+                f"(buffer {tin_buffer if clip == 'tin' else buffer:g} m)")
             log(record["clip_warnings"][-1])
             if clip == "auto" and attempts < 2:
                 buffer *= 2
+                continue
+            if clip == "tin" and attempts < 2:
+                tin_buffer *= 2
                 continue
         break
 

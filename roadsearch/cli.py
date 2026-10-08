@@ -284,9 +284,11 @@ def add_run_arguments(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--exclude", action="append", default=[], help="polygon file to keep out of, optionally filtered as 'FILE|WHERE' (e.g. \"zones.gpkg|type='avoid'\"); repeatable")
     sp.add_argument("--resolution", type=float, default=None,
                     help="working resolution (m); default fits max_states over the (clipped) grid")
-    sp.add_argument("--clip", choices=["none", "box", "auto"], default="auto",
+    sp.add_argument("--clip", choices=["none", "box", "auto", "tin"], default="auto",
                     help="none: whole DEM; box: endpoint box + --clip-margin; auto: coarse search of the endpoint "
-                         "box + clip_coarse_margin, then a fine search of its corridor (default)")
+                         "box + clip_coarse_margin, then a fine search of its corridor (default); tin: coarse "
+                         "search on a sparse graph over the whole DEM (rust/tin-graph), then fine searches of its "
+                         "corridors (needs the Rust core)")
     sp.add_argument("--clip-margin", type=float, default=1000.0, help="box margin (m)")
     sp.add_argument("--coarse-res", type=float, default=None,
                     help="resolution of the --clip auto coarse pass (default: finest that fits max_states "

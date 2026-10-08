@@ -34,6 +34,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "delatin"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c074a53686fc3b48072b67e805b661364638fdb778c7a37b7d153da12fcc0160"
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -262,6 +268,7 @@ dependencies = [
  "pyo3",
  "road-cost",
  "terrain",
+ "tin-graph",
 ]
 
 [[package]]
@@ -290,6 +297,15 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 [[package]]
 name = "terrain"
 version = "0.1.0"
+
+[[package]]
+name = "tin-graph"
+version = "0.1.0"
+dependencies = [
+ "delatin",
+ "rayon",
+ "road-cost",
+]
 
 [[package]]
 name = "unicode-ident"

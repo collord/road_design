@@ -1,0 +1,17 @@
+[package]
+name = "tin-graph"
+description = "Coarse road search on a sparse graph over a DEM: triangulation vertices, channel, saddle and background nodes, edges costed on the full DEM with a switchback proxy, two-way Dijkstra, corridor field and distinct corridors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["parallel"]
+# Cost edges on all cores (rayon); off for single-threaded WebAssembly.
+parallel = ["dep:rayon"]
+
+[dependencies]
+rayon = { version = "1", optional = true }
+road-cost = { path = "../road-cost", default-features = false }
+delatin = "=0.2.1"

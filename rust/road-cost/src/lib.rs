@@ -64,7 +64,7 @@ impl<'a, T: Copy> Grid<'a, T> {
     }
 
     #[inline(always)]
-    fn at(&self, r: i64, c: i64) -> T {
+    pub fn at(&self, r: i64, c: i64) -> T {
         self.data[r as usize * self.nc + c as usize]
     }
 }
@@ -111,8 +111,9 @@ pub struct SectionTable<'a> {
 }
 
 impl SectionTable<'_> {
+    /// Cost per meter at sidehill slope s and |grade| g (bilinear); infinite past the mask.
     #[inline(always)]
-    fn cost(&self, s: f64, g: f64) -> f64 {
+    pub fn cost(&self, s: f64, g: f64) -> f64 {
         let fs = s / self.ds;
         if fs >= self.ns as f64 - 1.0 {
             return f64::INFINITY;
@@ -200,8 +201,9 @@ fn nearest(f: f64) -> i64 {
     (f + 0.5).floor() as i64
 }
 
+/// Culvert price for a contributing area: costs[i] below breaks[i], the last above all.
 #[inline(always)]
-fn culvert_cost(area: f64, breaks: &[f64], costs: &[f64]) -> f64 {
+pub fn culvert_cost(area: f64, breaks: &[f64], costs: &[f64]) -> f64 {
     for (i, &b) in breaks.iter().enumerate() {
         if area < b {
             return costs[i];
