@@ -15,5 +15,6 @@ lattice-search = { path = "../lattice-search" }
 road-cost = { path = "../road-cost" }
 terrain = { path = "../terrain" }
 tin-graph = { path = "../tin-graph" }
+road-fine = { path = "../road-fine" }
 pyo3 = { version = "0.29", features = ["extension-module", "generate-import-lib"] }
 numpy = "0.29"

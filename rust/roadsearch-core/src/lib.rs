@@ -5,6 +5,9 @@
 //! so either engine can serve the same problem. Large arrays are borrowed, not
 //! copied, and the GIL is released while searching.
 
+mod fine;
+mod fine_lattice;
+
 use lattice_search::{search_with_progress, Action, CellIndex, Lattice, Progress, SearchSpec, ZeroHeuristic};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
@@ -696,5 +699,7 @@ fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(terrain_contributing_area, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_reachable, m)?)?;
     m.add_function(wrap_pyfunction!(tin_corridors, m)?)?;
+    fine_lattice::register(m)?;
+    fine::register(m)?;
     Ok(())
 }

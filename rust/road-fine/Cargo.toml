@@ -1,0 +1,19 @@
+[package]
+name = "road-fine"
+description = "The fine road search on a heading lattice: the lattice, the exact section, the search problem, the fill-price iteration, and the found route's segments and true cost (a port of roadsearch's Python pipeline)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["parallel"]
+# Macro tables on all cores (rayon); off for single-threaded WebAssembly.
+parallel = ["road-cost/parallel"]
+
+[dependencies]
+lattice-search = { path = "../lattice-search" }
+road-cost = { path = "../road-cost", default-features = false }
+terrain = { path = "../terrain" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["lattice-search", "road-cost", "terrain", "tin-graph", "roadsearch-core", "roadsearch-wasm"]
+members = ["lattice-search", "road-cost", "road-fine", "terrain", "tin-graph", "roadsearch-core", "roadsearch-wasm"]
 
 [workspace.package]
 version = "0.1.0"
