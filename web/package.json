@@ -9,7 +9,9 @@
     "data": "python -m roadsearch web-data --dest public",
     "dev": "vite",
     "build": "vite build",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "smoke": "node test/smoke.ts",
+    "e2e": "node test/e2e.ts"
   },
   "dependencies": {
     "geotiff": "^3.0.5",

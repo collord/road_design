@@ -35,7 +35,8 @@ KINDS = {0: "triangulation", 1: "channel", 2: "saddle", 3: "background", 4: "end
 # search changes what corridors it finds. (The first version, with no turning cost on the graph,
 # recorded nothing.) tin-2: turning cost on the graph, penalties graded by the corridor field.
 # tin-3: the graph covers the endpoints' box plus tin_margin, not the whole DEM.
-COARSE_ENGINE = "tin-3"
+# tin-4: nodata is filled from the nearest data before triangulating, not with the lowest value.
+COARSE_ENGINE = "tin-4"
 
 # What building the graph holds per cell of its window: the rasters (working and smoothed DEM,
 # gradients, slope, soil, area, codes...) and the graph's share. For the memory check.

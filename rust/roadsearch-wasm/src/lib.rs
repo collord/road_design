@@ -158,8 +158,7 @@ impl Session {
     /// Triangulate the smoothed DEM to `tolerance` m (vertical); returns the number of triangles.
     /// Then tri_points() and tri_triangles().
     pub fn triangulate(&mut self, tolerance: f64) -> Result<usize, JsValue> {
-        let zmin = self.zs.iter().copied().filter(|v| !v.is_nan()).fold(f64::INFINITY, f64::min);
-        let h: Vec<f64> = self.zs.iter().map(|&v| if v.is_nan() { zmin } else { v }).collect();
+        let h = terrain::fill_nearest(&self.zs, self.nr, self.nc);
         let (pts, tris) = delatin::triangulate(&h, (self.nc, self.nr), delatin::Error(tolerance))
             .map_err(|e| JsValue::from_str(&format!("triangulation failed: {e:?}")))?;
         self.tri_points = pts.iter().flat_map(|&(x, y)| [x as u32, y as u32]).collect();

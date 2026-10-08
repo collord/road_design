@@ -48,8 +48,6 @@ checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 [[package]]
 name = "delatin"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c074a53686fc3b48072b67e805b661364638fdb778c7a37b7d153da12fcc0160"
 
 [[package]]
 name = "either"
@@ -435,6 +433,7 @@ dependencies = [
  "delatin",
  "rayon",
  "road-cost",
+ "terrain",
 ]
 
 [[package]]

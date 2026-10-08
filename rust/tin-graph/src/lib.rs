@@ -168,9 +168,9 @@ pub fn build_nodes(t: &Rasters, p: &TinParams, start: (usize, usize), goal: (usi
             nodes.push(Node { r, c, kind });
         }
     };
-    // Triangulation of the smoothed DEM (nodata filled with the lowest value).
-    let zmin = t.zs.data.iter().copied().filter(|v| !v.is_nan()).fold(f64::INFINITY, f64::min);
-    let heights: Vec<f64> = t.zs.data.iter().map(|&v| if v.is_nan() { zmin } else { v }).collect();
+    // Triangulation of the smoothed DEM, nodata filled from the nearest data: a cliff at the
+    // data's edge would draw vertices all along it.
+    let heights = terrain::fill_nearest(&t.zs.data, nr, nc);
     if let Ok((pts, _tris)) = delatin::triangulate(&heights, (nc, nr), delatin::Error(p.tolerance)) {
         for (x, y) in pts {
             add(&mut nodes, y, x, KIND_TIN);

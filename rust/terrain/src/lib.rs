@@ -372,6 +372,37 @@ pub fn reachable(open: &[bool], nr: usize, nc: usize, r: usize, c: usize) -> Vec
     out
 }
 
+/// NaN cells take the value of the nearest cell with data (4-connected steps, ties to the first
+/// reached), so the surface carries on flat past the data's edge instead of dropping to a cliff.
+/// All NaN in, all NaN out.
+pub fn fill_nearest(z: &[f64], nr: usize, nc: usize) -> Vec<f64> {
+    let mut out = z.to_vec();
+    let mut q: VecDeque<usize> = (0..z.len()).filter(|&k| !z[k].is_nan()).collect();
+    while let Some(k) = q.pop_front() {
+        let (r, c) = (k / nc, k % nc);
+        let v = out[k];
+        let mut visit = |k2: usize| {
+            if out[k2].is_nan() {
+                out[k2] = v;
+                q.push_back(k2);
+            }
+        };
+        if r > 0 {
+            visit(k - nc);
+        }
+        if r + 1 < nr {
+            visit(k + nc);
+        }
+        if c > 0 {
+            visit(k - 1);
+        }
+        if c + 1 < nc {
+            visit(k + 1);
+        }
+    }
+    out
+}
+
 /// Shaded relief (0..255) as GDAL computes it: Horn's gradients, sun at `azimuth` degrees
 /// clockwise from north and `altitude` degrees up. NaN cells (and edges next to them) are 0.
 pub fn hillshade(z: &[f64], nr: usize, nc: usize, res: f64, azimuth: f64, altitude: f64, z_factor: f64) -> Vec<u8> {
@@ -557,6 +588,18 @@ mod tests {
 #[cfg(test)]
 mod tests_core {
     use super::*;
+
+    #[test]
+    fn fill_nearest_carries_the_edge_value_outward() {
+        let n = f64::NAN;
+        #[rustfmt::skip]
+        let z = [n, n, n, n,
+                 n, 5., 7., n,
+                 n, n, n, n];
+        let f = fill_nearest(&z, 3, 4);
+        assert_eq!(f, vec![5., 5., 7., 7., 5., 5., 7., 7., 5., 5., 7., 7.]);
+        assert!(fill_nearest(&[n, n], 1, 2).iter().all(|v| v.is_nan()));
+    }
 
     #[test]
     fn distance_transform_matches_brute_force() {

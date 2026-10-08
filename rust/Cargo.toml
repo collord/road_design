@@ -13,3 +13,8 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = 1               # symbols for profiling; no effect on speed
+
+# delatin 0.2.1 with its integer geometry in i64 rather than isize: isize is 32-bit in WebAssembly,
+# and the in-circle test overflows on grids about 900 cells wide, flipping edges forever.
+[patch.crates-io]
+delatin = { path = "vendor/delatin" }

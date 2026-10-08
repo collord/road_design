@@ -44,9 +44,20 @@ function cellOf(g: Grid, x: number, y: number): [number, number] | null {
   return r >= 0 && c >= 0 && r < g.h && c < g.w ? [r, c] : null;
 }
 
+/** The bytes at a URL, refusing a missing file or a page served in its place (a dev server's fallback). */
+async function fetchTiff(url: string): Promise<ArrayBuffer> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`could not fetch ${url}: ${r.status} ${r.statusText}`);
+  const buf = await r.arrayBuffer();
+  const b = new Uint8Array(buf, 0, Math.min(4, buf.byteLength));
+  const tiff = (b[0] === 0x49 && b[1] === 0x49) || (b[0] === 0x4d && b[1] === 0x4d);
+  if (!tiff) throw new Error(`${url} is not a GeoTIFF (got ${r.headers.get("content-type") ?? "unknown content"})`);
+  return buf;
+}
+
 async function open(m: Extract<ToWorker, { type: "open" }>) {
   await ready;
-  const input = m.url ? await (await fetch(m.url)).arrayBuffer() : (m.file as Blob);
+  const input = m.url ? await fetchTiff(m.url) : (m.file as Blob);
   source = await timedAsync("read the GeoTIFF header", () => Source.open(input, m.name));
   area?.session.free();
   area = null;
@@ -127,13 +138,17 @@ function run(p: Params) {
   post({ type: "corridors", grid, routes });
 }
 
-self.onmessage = async (e: MessageEvent<ToWorker>) => {
-  try {
-    const m = e.data;
-    if (m.type === "open") await open(m);
-    else if (m.type === "load") await load(m);
-    else if (m.type === "run") run(m.params);
-  } catch (err) {
-    post({ type: "error", message: err instanceof Error ? err.message : String(err) });
-  }
+// One message at a time: a "load" must not start while an "open" is still reading its file.
+let queue: Promise<void> = Promise.resolve();
+self.onmessage = (e: MessageEvent<ToWorker>) => {
+  queue = queue.then(async () => {
+    try {
+      const m = e.data;
+      if (m.type === "open") await open(m);
+      else if (m.type === "load") await load(m);
+      else if (m.type === "run") run(m.params);
+    } catch (err) {
+      post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    }
+  });
 };

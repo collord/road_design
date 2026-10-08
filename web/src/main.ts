@@ -147,6 +147,7 @@ function openDem(m: ToWorker & { type: "open" }) {
   markers.start?.remove(); markers.goal?.remove();
   $("corridors").innerHTML = "";
   $("log").innerHTML = "";
+  $<HTMLButtonElement>("load").disabled = true;
   $<HTMLButtonElement>("run").disabled = true;
   send(m);
 }
@@ -171,7 +172,8 @@ $<HTMLSelectElement>("example").addEventListener("change", (e) => {
   if (!ex) return;
   base = ex.params;
   setControls(ex.params);
-  openDem({ type: "open", url: ex.dem, name: ex.title, zUnits: String(ex.params.z_units ?? "m"),
+  // The worker resolves relative URLs against its own script, so hand it an absolute one.
+  openDem({ type: "open", url: new URL(ex.dem, document.baseURI).href, name: ex.title, zUnits: String(ex.params.z_units ?? "m"),
             endpointsDem: [[ex.start[0], ex.start[1]], [ex.goal[0], ex.goal[1]]] });
 });
 

@@ -14,4 +14,5 @@ parallel = ["dep:rayon"]
 [dependencies]
 rayon = { version = "1", optional = true }
 road-cost = { path = "../road-cost", default-features = false }
+terrain = { path = "../terrain" }
 delatin = "=0.2.1"
