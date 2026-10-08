@@ -53,11 +53,15 @@ jobs:
           cache: pip
       - name: Install
         run: pip install -c constraints.txt -e .
+      # The Rust core in every job: run ids record the terrain engine, so the site step must use
+      # the same one as the run jobs to reuse their runs.
+      - name: Install the Rust core
+        run: pip install maturin && pip install ./rust/roadsearch-core
       - name: Restore a finished run
         uses: actions/cache@v4
         with:
           path: out-run
-          key: run-${{ matrix.example }}-${{ matrix.value }}-${{ hashFiles('roadsearch/**/*.py', 'params*.toml', 'examples.toml', 'data/**', 'constraints.txt') }}
+          key: run-${{ matrix.example }}-${{ matrix.value }}-${{ hashFiles('roadsearch/**/*.py', 'rust/**/*.rs', 'rust/**/Cargo.toml', 'params*.toml', 'examples.toml', 'data/**', 'constraints.txt') }}
       - name: Run
         run: python -m roadsearch example "${{ matrix.example }}" --k "${{ matrix.value }}" --out out-run --no-viewer --tree
       - uses: actions/upload-artifact@v4
@@ -78,6 +82,10 @@ jobs:
           cache: pip
       - name: Install
         run: pip install -c constraints.txt -e .
+      # The Rust core in every job: run ids record the terrain engine, so the site step must use
+      # the same one as the run jobs to reuse their runs.
+      - name: Install the Rust core
+        run: pip install maturin && pip install ./rust/roadsearch-core
       - uses: actions/download-artifact@v4
         with:
           pattern: run-*

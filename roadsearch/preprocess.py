@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from scipy import ndimage
 
+from .engine import use_rust
 from .exclusion import ZoneFile, check_endpoints, combine_codes, load_zone_file
 from .flow import contributing_area_ha
 from .params import Params
@@ -52,8 +53,12 @@ class Terrain:
         return self.code != 0
 
 
-def smooth_dem(z: np.ndarray, sigma_cells: float) -> np.ndarray:
-    """Gaussian smoothing that ignores NaN cells (normalized convolution)."""
+def smooth_dem(z: np.ndarray, sigma_cells: float, engine: str | None = None) -> np.ndarray:
+    """Gaussian smoothing that ignores NaN cells (normalized convolution). The Rust core's gives
+    the same values as scipy's."""
+    if use_rust(engine):
+        import roadsearch_core
+        return roadsearch_core.terrain_smooth(np.ascontiguousarray(z, dtype=np.float64), float(sigma_cells))
     valid = ~np.isnan(z)
     zf = np.where(valid, z, 0.0)
     num = ndimage.gaussian_filter(zf, sigma_cells, mode="nearest")
@@ -64,18 +69,29 @@ def smooth_dem(z: np.ndarray, sigma_cells: float) -> np.ndarray:
     return out
 
 
-def gradient(z: np.ndarray, grid: Grid) -> tuple[np.ndarray, np.ndarray]:
+def gradient(z: np.ndarray, grid: Grid, engine: str | None = None) -> tuple[np.ndarray, np.ndarray]:
     """dz/dx (east) and dz/dy (north) by central differences."""
+    if use_rust(engine):
+        import roadsearch_core
+        return roadsearch_core.terrain_gradient(np.ascontiguousarray(z, dtype=np.float64), grid.transform.a,
+                                                grid.transform.e)
     d_row, d_col = np.gradient(z)
     return d_col / grid.transform.a, d_row / grid.transform.e
 
 
-def slope_mask(slope: np.ndarray, grid: Grid, p: Params) -> tuple[np.ndarray, np.ndarray, float]:
+def slope_mask(slope: np.ndarray, grid: Grid, p: Params,
+               engine: str | None = None) -> tuple[np.ndarray, np.ndarray, float]:
     """Cells too steep for any road at grade <= g_max, dilated by the catch distance.
 
     Returns (raw mask, dilated mask, dilation radius in m). NaN slope (nodata)
     counts as excluded.
     """
+    if use_rust(engine):
+        import roadsearch_core
+        radius = max_catch_at_mask(p)
+        raw, dilated = roadsearch_core.terrain_slope_mask(np.ascontiguousarray(slope, dtype=np.float64), p.g_max,
+                                                          p.s_mask, radius, abs(grid.transform.e), grid.transform.a)
+        return raw, dilated, radius
     with np.errstate(invalid="ignore"):
         side_min = np.sqrt(np.maximum(slope**2 - p.g_max**2, 0.0))
         raw = (side_min >= p.s_mask) | np.isnan(slope)
@@ -88,7 +104,10 @@ def slope_mask(slope: np.ndarray, grid: Grid, p: Params) -> tuple[np.ndarray, np
     return raw, dilated, radius
 
 
-def reachable_from(open_cells: np.ndarray, rc: tuple[int, int]) -> np.ndarray:
+def reachable_from(open_cells: np.ndarray, rc: tuple[int, int], engine: str | None = None) -> np.ndarray:
+    if use_rust(engine):
+        import roadsearch_core
+        return roadsearch_core.terrain_reachable(np.ascontiguousarray(open_cells, dtype=bool), int(rc[0]), int(rc[1]))
     labels, _ = ndimage.label(open_cells, structure=FOUR)
     lab = labels[rc]
     return (labels == lab) if lab else np.zeros_like(open_cells)
@@ -101,6 +120,7 @@ def preprocess(
     p: Params,
     exclude: list[str | Path] = (),
     out_dir: str | Path | None = None,
+    engine: str | None = None,
 ) -> Terrain:
     """Build every preprocessing raster; write them to out_dir if given.
 
@@ -120,14 +140,14 @@ def preprocess(
         rcs[name] = rc
 
     sigma_cells = p.sigma_m / grid.res
-    zs = smooth_dem(grid.z, sigma_cells)
-    dzdx, dzdy = gradient(zs, grid)
+    zs = smooth_dem(grid.z, sigma_cells, engine)
+    dzdx, dzdy = gradient(zs, grid, engine)
     S = np.hypot(dzdx, dzdy)
     soil = np.where(np.isnan(S), np.nan, soil_depth(np.nan_to_num(S, nan=np.inf), p))
-    area = contributing_area_ha(grid)
+    area = contributing_area_ha(grid, engine)
     channel = np.nan_to_num(area) >= p.A_min
 
-    raw_slope, slope_ex, radius = slope_mask(S, grid, p)
+    raw_slope, slope_ex, radius = slope_mask(S, grid, p, engine)
 
     zones = [load_zone_file(f, grid, p.excl_buffer) for f in exclude]
     check_endpoints(zones, grid, endpoints)
@@ -159,7 +179,7 @@ def preprocess(
                 f"{S[rc]:.3f}, threshold sidehill {p.s_mask:.3f} at grade {p.g_max})"
             )
 
-    reachable = reachable_from(code == 0, rcs["start"])
+    reachable = reachable_from(code == 0, rcs["start"], engine)
     terrain = Terrain(grid, zs, dzdx, dzdy, S, soil, area, channel, slope_ex, manual, code,
                       reachable, rcs["start"], rcs["goal"], zones, info)
 
@@ -167,7 +187,7 @@ def preprocess(
         write_rasters(terrain, out)
 
     if not reachable[rcs["goal"]]:
-        without_manual = reachable_from(~slope_ex, rcs["start"])[rcs["goal"]]
+        without_manual = reachable_from(~slope_ex, rcs["start"], engine)[rcs["goal"]]
         info["goal_reachable_ignoring_manual"] = bool(without_manual)
         where = f" Reachable region written to {out / 'reachable.tif'}." if out is not None else ""
         cause = (

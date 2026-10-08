@@ -1,6 +1,6 @@
 # Road search in Rust and in the browser: design
 
-Status: agreed 2026-10-07. Phase 1 done (5d11c07); phase 2 next.
+Status: agreed 2026-10-07. Phases 1 and 2 done; phase 3 next.
 
 ## Goal
 
@@ -94,7 +94,7 @@ full searches finish.
 |---|---|---|
 | `lattice-search` | generic sparse heading-lattice Dijkstra and A* (traits for edge cost and estimate) | done |
 | `road-cost` | the road cost model as an `EdgeCost`; hairpin and bend macro designs and tables (`macros`) | done (lazy per-cell costs: phase 4) |
-| `terrain` | smoothing, gradients, slope mask, flow accumulation, channels, saddles | phase 2 |
+| `terrain` | smoothing, gradients, slope mask (exact distance transform), Priority-Flood flow accumulation, connected regions | done (saddles: phase 3) |
 | `tin-graph` | triangulation, extra nodes, graph costing, corridor field, distinct corridors, Monte Carlo | phase 3 |
 | `roadsearch-core` | Python bindings (PyO3) | done; grows with each phase |
 | `roadsearch-wasm` | browser bindings (wasm-bindgen), the step and event API | phase 4 |
@@ -137,7 +137,10 @@ Quadric-error decimation (`meshopt-rs`) is available if a non-heightfield mesh i
    numba and float32 costs equal but for last-bit differences, about 3x faster. Event stream
    (`events.jsonl`), progress and cancellation from the Rust search, `roadsearch status` (done).
    Computing macro costs lazily per cell moves to phase 4, where the chunked fine search needs it.
-2. **Preprocessing in Rust**: smoothing, gradients, slope mask, flow accumulation, channels.
+2. **Preprocessing in Rust** (done): smoothing, gradients, slope masks and connected regions are
+   identical to the Python path; flow accumulation (Priority-Flood with an epsilon rise, D8) agrees
+   on 99.96% of channel cells on Stibnite and is about 7x faster than pysheds. Runs record
+   `terrain_engine` in their inputs (so in their ids) when Rust preprocessed them.
 3. **Triangulated coarse graph**: triangulation, extra nodes, costing, corridor field, distinct
    corridors, Monte Carlo; compared with the lattice coarse pass.
 4. **Browser**: the WebAssembly crate, a Web Worker, the viewer in TypeScript (Vite, still a static

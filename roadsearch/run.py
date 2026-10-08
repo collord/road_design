@@ -16,6 +16,7 @@ from pyproj import CRS
 from scipy import ndimage
 
 from . import memguard
+from .engine import terrain_tag
 from .exclusion import ExclusionError, normalize_spec, split_spec
 from .explore import write_corridor_tree
 from .masshaul import TrueCost, true_cost
@@ -259,6 +260,9 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
     inputs = {"dem": dem_info["path"], "start": start, "goal": goal, "exclude": exclude,
               "resolution": resolution, "clip": clip, "clip_margin": clip_margin,
               "coarse_res": coarse_res, "params": _id_params(p)}
+    tag = terrain_tag()
+    if tag:
+        inputs["terrain_engine"] = tag      # Rust preprocessing: channels can differ slightly from pysheds'
     if exclude:
         # Zone files are identified by their contents too, so an edited file is a new run.
         inputs["exclude_sha256"] = [hashlib.sha256(Path(split_spec(e)[0]).read_bytes()).hexdigest()[:16]

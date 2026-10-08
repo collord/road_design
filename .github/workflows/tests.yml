@@ -16,6 +16,12 @@ jobs:
           cache: pip
       - name: Install
         run: pip install -c constraints.txt -e ".[test]"
+      # The Rust core (rust/): its own tests, then the Python package, which roadsearch uses when
+      # installed. The parity tests compare it with the numba kernels.
+      - name: Rust tests
+        run: cargo test --manifest-path rust/Cargo.toml
+      - name: Install the Rust core
+        run: pip install maturin && pip install ./rust/roadsearch-core
       # Node (preinstalled on the runner) runs the browser evaluator's parity tests.
       - name: Test
         run: python -m pytest -q

@@ -118,3 +118,54 @@ def test_macro_tables_match(prob, kind):
     same = a[fa] == b[fa]
     assert same.mean() > 0.999, same.mean()
     assert np.max(np.abs(a[fa] - b[fa]) / np.abs(a[fa])) < 1e-6
+
+
+def test_preprocessing_matches_python():
+    """Rust preprocessing against the Python path on terrain with nodata holes: smoothing,
+    gradients, slope masks and connected regions identical; channels nearly so (flow routing on
+    flats and through filled depressions differs from pysheds by design)."""
+    from roadsearch.flow import contributing_area_ha
+    from roadsearch.preprocess import gradient, reachable_from, slope_mask, smooth_dem
+
+    p = load_params()
+    z = random_terrain(11, n=120, relief=40.0)
+    z[30:34, 50:60] = np.nan
+    z[90, 10] = np.nan
+    g = make_grid(z, 5.0)
+    zs = {e: smooth_dem(g.z, p.sigma_m / g.res, e) for e in ("numba", "rust")}
+    assert np.array_equal(zs["numba"], zs["rust"], equal_nan=True)
+    gr = {e: gradient(zs["numba"], g, e) for e in ("numba", "rust")}
+    for i in range(2):
+        assert np.array_equal(gr["numba"][i], gr["rust"][i], equal_nan=True)
+    S = np.hypot(*gr["numba"])
+    m = {e: slope_mask(S, g, p, e) for e in ("numba", "rust")}
+    assert m["numba"][1].any() and np.array_equal(m["numba"][0], m["rust"][0])
+    assert np.array_equal(m["numba"][1], m["rust"][1]) and m["numba"][2] == m["rust"][2]
+    open_ = ~m["numba"][1]
+    seed = tuple(np.argwhere(open_)[0])
+    assert np.array_equal(reachable_from(open_, seed, "numba"), reachable_from(open_, seed, "rust"))
+    a, b = contributing_area_ha(g, "numba"), contributing_area_ha(g, "rust")
+    assert np.array_equal(np.isnan(a), np.isnan(b))
+    ca, cb = np.nan_to_num(a) >= p.A_min, np.nan_to_num(b) >= p.A_min
+    assert ca.sum() > 100 and np.mean(ca == cb) > 0.99
+
+
+def test_run_id_records_the_terrain_engine(tmp_path, monkeypatch):
+    import json
+
+    from roadsearch import engine
+    from roadsearch.cli import main
+
+    from .test_run import args, dem_file
+
+    path, s, g = dem_file(tmp_path)
+    ids = {}
+    for e in ("numba", "rust"):
+        monkeypatch.setattr(engine, "ENGINE", e)
+        out = tmp_path / f"out-{e}"
+        assert main(args(path, s, g, out, "--K_alt", "1")) == 0
+        run_dir = next((out / "runs").iterdir())
+        ids[e] = run_dir.name
+        rec = json.loads((run_dir / "params.json").read_text())
+        assert rec["inputs"].get("terrain_engine") == (engine.TERRAIN_ENGINE_TAG if e == "rust" else None)
+    assert ids["numba"] != ids["rust"]

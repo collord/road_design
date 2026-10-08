@@ -243,8 +243,10 @@ def rebuild_problem(run_dir: str | Path) -> tuple[SearchProblem, dict]:
     grid, _ = load_grid(rec["inputs"]["dem"], p, gi["working_res_m"], bounds)
     assert list(grid.shape) == gi["working_shape"], (grid.shape, gi["working_shape"])
     with tempfile.TemporaryDirectory() as tmp:
+        # The terrain engine the run used (its channels can differ between engines).
+        from .engine import engine_of_tag
         terrain = preprocess(grid, tuple(rec["inputs"]["start"]), tuple(rec["inputs"]["goal"]), p,
-                             rec["inputs"]["exclude"], tmp)
+                             rec["inputs"]["exclude"], tmp, engine=engine_of_tag(rec["inputs"].get("terrain_engine")))
     clip = run_dir / "clip_region.tif"
     if clip.exists():
         with rasterio.open(clip) as ds:

@@ -1,0 +1,9 @@
+[package]
+name = "terrain"
+description = "DEM preprocessing for road search: NaN-aware Gaussian smoothing, gradients, slope masks with Euclidean distance dilation, Priority-Flood D8 flow accumulation, connected regions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

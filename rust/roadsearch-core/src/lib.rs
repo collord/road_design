@@ -7,7 +7,7 @@
 
 use lattice_search::{search_with_progress, Action, CellIndex, Lattice, Progress, SearchSpec, ZeroHeuristic};
 use numpy::{
-    IntoPyArray, PyArray1, PyArray3, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
     PyUntypedArrayMethods,
 };
 use pyo3::exceptions::PyValueError;
@@ -461,6 +461,84 @@ fn bend_table<'py>(
     Ok(table.into_pyarray(py).reshape([cells.len(), nh, ns])?)
 }
 
+fn shape2<T: numpy::Element>(a: &PyReadonlyArray2<T>) -> (usize, usize) {
+    (a.shape()[0], a.shape()[1])
+}
+
+fn grid2<'py, T: numpy::Element>(py: Python<'py>, v: Vec<T>, nr: usize, nc: usize) -> PyResult<Bound<'py, PyArray2<T>>> {
+    Ok(v.into_pyarray(py).reshape([nr, nc])?)
+}
+
+/// Gaussian smoothing ignoring NaN cells (preprocess.smooth_dem): sigma in cells.
+#[pyfunction]
+fn terrain_smooth<'py>(py: Python<'py>, z: PyReadonlyArray2<'py, f64>, sigma: f64) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let (nr, nc) = shape2(&z);
+    let zs = z.as_slice()?;
+    let out = py.detach(|| terrain::smooth(zs, nr, nc, sigma));
+    grid2(py, out, nr, nc)
+}
+
+/// (dz/dx, dz/dy) of a grid (preprocess.gradient): dx = transform.a, dy = transform.e.
+#[pyfunction]
+#[allow(clippy::type_complexity)]
+fn terrain_gradient<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f64>,
+    dx: f64,
+    dy: f64,
+) -> PyResult<(Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>)> {
+    let (nr, nc) = shape2(&z);
+    let zs = z.as_slice()?;
+    let (gx, gy) = py.detach(|| terrain::gradient(zs, nr, nc, dx, dy));
+    Ok((grid2(py, gx, nr, nc)?, grid2(py, gy, nr, nc)?))
+}
+
+/// (raw, dilated) slope masks (preprocess.slope_mask): sy, sx are the row and column spacing (m).
+#[pyfunction]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn terrain_slope_mask<'py>(
+    py: Python<'py>,
+    slope: PyReadonlyArray2<'py, f64>,
+    g_max: f64,
+    s_mask: f64,
+    radius: f64,
+    sy: f64,
+    sx: f64,
+) -> PyResult<(Bound<'py, PyArray2<bool>>, Bound<'py, PyArray2<bool>>)> {
+    let (nr, nc) = shape2(&slope);
+    let s = slope.as_slice()?;
+    let (raw, dil) = py.detach(|| terrain::slope_mask(s, nr, nc, g_max, s_mask, radius, sy, sx));
+    Ok((grid2(py, raw, nr, nc)?, grid2(py, dil, nr, nc)?))
+}
+
+/// Upslope contributing area including the cell, in units of cell_area (flow.contributing_area_ha):
+/// Priority-Flood filling, D8 steepest descent, accumulation. NaN where z is NaN.
+#[pyfunction]
+fn terrain_contributing_area<'py>(
+    py: Python<'py>,
+    z: PyReadonlyArray2<'py, f64>,
+    sy: f64,
+    sx: f64,
+    cell_area: f64,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let (nr, nc) = shape2(&z);
+    let zs = z.as_slice()?;
+    let out = py.detach(|| terrain::contributing_area(zs, nr, nc, sy, sx, cell_area));
+    grid2(py, out, nr, nc)
+}
+
+/// The 4-connected region of open cells containing (r, c) (preprocess.reachable_from).
+#[pyfunction]
+fn terrain_reachable<'py>(py: Python<'py>, open: PyReadonlyArray2<'py, bool>, r: usize, c: usize) -> PyResult<Bound<'py, PyArray2<bool>>> {
+    let (nr, nc) = shape2(&open);
+    if r >= nr || c >= nc {
+        return Err(PyValueError::new_err("cell outside the grid"));
+    }
+    let o = open.as_slice()?;
+    let out = py.detach(|| terrain::reachable(o, nr, nc, r, c));
+    grid2(py, out, nr, nc)
+}
+
 #[pymodule]
 fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -468,5 +546,10 @@ fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edge_costs, m)?)?;
     m.add_function(wrap_pyfunction!(hairpin_table, m)?)?;
     m.add_function(wrap_pyfunction!(bend_table, m)?)?;
+    m.add_function(wrap_pyfunction!(terrain_smooth, m)?)?;
+    m.add_function(wrap_pyfunction!(terrain_gradient, m)?)?;
+    m.add_function(wrap_pyfunction!(terrain_slope_mask, m)?)?;
+    m.add_function(wrap_pyfunction!(terrain_contributing_area, m)?)?;
+    m.add_function(wrap_pyfunction!(terrain_reachable, m)?)?;
     Ok(())
 }
