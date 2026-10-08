@@ -68,6 +68,7 @@ const shot = async (name: string) => {
   writeFileSync(join(shots, `${name}.png`), Buffer.from(r.result.data, "base64"));
 };
 const channelSrc = `[...document.querySelectorAll(".leaflet-overlay-pane img")].map((i) => i.src.length).join(",")`;
+const statusShown = `getComputedStyle(document.querySelector(".status")).display !== "none"`;
 const logText = `[...document.querySelectorAll("#log li")].map((li) => (li.className === "err" ? "ERROR " : "") + li.textContent)`;
 const hasError = `document.querySelector("#log li.err")?.textContent`;
 let failed = false;
@@ -76,6 +77,7 @@ try {
   await send("Page.enable");
   await send("Page.navigate", { url });
   await until(`document.querySelectorAll("#example option").length > 1`, "the example list", 15000);
+  if (await evaluate(statusShown)) throw new Error("the status box shows before any task");
   const names: string[] = await evaluate(`[...document.querySelectorAll("#example option")].map((o) => o.value).filter(Boolean)`);
   for (const name of names) {
     console.log(`${name}:`);
@@ -93,7 +95,7 @@ try {
     const steps = new Set<string>();
     let firstRow = 0;
     for (;;) {
-      const st = await evaluate(`({ err: ${hasError} ?? null, step: document.querySelector(".status").hidden ? "" :
+      const st = await evaluate(`({ err: ${hasError} ?? null, step: getComputedStyle(document.querySelector(".status")).display === "none" ? "" :
         document.querySelector(".status-step").textContent.replace(/[0-9,]+ of [0-9,]+/, "n of N"),
         rows: document.querySelectorAll("#corridors tr").length, idle: !document.querySelector("#run").disabled })`);
       if (st.err) throw new Error(st.err);
@@ -103,6 +105,7 @@ try {
       if (Date.now() - tRun > 300000) throw new Error("timed out waiting for corridors");
       await sleep(100);
     }
+    await until(`!(${statusShown})`, "the status box to close after the run", 5000);
     console.log(`  status steps seen: ${[...steps].join(" | ")}`);
     console.log(`  best corridor shown after ${(firstRow / 1000).toFixed(1)} s, all after ${((Date.now() - tRun) / 1000).toFixed(1)} s`);
     for (const line of await evaluate(logText)) console.log(`  ${line}`);
@@ -132,7 +135,7 @@ try {
       await evaluate(`document.querySelector("#run").click()`);
       await until(`(${hasError}) || /cost the edges/i.test(document.querySelector(".status-step").textContent)`, "edge costing", 60000);
       await evaluate(`document.querySelector(".status-stop").click()`);
-      const stopped = await until(`(${hasError}) || (!document.querySelector("#run").disabled && document.querySelector(".status").hidden &&
+      const stopped = await until(`(${hasError}) || (!document.querySelector("#run").disabled && getComputedStyle(document.querySelector(".status")).display === "none" &&
         [...document.querySelectorAll("#log li")].some((li) => li.textContent.startsWith("stopped")) && "stopped")`, "the stop", 30000);
       if (stopped !== "stopped" && !/^stopped/.test(stopped)) throw new Error(stopped);
       await evaluate(`document.querySelectorAll("#log li.err").forEach((li) => li.remove())`);

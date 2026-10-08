@@ -13,6 +13,7 @@
   --start: #4ade80; --goal: #f87171; --route: #f87171; --alt: #60a5fa; color-scheme: dark;
 }
 html, body { height: 100%; margin: 0; }
+[hidden] { display: none !important; }
 body {
   display: grid; grid-template-columns: minmax(280px, 340px) 1fr; background: var(--bg); color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
