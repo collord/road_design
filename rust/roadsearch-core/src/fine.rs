@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use road_fine::params::Params;
 use road_fine::pipeline::{find_route, RouteResult};
-use road_fine::problem::{FineInputs, Problem};
+use road_fine::problem::{FineInputs, Macros, Problem};
 use road_fine::section::{cost_table, section, SectionParams, TABLE_NG, TABLE_NS};
 
 fn params(json: &str) -> PyResult<Params> {
@@ -130,8 +130,8 @@ fn fine_route<'py>(py: Python<'py>, z_raw: PyReadonlyArray2<'py, f64>, zs: PyRea
     let (nr, nc) = (inp.nr, inp.nc);
     let p = params(params_json)?;
     let out = py.detach(|| -> Result<_, String> {
-        let mut prob = if lazy { Problem::new(inp, p, true)? } else { Problem::build(inp, p)? };
-        let r = find_route(&mut prob, start, goal, &mut |_, _| true)?;
+        let mut prob = if lazy { Problem::new(inp, p, Macros::Lazy)? } else { Problem::build(inp, p)? };
+        let r = find_route(&mut prob, start, goal, &mut |_, _| true, &mut |_, _| {})?;
         Ok((prob, r))
     });
     let (prob, (it, rounds, blocked)) = out.map_err(err)?;

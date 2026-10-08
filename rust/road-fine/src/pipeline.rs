@@ -14,6 +14,9 @@ pub const PROGRESS_EVERY: u64 = 1 << 16;
 /// Called with the stage and the search's progress; returning false stops the search.
 pub type Report<'a> = dyn FnMut(&str, &Progress) -> bool + 'a;
 
+/// Called with each route a search finds (evaluated) and its true cost, before the next search.
+pub type OnRoute<'a> = dyn FnMut(&[Segment], &TrueCost) + 'a;
+
 /// One A* search: the route's edges (None if the goal is unreachable), its cost, and counts.
 pub struct Found {
     pub edges: Option<Vec<Edge>>,
@@ -42,9 +45,9 @@ pub fn astar(prob: &Problem, start: (i64, i64), goal: (i64, i64), stage: &str, r
         c_vertical: p.c_vertical,
     };
     let spec = SearchSpec::astar(&sources, (goal.0 as i32, goal.1 as i32));
-    let (res, completed) = prob.with_model(|model| {
-        search_with_progress(&prob.lattice, &index, model, &heur, &spec, PROGRESS_EVERY, &mut |pr: &Progress| report(stage, pr))
-    });
+    let mut rep = |pr: &Progress| report(stage, pr);
+    let (res, completed) =
+        prob.with_model(|model| search_with_progress(&prob.lattice, &index, model, &heur, &spec, PROGRESS_EVERY, &mut rep));
     let edges = res.goal_state.map(|s| {
         res.edges_to(&prob.lattice, &index, s).into_iter().map(|(r, c, a)| (r as i64, c as i64, a)).collect()
     });
@@ -92,7 +95,7 @@ pub fn shared_length_fraction(a: &[Segment], b: &[Segment]) -> f64 {
 /// m3 of crossing fill and search again; stop when the route keeps at least `same` of its
 /// length, has no fill crossings, or after max_iter searches. Keeps the cheapest true cost.
 pub fn fill_price_iteration(prob: &mut Problem, start: (i64, i64), goal: (i64, i64), max_iter: usize, same: f64,
-                            report: &mut Report) -> Result<IterationResult, String> {
+                            report: &mut Report, on_route: &mut OnRoute) -> Result<IterationResult, String> {
     let mut lam = prob.params.c_borrow;
     let mut out = IterationResult { completed: true, ..Default::default() };
     let mut prev: Option<Vec<Segment>> = None;
@@ -106,6 +109,7 @@ pub fn fill_price_iteration(prob: &mut Problem, start: (i64, i64), goal: (i64, i
         let Some(edges) = found.edges else { break };
         let segs = prob.evaluate_route(&edges)?;
         let tc = true_cost(&segs, &prob.params);
+        on_route(&segs, &tc);
         let n_cross = segs.iter().filter(|s| s.kind == FILL_CROSSING).count();
         let shared = prev.as_ref().map_or(f64::NAN, |pv| shared_length_fraction(&segs, pv));
         out.history.push(Iteration {
@@ -166,7 +170,7 @@ fn dilate(m: &[bool], nr: usize, nc: usize, iterations: usize) -> Vec<bool> {
 /// width, and repeats the fill-price search; if that leaves no route the previous one is kept.
 /// Returns the final result, a record per round, and the blocked cells (prob.open keeps them).
 pub fn avoid_self_overlap(prob: &mut Problem, start: (i64, i64), goal: (i64, i64), mut it: IterationResult,
-                          max_rounds: usize, report: &mut Report)
+                          max_rounds: usize, report: &mut Report, on_route: &mut OnRoute)
                           -> Result<(IterationResult, Vec<OverlapRound>, Vec<bool>), String> {
     let (nr, nc) = (prob.nr, prob.nc);
     let mut blocked = vec![false; nr * nc];
@@ -201,7 +205,7 @@ pub fn avoid_self_overlap(prob: &mut Problem, start: (i64, i64), goal: (i64, i64
         }
         let cost_before = best.cost.total;
         let n_blocked = m.iter().filter(|&&b| b).count();
-        let new = fill_price_iteration(prob, start, goal, 5, 0.98, report)?;
+        let new = fill_price_iteration(prob, start, goal, 5, 0.98, report, on_route)?;
         let Some(new_best) = new.best.as_ref() else {
             prob.open = saved;
             rounds.push(OverlapRound {
@@ -223,8 +227,8 @@ pub fn avoid_self_overlap(prob: &mut Problem, start: (i64, i64), goal: (i64, i64
 }
 
 /// The fine stage for one problem: the fill-price iteration, then self-overlap avoidance.
-pub fn find_route(prob: &mut Problem, start: (i64, i64), goal: (i64, i64), report: &mut Report)
-                  -> Result<(IterationResult, Vec<OverlapRound>, Vec<bool>), String> {
-    let it = fill_price_iteration(prob, start, goal, 5, 0.98, report)?;
-    avoid_self_overlap(prob, start, goal, it, 5, report)
+pub fn find_route(prob: &mut Problem, start: (i64, i64), goal: (i64, i64), report: &mut Report,
+                  on_route: &mut OnRoute) -> Result<(IterationResult, Vec<OverlapRound>, Vec<bool>), String> {
+    let it = fill_price_iteration(prob, start, goal, 5, 0.98, report, on_route)?;
+    avoid_self_overlap(prob, start, goal, it, 5, report, on_route)
 }

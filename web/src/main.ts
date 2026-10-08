@@ -404,10 +404,10 @@ function showFine() {
   for (const f of sorted) {
     const pts = f.x.map((x, i) => [f.y[i], x] as [number, number]);
     const best = f === sorted[0];
-    // A dark casing under the line keeps it readable over imagery.
+    // A dark casing under the line keeps it readable over imagery; a route still being refined is dashed.
     L.polyline(pts, { color: "#111", weight: best ? 7 : 5, opacity: 0.55, interactive: false }).addTo(group);
     L.polyline(pts, { color: (best ? css.getPropertyValue("--fine") : css.getPropertyValue("--fine-alt")).trim(),
-                      weight: best ? 4 : 3 })
+                      weight: best ? 4 : 3, dashArray: f.final ? undefined : "8 6" })
       .bindTooltip(`corridor ${f.index + 1}, fine: ${Math.round(f.cost.total).toLocaleString()}, ` +
                    `${(f.length / 1000).toFixed(1)} km, ${f.hairpins} hairpins`)
       .addTo(group);
@@ -416,7 +416,7 @@ function showFine() {
   const head = "<tr><th>corridor</th><th>cost</th><th>build</th><th>operate</th><th>km</th><th>hairpins</th>" +
                "<th>bends</th><th>crossings</th><th>s</th></tr>";
   $("fine").innerHTML = head + sorted.map((f) =>
-    `<tr><td>${f.index + 1}</td><td>${Math.round(f.cost.total).toLocaleString()}</td>` +
+    `<tr><td>${f.index + 1}${f.final ? "" : " (refining)"}</td><td>${Math.round(f.cost.total).toLocaleString()}</td>` +
     `<td>${Math.round(f.cost.construction).toLocaleString()}</td><td>${Math.round(f.cost.operating).toLocaleString()}</td>` +
     `<td>${(f.length / 1000).toFixed(2)}</td><td>${f.hairpins}</td><td>${f.bends}</td><td>${f.fill_crossings}</td>` +
     `<td>${f.seconds.toFixed(0)}</td></tr>`).join("");
@@ -525,6 +525,11 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       const i = fineRoutes.findIndex((x) => x.index === f.index);
       if (i >= 0) fineRoutes[i] = f; else fineRoutes.push(f);
       showFine();
+      if (!f.final) {
+        log(`corridor ${f.index + 1}: a route at ${Math.round(f.cost.total).toLocaleString()}, ${(f.length / 1000).toFixed(2)} km ` +
+            `(${f.seconds.toFixed(0)} s); refining`);
+        break;
+      }
       log(`corridor ${f.index + 1} at ${f.res} m: ${Math.round(f.cost.total).toLocaleString()}, ` +
           `${(f.length / 1000).toFixed(2)} km, ${f.hairpins} hairpins, ${f.bends} bends, ${f.fill_crossings} crossings ` +
           `(${f.history.length} searches, ${f.cells.toLocaleString()} cells, ${f.macros_computed.toLocaleString()} macro designs)`);

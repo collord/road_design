@@ -47,6 +47,11 @@ pub fn preprocess(z_raw: Vec<f64>, nr: usize, nc: usize, res: f64, p: &Params, c
 /// 1 within `buffer` meters of a polyline of (row, col) points (cell coordinates, centers at
 /// whole numbers): the region a corridor's fine search may use.
 pub fn corridor_mask(nr: usize, nc: usize, res: f64, line: &[(f64, f64)], buffer: f64) -> Vec<u8> {
+    line_distance(nr, nc, res, line).iter().map(|&d| u8::from(d <= buffer)).collect()
+}
+
+/// Distance (m) from every cell to the nearest cell a polyline of (row, col) points crosses.
+pub fn line_distance(nr: usize, nc: usize, res: f64, line: &[(f64, f64)]) -> Vec<f64> {
     let mut on = vec![false; nr * nc];
     let mut mark = |fr: f64, fc: f64| {
         let (r, c) = ((fr + 0.5).floor(), (fc + 0.5).floor());
@@ -65,7 +70,19 @@ pub fn corridor_mask(nr: usize, nc: usize, res: f64, line: &[(f64, f64)], buffer
             mark(r0 + f * (r1 - r0), c0 + f * (c1 - c0));
         }
     }
-    terrain::distance_to(&on, nr, nc, res, res).iter().map(|&d| u8::from(d <= buffer)).collect()
+    terrain::distance_to(&on, nr, nc, res, res)
+}
+
+/// How a problem holds its hairpin and bend costs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Macros {
+    /// Whole tables, filled by build_tables (as the Python does).
+    Tables,
+    /// Computed when the search first asks for an entry and remembered; entries computed
+    /// elsewhere (macro_rows, in other threads or workers) can be stored with set_macro_rows.
+    Lazy,
+    /// Neither: only macro_rows, to compute rows for another problem's cache.
+    Rows,
 }
 
 pub struct Problem {
@@ -154,7 +171,9 @@ impl Problem {
     /// Everything but the macro tables, which build_tables fills (in slices, for progress); or,
     /// if `lazy`, with macro costs computed as the search asks for them (the same values; a
     /// search reaches a fraction of the states, and each entry costs a whole macro design).
-    pub fn new(inputs: FineInputs, params: Params, lazy: bool) -> Result<Problem, String> {
+    pub fn new(inputs: FineInputs, params: Params, macros_mode: Macros) -> Result<Problem, String> {
+        let lazy = macros_mode == Macros::Lazy;
+        let tables = macros_mode == Macros::Tables;
         let FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open } = inputs;
         let n = nr * nc;
         for (name, len) in [("z_raw", z_raw.len()), ("zs", zs.len()), ("gx", gx.len()), ("gy", gy.len()),
@@ -194,12 +213,12 @@ impl Problem {
             hp_params: hairpin_params(p, res),
             bend_params: bend_params(p, res),
             lam_fill: p.c_borrow,
-            hp: if lazy { Vec::new() } else { vec![f32::INFINITY; n_hp] },
-            bend: if lazy { Vec::new() } else { vec![f32::INFINITY; n_bend] },
+            hp: if tables { vec![f32::INFINITY; n_hp] } else { Vec::new() },
+            bend: if tables { vec![f32::INFINITY; n_bend] } else { Vec::new() },
             hp_cache: if lazy { macros::lazy_cache(n_hp) } else { Vec::new() },
             bend_cache: if lazy { macros::lazy_cache(n_bend) } else { Vec::new() },
             lazy,
-            tables_done: if lazy { table_cells.len() } else { 0 },
+            tables_done: if tables { 0 } else { table_cells.len() },
             vx: vecs.iter().map(|v| v.0 as f64).collect(),
             vy: vecs.iter().map(|v| v.1 as f64).collect(),
             open_tables: open.clone(),
@@ -211,7 +230,7 @@ impl Problem {
 
     /// The whole problem at once (search.py's make_problem).
     pub fn build(inputs: FineInputs, params: Params) -> Result<Problem, String> {
-        let mut prob = Problem::new(inputs, params, false)?;
+        let mut prob = Problem::new(inputs, params, Macros::Tables)?;
         let n = prob.table_cells.len();
         prob.build_tables(n);
         Ok(prob)
@@ -235,6 +254,38 @@ impl Problem {
         self.bend[a * nh * self.n_bend_slots..b * nh * self.n_bend_slots].copy_from_slice(&bend);
         self.tables_done = b;
         b
+    }
+
+    /// Hairpin and bend costs of table cells a..b, as build_tables computes them:
+    /// (cells, headings, slots) rows of each table.
+    pub fn macro_rows(&self, a: usize, b: usize) -> (Vec<f32>, Vec<f32>) {
+        let b = b.min(self.table_cells.len());
+        let a = a.min(b);
+        let heads = Headings { vx: &self.vx, vy: &self.vy };
+        let cells = &self.table_cells[a..b];
+        let t = self.macro_terrain();
+        let hp = macros::hairpin_table(cells, &heads, &self.hp_slots, self.res, &t, &self.hp_params);
+        let g = &self.bend_geo;
+        let shapes = BendShapes { ns: g.ns, x: &g.x, y: &g.y, l1: &g.l1, l2: &g.l2, dth: &g.dth, radius: g.r };
+        let bend = macros::bend_table(cells, &heads, &shapes, self.res, &t, &self.bend_params);
+        (hp, bend)
+    }
+
+    /// Store macro_rows(a, ..) of an identical problem in this lazy problem's caches.
+    pub fn set_macro_rows(&mut self, a: usize, hp: &[f32], bend: &[f32]) -> Result<(), String> {
+        let per_hp = self.n_theta() * N_SLOTS;
+        let per_bend = self.n_theta() * self.n_bend_slots;
+        if !self.lazy || hp.len() % per_hp != 0 || bend.len() / per_bend != hp.len() / per_hp
+            || (a + hp.len() / per_hp) > self.table_cells.len() {
+            return Err("macro rows do not fit this problem".into());
+        }
+        for (slot, v) in self.hp_cache[a * per_hp..a * per_hp + hp.len()].iter().zip(hp) {
+            slot.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+        for (slot, v) in self.bend_cache[a * per_bend..a * per_bend + bend.len()].iter().zip(bend) {
+            slot.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     pub fn n_theta(&self) -> usize {

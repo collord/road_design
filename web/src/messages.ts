@@ -27,6 +27,8 @@ export interface RouteOut {
 export interface FineOut {
   index: number;
   res: number;
+  /** False for a route of one of the searches, before the last. */
+  final: boolean;
   x: number[];
   y: number[];
   z: number[];

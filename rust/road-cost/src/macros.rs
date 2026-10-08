@@ -247,6 +247,39 @@ pub fn seg_point(seg: &Seg, s: f64) -> (f64, f64, f64) {
     (seg[0] + (th.sin() - th0.sin()) / k, seg[1] - (th.cos() - th0.cos()) / k, th)
 }
 
+/// seg_point with the segment's start heading sine and cosine given, returning the sine and
+/// cosine of the heading too: (x, y, sin, cos). The same operations as seg_point and the
+/// callers' sin and cos of its heading, so the same values, with fewer evaluations.
+#[inline(always)]
+fn seg_point_trig(seg: &Seg, s: f64, sin0: f64, cos0: f64) -> (f64, f64, f64, f64) {
+    let k = seg[3];
+    if k == 0.0 {
+        return (seg[0] + s * cos0, seg[1] + s * sin0, sin0, cos0);
+    }
+    let th = seg[2] + k * s;
+    let (st, ct) = (th.sin(), th.cos());
+    (seg[0] + (st - sin0) / k, seg[1] - (ct - cos0) / k, st, ct)
+}
+
+/// Each station's (x, y, sin, cos of the heading), segment by segment: station q of segment i
+/// at s = (q + 0.5) * (length / n), as the footprint and the edges place them.
+fn stations(seg: &[Seg], nst: &[usize]) -> Vec<[f64; 4]> {
+    let mut out = Vec::with_capacity(nst.iter().sum());
+    for i in 0..seg.len() {
+        let n = nst[i];
+        if n == 0 {
+            continue;
+        }
+        let (sin0, cos0) = (seg[i][2].sin(), seg[i][2].cos());
+        let ds = seg[i][4] / n as f64;
+        for q in 0..n {
+            let (x, y, st, ct) = seg_point_trig(&seg[i], (q as f64 + 0.5) * ds, sin0, cos0);
+            out.push([x, y, st, ct]);
+        }
+    }
+    out
+}
+
 /// Leg length and grades (leg, curves, loop) for a climb dz between the ends.
 pub fn hairpin_grades(dz: f64, a_loop: f64, a_curves: f64, g_hp: f64, g_max: f64) -> (f64, f64, f64, f64) {
     let a = dz.abs();
@@ -268,6 +301,7 @@ pub fn hairpin_grades(dz: f64, a_loop: f64, a_curves: f64, g_hp: f64, g_max: f64
 fn centerline_footprint(
     seg: &[Seg],
     nst: &[usize],
+    st: &[[f64; 4]],
     grades: &[f64],
     zstart: &[f64],
     r: i64,
@@ -284,6 +318,7 @@ fn centerline_footprint(
     let dt = width / N_ACROSS as f64;
     let (mut v_soil, mut v_rock, mut v_fill, mut max_cut, mut max_fill) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let (nr, nc) = (t.nr(), t.nc());
+    let mut k = 0;
     for i in 0..seg.len() {
         let n = nst[i];
         if n == 0 {
@@ -293,10 +328,11 @@ fn centerline_footprint(
         let kap = seg[i][3];
         for q in 0..n {
             let s = (q as f64 + 0.5) * ds;
-            let (x, y, th) = seg_point(&seg[i], s);
+            let [x, y, sn, cs] = st[k];
+            k += 1;
             let zd = zstart[i] + grades[i] * s;
-            let mx = -th.sin();
-            let my = th.cos();
+            let mx = -sn;
+            let my = cs;
             for j in 0..N_ACROSS {
                 let tt = -w2 + (j as f64 + 0.5) * dt;
                 let lx = x + tt * mx;
@@ -337,8 +373,8 @@ fn centerline_footprint(
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
 fn edge_wedge(
-    seg: &Seg,
-    s: f64,
+    kap: f64,
+    station: &[f64; 4],
     sn: f64,
     zd: f64,
     r: i64,
@@ -355,9 +391,9 @@ fn edge_wedge(
 ) -> (f64, f64, f64, f64, f64, f64, f64, f64) {
     let nx = -uy;
     let ny = ux;
-    let (x, y, th) = seg_point(seg, s);
-    let mx = -th.sin();
-    let my = th.cos();
+    let [x, y, sin_th, cos_th] = *station;
+    let mx = -sin_th;
+    let my = cos_th;
     let lx = x + sn * w2 * mx;
     let ly = y + sn * w2 * my;
     let fr = r as f64 - (lx * uy + ly * ny) / res;
@@ -379,7 +415,7 @@ fn edge_wedge(
         a_f = f_;
         xr = x_;
     }
-    (a_s, a_r, a_f, xr, h.abs(), 1.0 - seg[3] * sn * w2, lx, ly)
+    (a_s, a_r, a_f, xr, h.abs(), 1.0 - kap * sn * w2, lx, ly)
 }
 
 /// Culverts where a centerline crosses channels: (cost, largest contributing area crossed).
@@ -406,9 +442,13 @@ fn centerline_culverts(
     run.step(ch0, a0, true, br, co);
     for i in 0..seg.len() {
         let n = nst[i];
+        if n == 0 {
+            continue;
+        }
+        let (sin0, cos0) = (seg[i][2].sin(), seg[i][2].cos());
         for q in 0..n {
             let s = (q as f64 + 0.5) * seg[i][4] / n as f64;
-            let (x, y, _th) = seg_point(&seg[i], s);
+            let (x, y, _, _) = seg_point_trig(&seg[i], s, sin0, cos0);
             let cr = (r as f64 - (x * uy + y * ny) / res + 0.5).floor() as i64;
             let cc = (c as f64 + (x * ux + y * nx) / res + 0.5).floor() as i64;
             let (ch, a) = t.channel_at(cr, cc);
@@ -487,8 +527,9 @@ pub fn hairpin_core(
     for i in 0..5 {
         nst[i] = if seg[i][4] > 0.0 { (seg[i][4] / hp.delta).ceil() as usize } else { 0 };
     }
+    let st = stations(&seg, &nst);
     let Some((mut v_soil, mut v_rock, mut v_fill, max_cut, max_fill)) =
-        centerline_footprint(&seg, &nst, &grades, &zstart, r, c, ux, uy, res, hp.w_hp, t)
+        centerline_footprint(&seg, &nst, &st, &grades, &zstart, r, c, ux, uy, res, hp.w_hp, t)
     else {
         return f64::INFINITY;
     };
@@ -507,6 +548,7 @@ pub fn hairpin_core(
     let mut arm = [vec![[0.0f64; 8]; n_arm.max(1)], vec![[0.0f64; 8]; n_arm.max(1)]];
     let mut max_catch = 0.0f64;
     let mut max_toe = 0.0f64;
+    let mut k_st = 0;
     for i in 0..5 {
         let n = nst[i];
         if n == 0 {
@@ -516,10 +558,12 @@ pub fn hairpin_core(
         for q in 0..n {
             let s = (q as f64 + 0.5) * ds;
             let zd = zstart[i] + grades[i] * s;
+            let station = &st[k_st];
+            k_st += 1;
             for side in 0..2 {
                 let sn = if side == 0 { 1.0 } else { -1.0 };
                 let (a_s, a_r, a_f, xr, face, lf, lx, ly) =
-                    edge_wedge(&seg[i], s, sn, zd, r, c, ux, uy, res, w2, t, f, hp.c_soil, hp.c_rock, hp.catch_max);
+                    edge_wedge(seg[i][3], station, sn, zd, r, c, ux, uy, res, w2, t, f, hp.c_soil, hp.c_rock, hp.catch_max);
                 let dl = ds * lf;
                 if a_s > 0.0 || a_r > 0.0 {
                     max_catch = pmax(max_catch, xr);
@@ -705,8 +749,9 @@ pub fn bend_core(
     for i in 0..3 {
         nst[i] = if seg[i][4] > 0.0 { (seg[i][4] / bp.delta).ceil() as usize } else { 0 };
     }
+    let st = stations(&seg, &nst);
     let Some((mut v_soil, mut v_rock, mut v_fill, max_cut, max_fill)) =
-        centerline_footprint(&seg, &nst, &grades, &zstart, r, c, ux, uy, res, bp.w, t)
+        centerline_footprint(&seg, &nst, &st, &grades, &zstart, r, c, ux, uy, res, bp.w, t)
     else {
         return f64::INFINITY;
     };
@@ -720,6 +765,7 @@ pub fn bend_core(
     let w2 = 0.5 * bp.w;
     let mut max_catch = 0.0f64;
     let mut max_toe = 0.0f64;
+    let mut k_st = 0;
     for i in 0..3 {
         let n = nst[i];
         if n == 0 {
@@ -729,10 +775,12 @@ pub fn bend_core(
         for q in 0..n {
             let s = (q as f64 + 0.5) * ds;
             let zd = zstart[i] + grades[i] * s;
+            let station = &st[k_st];
+            k_st += 1;
             for side in 0..2 {
                 let sn = if side == 0 { 1.0 } else { -1.0 };
                 let (a_s, a_r, a_f, xr, _face, lf, _lx, _ly) =
-                    edge_wedge(&seg[i], s, sn, zd, r, c, ux, uy, res, w2, t, f, bp.c_soil, bp.c_rock, bp.catch_max);
+                    edge_wedge(seg[i][3], station, sn, zd, r, c, ux, uy, res, w2, t, f, bp.c_soil, bp.c_rock, bp.catch_max);
                 if a_f == f64::INFINITY {
                     return f64::INFINITY;
                 }

@@ -140,6 +140,8 @@ try {
       const row: string = await evaluate(`[...document.querySelectorAll("#fine tr")][1].textContent.trim()`);
       const logLine: string = await evaluate(`[...document.querySelectorAll("#log li")].map((li) => li.textContent).filter((t) => /^corridor 1 at/.test(t)).pop()`);
       console.log(`  fine: ${logLine} in ${((Date.now() - tFine) / 1000).toFixed(0)} s`);
+      const steps: string[] = await evaluate(`[...document.querySelectorAll("#log li")].map((li) => li.textContent).filter((t) => /^corridor 1/.test(t))`);
+      for (const t of steps) console.log(`    ${t}`);
       await shot(`${name}-fine`);
     }
     // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.

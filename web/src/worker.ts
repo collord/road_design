@@ -6,7 +6,8 @@ import init, * as wasm from "./wasm/roadsearch_wasm.js";
 import { Source, Z_UNIT_SCALE, type Grid } from "./source";
 import { get, hairpinAllowance, maxCatchAtMask, sectionTable, sigmaM, sMask, TABLE_NG, TABLE_NS,
          type Params } from "./params";
-import type { FromWorker, RouteOut, ToWorker } from "./messages";
+import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
+import type { FromMacro, ToMacro } from "./macroWorker";
 
 const ready = init();
 let source: Source | null = null;
@@ -130,6 +131,73 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
   post({ type: "area", grid, cells });
 }
 
+// --- the fine search's helpers -----------------------------------------------------------------
+
+/** Helper workers computing hairpin and bend costs ahead of the search: all but two cores, at
+ *  most 8, and within HELPER_BUDGET bytes in all (each holds a copy of the corridor's rasters,
+ *  about HELPER_BYTES_PER_CELL). Fewer than 2: the search computes them itself as it reaches
+ *  them. The helpers are ended after each refine, which hands their memory back. */
+const MAX_HELPERS = Math.min(8, Math.max(0, (navigator.hardwareConcurrency || 4) - 2));
+const HELPER_BUDGET = 1.2e9;
+const HELPER_BYTES_PER_CELL = 150;
+/** Cells per helper task: about a second or two of designs. */
+const MACRO_CHUNK = 1024;
+let pool: Worker[] = [];
+
+function stopPool() {
+  for (const w of pool) w.terminate();
+  pool = [];
+}
+
+/** One message from a helper. */
+function reply(w: Worker): Promise<FromMacro> {
+  return new Promise((resolve) => {
+    w.onmessage = (e: MessageEvent<FromMacro>) => resolve(e.data);
+    w.onerror = (e) => resolve({ type: "error", message: e.message || "a helper worker failed" });
+  });
+}
+
+/**
+ * Hairpin and bend costs of every cell of the fine session, computed by the helpers in parallel
+ * and stored in the session's cache (the values it would compute itself as the search reaches
+ * them). Stops at a checkpoint if asked to, terminating the helpers.
+ */
+async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { type: "setup" }>, name: string) {
+  const size = Math.min(MAX_HELPERS, Math.floor(HELPER_BUDGET / (setup.w * setup.h * HELPER_BYTES_PER_CELL)));
+  if (size < 2) return;
+  while (pool.length < size) pool.push(new Worker(new URL("./macroWorker.ts", import.meta.url), { type: "module" }));
+  const n = fs.cells();
+  const stage = `${name}: hairpin and bend designs on ${pool.length} workers`;
+  post({ type: "stage", name: stage, state: "start" });
+  const t0 = performance.now();
+  try {
+    await Promise.all(pool.map(async (w) => {
+      w.postMessage({ ...setup, z: setup.z.slice() } satisfies ToMacro);
+      const r = await reply(w);
+      if (r.type !== "ready") throw new Error(r.type === "error" ? r.message : "a helper did not start");
+    }));
+    let next = 0, done = 0;
+    await Promise.all(pool.map(async (w) => {
+      while (next < n) {
+        const a = next;
+        next = Math.min(n, next + MACRO_CHUNK);
+        w.postMessage({ type: "rows", a, b: next } satisfies ToMacro);
+        const r = await reply(w);
+        if (r.type === "error") throw new Error(r.message);
+        if (r.type !== "rows") continue;
+        fs.set_macro_rows(r.a, r.hp, r.bend);
+        done += Math.min(MACRO_CHUNK, n - r.a);
+        progress(stage + ", cells", Math.min(done, n), n);
+        await checkpoint();
+      }
+    }));
+  } catch (err) {
+    stopPool();
+    throw err;
+  }
+  post({ type: "stage", name: stage, state: "end", ms: performance.now() - t0 });
+}
+
 /** Edges are costed in slices of about this long, between checkpoints. */
 const SLICE_MS = 150;
 
@@ -209,59 +277,70 @@ async function run(p: Params) {
  */
 async function refine(p: Params, res: number, which: "best" | "all") {
   if (!area?.routes?.length || !source) throw new Error("find corridors first");
-  const { grid: cg, routes, startXY, goalXY, zScale } = area;
   const buffer = get(p, "tin_buffer");
-  const [bx0, by0, bx1, by1] = source.info.bbox;
-  const todo = which === "best" ? [0] : routes.map((_, i) => i);
-  for (const k of todo) {
-    const t0 = performance.now();
-    const name = `corridor ${k + 1}`;
-    const r = routes[k];
-    // The corridor's line in UTM, and a grid at `res` over it plus the buffer, within the DEM.
-    const xs = r.cols.map((c) => cg.x0 + (c + 0.5) * cg.res), ys = r.rows.map((row) => cg.y1 - (row + 0.5) * cg.res);
-    let [xmin, xmax, ymin, ymax] = [Infinity, -Infinity, Infinity, -Infinity];
-    for (let i = 0; i < xs.length; i++) {
-      xmin = Math.min(xmin, xs[i]); xmax = Math.max(xmax, xs[i]); ymin = Math.min(ymin, ys[i]); ymax = Math.max(ymax, ys[i]);
-    }
-    const x0 = Math.floor(Math.max(xmin - buffer, bx0) / res) * res, y1 = Math.ceil(Math.min(ymax + buffer, by1) / res) * res;
-    const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(xmax + buffer, bx1) - x0) / res),
-                       h: Math.ceil((y1 - Math.max(ymin - buffer, by0)) / res) };
-    const z = await timedAsync(`${name}: read the DEM at ${res} m`, () =>
-      source!.resampleBands(fg, wasm.resample, zScale, -1, async (done, total) => {
-        progress(`${name}: read the DEM at ${res} m`, done, total);
-        await checkpoint();
-      }));
-    const lr = new Float64Array(ys.map((y) => (fg.y1 - y) / res - 0.5));
-    const lc = new Float64Array(xs.map((x) => (x - fg.x0) / res - 0.5));
-    const fs = timed(`${name}: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
-      new wasm.FineSession(z, fg.w, fg.h, res, JSON.stringify(p), lr, lc, buffer));
-    await checkpoint();
-    try {
-      const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
-      const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
-      let stage = "", tStage = 0;
-      const out = fs.search(sr, sc, gr, gc, (st: string, settled: number) => {
-        if (st !== stage) {
-          if (stage) post({ type: "stage", name: `${name}: ${stage}`, state: "end", ms: performance.now() - tStage });
-          stage = st;
-          tStage = performance.now();
-          post({ type: "stage", name: `${name}: ${st}`, state: "start" });
-        }
-        progress(`${name}: ${st}, states settled`, settled, 0);
-      });
-      if (stage) post({ type: "stage", name: `${name}: ${stage} and the route's costs`, state: "end", ms: performance.now() - tStage });
-      if (!out) throw new Error(`${name}: no route at ${res} m within ${buffer} m of the corridor`);
-      post({ type: "fine", route: {
-        index: k, res, x: out.cols.map((c: number) => fg.x0 + (c + 0.5) * res), y: out.rows.map((row: number) => fg.y1 - (row + 0.5) * res),
-        z: out.z, cost: out.cost, length: out.length, hairpins: out.hairpins, bends: out.bends,
-        fill_crossings: out.fill_crossings, segments: out.segments, history: out.history,
-        seconds: (performance.now() - t0) / 1000, cells: fs.cells(), macros_computed: out.macros_computed,
-      } });
-    } finally {
-      fs.free();
-    }
-    await checkpoint();
+  const todo = which === "best" ? [0] : area.routes.map((_, i) => i);
+  try {
+    for (const k of todo) await refineOne(k, p, res, buffer);
+  } finally {
+    stopPool();
   }
+}
+
+async function refineOne(k: number, p: Params, res: number, buffer: number) {
+  const { grid: cg, startXY, goalXY, zScale } = area!;
+  const routes = area!.routes!;
+  const [bx0, by0, bx1, by1] = source!.info.bbox;
+  const t0 = performance.now();
+  const name = `corridor ${k + 1}`;
+  const r = routes[k];
+  // The corridor's line in UTM, and a grid at `res` over it plus the buffer, within the DEM.
+  const xs = r.cols.map((c) => cg.x0 + (c + 0.5) * cg.res), ys = r.rows.map((row) => cg.y1 - (row + 0.5) * cg.res);
+  let [xmin, xmax, ymin, ymax] = [Infinity, -Infinity, Infinity, -Infinity];
+  for (let i = 0; i < xs.length; i++) {
+    xmin = Math.min(xmin, xs[i]); xmax = Math.max(xmax, xs[i]); ymin = Math.min(ymin, ys[i]); ymax = Math.max(ymax, ys[i]);
+  }
+  const x0 = Math.floor(Math.max(xmin - buffer, bx0) / res) * res, y1 = Math.ceil(Math.min(ymax + buffer, by1) / res) * res;
+  const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(xmax + buffer, bx1) - x0) / res),
+                     h: Math.ceil((y1 - Math.max(ymin - buffer, by0)) / res) };
+  const z = await timedAsync(`${name}: read the DEM at ${res} m`, () =>
+    source!.resampleBands(fg, wasm.resample, zScale, -1, async (done, total) => {
+      progress(`${name}: read the DEM at ${res} m`, done, total);
+      await checkpoint();
+    }));
+  const lr = new Float64Array(ys.map((y) => (fg.y1 - y) / res - 0.5));
+  const lc = new Float64Array(xs.map((x) => (x - fg.x0) / res - 0.5));
+  const paramsJson = JSON.stringify(p);
+  const fs = timed(`${name}: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
+    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, false));
+  await checkpoint();
+  try {
+    await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer }, name);
+    const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
+    const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
+    let stage = "", tStage = 0;
+    const cells = fs.cells(); // the session is busy (borrowed) while it searches
+    const toUtm = (o: any, final: boolean): FineOut => ({
+      index: k, res, final, x: o.cols.map((c: number) => fg.x0 + (c + 0.5) * res),
+      y: o.rows.map((row: number) => fg.y1 - (row + 0.5) * res), z: o.z, cost: o.cost, length: o.length,
+      hairpins: o.hairpins, bends: o.bends, fill_crossings: o.fill_crossings, segments: o.segments, history: o.history,
+      seconds: (performance.now() - t0) / 1000, cells, macros_computed: o.macros_computed,
+    });
+    const out = fs.search(sr, sc, gr, gc, (st: string, settled: number) => {
+      if (st !== stage) {
+        if (stage) post({ type: "stage", name: `${name}: ${stage}`, state: "end", ms: performance.now() - tStage });
+        stage = st;
+        tStage = performance.now();
+        post({ type: "stage", name: `${name}: ${st}`, state: "start" });
+      }
+      progress(`${name}: ${st}, states settled`, settled, 0);
+    }, (o: any) => post({ type: "fine", route: toUtm(o, false) }));
+    if (stage) post({ type: "stage", name: `${name}: ${stage} and the route's costs`, state: "end", ms: performance.now() - tStage });
+    if (!out) throw new Error(`${name}: no route at ${res} m within ${buffer} m of the corridor`);
+    post({ type: "fine", route: toUtm(out, true) });
+  } finally {
+    fs.free();
+  }
+  await checkpoint();
 }
 
 // One message at a time: a "load" must not start while an "open" is still reading its file.
@@ -287,6 +366,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
         post({ type: "raster", layer: "channels", grid: area.grid, rgba: ch }, [ch.buffer]);
       }
     } catch (err) {
+      if (m.type === "refine") stopPool();
       if (err instanceof Stopped) post({ type: "stopped", task: task ?? "" });
       else post({ type: "error", message: err instanceof Error ? err.message : String(err) });
     } finally {
