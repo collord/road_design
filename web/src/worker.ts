@@ -8,7 +8,8 @@ import type { FromWorker, ToWorker } from "./messages";
 
 const ready = init();
 let source: Source | null = null;
-let area: { grid: Grid; session: wasm.Session; start: [number, number]; goal: [number, number] } | null = null;
+let area: { grid: Grid; session: wasm.Session; start: [number, number]; goal: [number, number];
+             acc?: Float32Array } | null = null;
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
@@ -35,6 +36,18 @@ function grayRgba(hs: Uint8Array): Uint8ClampedArray {
     const v = hs[i];
     out[4 * i] = out[4 * i + 1] = out[4 * i + 2] = v;
     out[4 * i + 3] = v === 0 ? 0 : 255;
+  }
+  return out;
+}
+
+/** Channels: cells draining at least aMin ha, more opaque downstream. */
+function channelRgba(acc: Float32Array, aMin: number): Uint8ClampedArray {
+  const out = new Uint8ClampedArray(acc.length * 4);
+  for (let i = 0; i < acc.length; i++) {
+    if (acc[i] >= aMin) {
+      out[4 * i] = 30; out[4 * i + 1] = 120; out[4 * i + 2] = 220;
+      out[4 * i + 3] = Math.min(255, 90 + 40 * Math.log10(acc[i] / aMin));
+    }
   }
   return out;
 }
@@ -105,15 +118,8 @@ function run(p: Params) {
   const slope = new Uint8ClampedArray(open.length * 4);
   for (let i = 0; i < open.length; i++) if (!open[i]) { slope[4 * i] = 215; slope[4 * i + 1] = 48; slope[4 * i + 2] = 31; slope[4 * i + 3] = 110; }
   post({ type: "raster", layer: "slope", grid, rgba: slope }, [slope.buffer]);
-  const acc = session.contributing_area();
-  const aMin = get(p, "A_min");
-  const ch = new Uint8ClampedArray(acc.length * 4);
-  for (let i = 0; i < acc.length; i++) {
-    if (acc[i] >= aMin) {
-      ch[4 * i] = 30; ch[4 * i + 1] = 120; ch[4 * i + 2] = 220;
-      ch[4 * i + 3] = Math.min(255, 90 + 40 * Math.log10(acc[i] / aMin));
-    }
-  }
+  area.acc = session.contributing_area();
+  const ch = channelRgba(area.acc, get(p, "A_min"));
   post({ type: "raster", layer: "channels", grid, rgba: ch }, [ch.buffer]);
   const sad = session.saddles();
   post({ type: "points", layer: "saddles", grid, cells: sad }, [sad.buffer]);
@@ -147,6 +153,10 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (m.type === "open") await open(m);
       else if (m.type === "load") await load(m);
       else if (m.type === "run") run(m.params);
+      else if (m.type === "channels" && area?.acc) {
+        const ch = channelRgba(area.acc, m.aMin);
+        post({ type: "raster", layer: "channels", grid: area.grid, rgba: ch }, [ch.buffer]);
+      }
     } catch (err) {
       post({ type: "error", message: err instanceof Error ? err.message : String(err) });
     }

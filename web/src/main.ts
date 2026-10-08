@@ -3,6 +3,7 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import proj4 from "proj4";
 import "./style.css";
+import { BASEMAPS, ExportLayer, utmEpsg } from "./basemap";
 import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
 import type { FromWorker, RouteOut, ToWorker } from "./messages";
 import type { Params } from "./params";
@@ -13,8 +14,11 @@ const MAX_CELLS = 12_000_000;
 interface Example { name: string; title: string; heading: string; dem: string; start: number[]; goal: number[]; params: Params }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-const map = L.map("map", { crs: L.CRS.Simple, minZoom: -10, maxZoom: 5, zoomSnap: 0.25, attributionControl: false });
+const map = L.map("map", { crs: L.CRS.Simple, minZoom: -10, maxZoom: 5, zoomSnap: 0.25 });
+map.attributionControl.setPrefix('<a href="https://leafletjs.com">Leaflet</a>');
 map.setView([0, 0], 0);
+// The base map and the hillshades share a pane, so the hillshade can multiply onto the base map.
+map.createPane("terrain").style.zIndex = "250";
 const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
 const send = (m: ToWorker) => worker.postMessage(m);
 
@@ -64,6 +68,40 @@ function log(text: string, cls = "") {
   $("log").append(li);
   li.scrollIntoView({ block: "nearest" });
 }
+
+// ---------------------------------------------------------------- base map and hillshade
+
+const TERRAIN_LAYERS = ["Terrain (whole DEM)", "Terrain (area)"];
+let basemap: ExportLayer | null = null;
+for (const b of BASEMAPS) {
+  const o = document.createElement("option");
+  o.value = o.textContent = b.name;
+  $("basemap").append(o);
+}
+
+function hillshadeOpacity(): number { return Number($<HTMLInputElement>("hillshade").value) / 100; }
+
+function applyBasemap() {
+  basemap?.remove();
+  basemap = null;
+  const b = BASEMAPS.find((x) => x.name === $<HTMLSelectElement>("basemap").value);
+  map.getPane("terrain")!.classList.toggle("blend", !!b);
+  if (!b || !info) return;
+  basemap = new ExportLayer(b, utmEpsg(info.zone, info.north), "terrain", (msg) => log(msg, "err")).addTo(map);
+}
+
+$("basemap").addEventListener("change", () => {
+  // Full-strength relief over a photo is dark; start the blend at half.
+  const slider = $<HTMLInputElement>("hillshade");
+  if ($<HTMLSelectElement>("basemap").value && slider.value === "100") {
+    slider.value = "50";
+    slider.dispatchEvent(new Event("input"));
+  }
+  applyBasemap();
+});
+$("hillshade").addEventListener("input", () => {
+  for (const name of TERRAIN_LAYERS) (layers.get(name) as L.ImageOverlay | undefined)?.setOpacity(hillshadeOpacity());
+});
 
 // ---------------------------------------------------------------- coordinates
 
@@ -125,6 +163,10 @@ function params(): Params {
   if (g > 0) p.g_max = g / 100;
   const w = Number($<HTMLInputElement>("w").value);
   if (w > 0) p.w = w;
+  for (const key of ["A_min", "tin_channel_ha"]) {
+    const v = Number($<HTMLInputElement>(key).value);
+    if (v > 0) p[key] = v;
+  }
   const k = Number($<HTMLInputElement>("k").value);
   for (const key of ["C_travel", "C_vertical", "C_turn"]) p[key] = (base[key] as number ?? defaults[key] as number) * k;
   p.z_units = zUnits();
@@ -139,6 +181,8 @@ function setControls(p: Params) {
   $<HTMLInputElement>("margin").value = String((p.tin_margin as number ?? 10000) / 1000);
   $<HTMLSelectElement>("z_units").value = String(p.z_units ?? "m");
   $<HTMLInputElement>("k").value = "1";
+  $<HTMLInputElement>("A_min").value = String(p.A_min);
+  $<HTMLInputElement>("tin_channel_ha").value = String(p.tin_channel_ha);
 }
 
 function openDem(m: ToWorker & { type: "open" }) {
@@ -201,6 +245,12 @@ map.on("click", (e: L.LeafletMouseEvent) => {
   $("pick-goal").classList.remove("active");
 });
 for (const id of ["margin", "res"]) $(id).addEventListener("input", estimate);
+$("A_min").addEventListener("change", () => {
+  const v = Number($<HTMLInputElement>("A_min").value);
+  if (!(v > 0) || !layers.has("Channels")) return;
+  send({ type: "channels", aMin: v });
+  if ($("corridors").innerHTML) log(`channel threshold ${v} ha: find corridors again to cost crossings with it`);
+});
 
 $("load").addEventListener("click", () => {
   if (!start || !goal) return;
@@ -296,12 +346,16 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
         (i.warnings.length ? `. Note: ${i.warnings.join("; ")}` : "");
       if (m.endpoints && m.endpoints.length === 2) { setEnd("start", m.endpoints[0]); setEnd("goal", m.endpoints[1]); }
       estimate();
+      applyBasemap();
       break;
     }
     case "raster": {
       const names = { preview: "Terrain (whole DEM)", hillshade: "Terrain (area)", slope: "Slope mask",
                       channels: "Channels" } as const;
-      setLayer(names[m.layer], rasterLayer(m.grid, m.rgba, m.layer === "preview" ? 0.9 : 1));
+      const terrain = m.layer === "preview" || m.layer === "hillshade";
+      setLayer(names[m.layer], terrain
+        ? rasterLayer(m.grid, m.rgba, hillshadeOpacity(), { pane: "terrain", zIndex: 2, className: "hillshade" })
+        : rasterLayer(m.grid, m.rgba));
       if (m.layer === "preview") map.fitBounds(boundsOf(m.grid));
       break;
     }

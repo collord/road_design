@@ -35,6 +35,8 @@ button.active { border-color: var(--accent); color: var(--accent); }
 .drop input { display: none; }
 .layers { display: grid; gap: 2px; }
 .layers label { display: flex; gap: 6px; align-items: center; }
+.leaflet-pane.blend .hillshade { mix-blend-mode: multiply; }
+input[type="range"] { padding: 0; border: none; background: none; accent-color: var(--accent); }
 .log { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .log .err { color: var(--goal); }
 .table-wrap { overflow-x: auto; }

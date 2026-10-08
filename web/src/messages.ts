@@ -6,7 +6,8 @@ export type ToWorker =
   | { type: "open"; file?: Blob; url?: string; name: string; zUnits: string; endpointsDem?: [number, number][] }
   | { type: "load"; start: [number, number]; goal: [number, number]; margin: number; res: number; maxCells: number;
       zUnits: string }
-  | { type: "run"; params: Params };
+  | { type: "run"; params: Params }
+  | { type: "channels"; aMin: number };
 
 export interface RouteOut {
   rows: number[];

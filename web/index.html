@@ -44,6 +44,8 @@
         <label>Elevation units
           <select id="z_units"><option value="m">m</option><option value="ft">ft</option><option value="us_ft">US ft</option></select>
         </label>
+        <label title="Contributing area that makes a channel: crossings cost a culvert from here down, and the Channels layer shows these cells">Channel threshold (ha) <input id="A_min" type="number" min="0.1" step="any"></label>
+        <label title="Channels draining at least this much seed nodes of the coarse graph">Channel nodes from (ha) <input id="tin_channel_ha" type="number" min="0.1" step="any"></label>
       </div>
       <p id="estimate" class="muted"></p>
       <div class="row">
@@ -53,6 +55,12 @@
     </section>
     <section>
       <h2>Layers</h2>
+      <div class="grid2">
+        <label>Base map
+          <select id="basemap"><option value="">none</option></select>
+        </label>
+        <label>Hillshade <input id="hillshade" type="range" min="0" max="100" step="5" value="100"></label>
+      </div>
       <div id="layers" class="layers"></div>
     </section>
     <section>

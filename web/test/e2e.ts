@@ -2,7 +2,7 @@
 // load the area, find corridors, and read the progress log and the corridor table.
 // Run with the dev server up: node test/e2e.ts [url] (from web/). CHROME overrides the browser path.
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,6 +59,15 @@ const until = async (expression: string, what: string, timeoutMs: number): Promi
   throw new Error(`timed out waiting for ${what}`);
 };
 
+const shots = process.env.SHOTS;
+/** A PNG of the page into $SHOTS, when set. */
+const shot = async (name: string) => {
+  if (!shots) return;
+  await sleep(500);
+  const r = await send("Page.captureScreenshot", { format: "png" });
+  writeFileSync(join(shots, `${name}.png`), Buffer.from(r.result.data, "base64"));
+};
+const channelSrc = `[...document.querySelectorAll(".leaflet-overlay-pane img")].map((i) => i.src.length).join(",")`;
 const logText = `[...document.querySelectorAll("#log li")].map((li) => (li.className === "err" ? "ERROR " : "") + li.textContent)`;
 const hasError = `document.querySelector("#log li.err")?.textContent`;
 let failed = false;
@@ -86,6 +95,23 @@ try {
     for (const r of rows) console.log(`  | ${r}`);
     const layers: string[] = await evaluate(`[...document.querySelectorAll("#layers label")].map((l) => l.textContent.trim())`);
     console.log(`  layers: ${layers.join(", ")}`);
+    // The channel threshold redraws the Channels layer without a new run.
+    const before: string = await evaluate(channelSrc);
+    await evaluate(`(() => { const i = document.querySelector("#A_min"); i.value = "20"; i.dispatchEvent(new Event("change")); })()`);
+    await until(`(${hasError}) || (${channelSrc}) !== ${JSON.stringify(before)}`, "the channels redraw", 20000);
+    console.log(`  channel threshold 20 ha: Channels redrawn`);
+    // Base maps, drawn by the map service in the DEM's UTM zone.
+    for (const bm of ["USGS imagery", "Esri streets"]) {
+      await evaluate(`(() => { const s = document.querySelector("#basemap"); s.value = ${JSON.stringify(bm)};
+                      s.dispatchEvent(new Event("change")); })()`);
+      const img = await until(`(${hasError}) || [...document.querySelectorAll(".leaflet-terrain-pane img")]
+        .filter((i) => i.src.includes("/export?") && i.complete && i.naturalWidth > 0).map((i) => i.naturalWidth + " x " + i.naturalHeight)[0]`,
+        `the ${bm} base map`, 30000);
+      if (!/ x /.test(img)) throw new Error(img);
+      console.log(`  base map ${bm}: ${img} px`);
+      await shot(`${name}-${bm.replace(/\s+/g, "-").toLowerCase()}`);
+    }
+    await evaluate(`(() => { const s = document.querySelector("#basemap"); s.value = ""; s.dispatchEvent(new Event("change")); })()`);
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   }
 } catch (e) {

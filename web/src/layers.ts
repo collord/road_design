@@ -6,12 +6,13 @@ export const boundsOf = (g: Grid): L.LatLngBoundsExpression =>
   [[g.y1 - g.h * g.res, g.x0], [g.y1, g.x0 + g.w * g.res]];
 
 /** An RGBA raster on the grid, as an image overlay. */
-export function rasterLayer(g: Grid, rgba: Uint8ClampedArray, opacity = 1): L.ImageOverlay {
+export function rasterLayer(g: Grid, rgba: Uint8ClampedArray, opacity = 1,
+                            options: L.ImageOverlayOptions = {}): L.ImageOverlay {
   const c = document.createElement("canvas");
   c.width = g.w;
   c.height = g.h;
   c.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), g.w, g.h), 0, 0);
-  return L.imageOverlay(c.toDataURL(), boundsOf(g), { opacity, interactive: false });
+  return L.imageOverlay(c.toDataURL(), boundsOf(g), { opacity, interactive: false, ...options });
 }
 
 /**
