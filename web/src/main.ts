@@ -69,6 +69,61 @@ function log(text: string, cls = "") {
   li.scrollIntoView({ block: "nearest" });
 }
 
+// ---------------------------------------------------------------- status: what the worker is doing
+
+const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors" } as const;
+let busy: keyof typeof TASK_TEXT | null = null;
+let busySince = 0;
+let ticker: ReturnType<typeof setInterval> | undefined;
+
+const statusBox = L.DomUtil.create("div", "status");
+statusBox.hidden = true;
+statusBox.innerHTML = '<div class="status-head"><span class="spinner"></span><strong class="status-task"></strong>' +
+  '<span class="status-time"></span><button type="button" class="status-stop">Stop</button></div>' +
+  '<div class="status-step"></div><progress class="status-bar"></progress>';
+L.DomEvent.disableClickPropagation(statusBox);
+const statusEl = <T extends Element>(cls: string) => statusBox.querySelector(`.${cls}`) as T;
+new (L.Control.extend({ onAdd: () => statusBox }))({ position: "topright" }).addTo(map);
+statusEl<HTMLButtonElement>("status-stop").addEventListener("click", () => {
+  send({ type: "stop" });
+  statusEl("status-step").textContent = "stopping at the next checkpoint...";
+});
+
+function setBusy(task: keyof typeof TASK_TEXT | null) {
+  busy = task;
+  const buttons = { load: $<HTMLButtonElement>("load"), run: $<HTMLButtonElement>("run") };
+  for (const [k, b] of Object.entries(buttons)) b.classList.toggle("working", k === task);
+  clearInterval(ticker);
+  if (task) {
+    busySince = performance.now();
+    buttons.load.disabled = buttons.run.disabled = true;
+    statusEl("status-task").textContent = TASK_TEXT[task];
+    statusEl("status-step").textContent = "";
+    statusEl<HTMLProgressElement>("status-bar").removeAttribute("value");
+    statusBox.hidden = false;
+    const tick = () => { statusEl("status-time").textContent = `${((performance.now() - busySince) / 1000).toFixed(1)} s`; };
+    tick();
+    ticker = setInterval(tick, 200);
+  } else {
+    statusBox.hidden = true;
+    estimate();
+    buttons.run.disabled = !areaGrid;
+  }
+}
+
+function setStep(name: string, done?: number, total?: number) {
+  const bar = statusEl<HTMLProgressElement>("status-bar");
+  const step = name.charAt(0).toUpperCase() + name.slice(1);
+  if (done === undefined || !total) {
+    bar.removeAttribute("value");
+    statusEl("status-step").textContent = `${step}...`;
+  } else {
+    bar.max = total;
+    bar.value = done;
+    statusEl("status-step").textContent = `${step}: ${done.toLocaleString()} of ${total.toLocaleString()}`;
+  }
+}
+
 // ---------------------------------------------------------------- base map and hillshade
 
 const TERRAIN_LAYERS = ["Terrain (whole DEM)", "Terrain (area)"];
@@ -145,7 +200,7 @@ function zUnits(): string { return $<HTMLSelectElement>("z_units").value; }
 
 function estimate() {
   const loadBtn = $<HTMLButtonElement>("load");
-  if (!info || !start || !goal) { loadBtn.disabled = true; return; }
+  if (!info || !start || !goal || busy) { loadBtn.disabled = true; return; }
   const m = Number($<HTMLInputElement>("margin").value) * 1000, res = Number($<HTMLInputElement>("res").value);
   const [bx0, by0, bx1, by1] = info.bbox;
   const w = (Math.min(Math.max(start[0], goal[0]) + m, bx1) - Math.max(Math.min(start[0], goal[0]) - m, bx0)) / res;
@@ -154,7 +209,7 @@ function estimate() {
   const over = cells > MAX_CELLS;
   $("estimate").textContent = `${(cells / 1e6).toFixed(1)} million cells at ${res} m, about ` +
     `${Math.round(cells * 70 / 1e6)} MB` + (over ? ` — over the limit of ${MAX_CELLS / 1e6} million: use larger cells or a smaller margin` : "");
-  loadBtn.disabled = over || res <= 0;
+  loadBtn.disabled = over || res <= 0 || !!busy;
 }
 
 function params(): Params {
@@ -254,11 +309,15 @@ $("A_min").addEventListener("change", () => {
 
 $("load").addEventListener("click", () => {
   if (!start || !goal) return;
+  areaGrid = null;
+  $<HTMLButtonElement>("load").disabled = true;
   $<HTMLButtonElement>("run").disabled = true;
   send({ type: "load", start, goal, margin: Number($<HTMLInputElement>("margin").value) * 1000,
          res: Number($<HTMLInputElement>("res").value), maxCells: MAX_CELLS, zUnits: zUnits() });
 });
 $("run").addEventListener("click", () => {
+  $<HTMLButtonElement>("load").disabled = true;
+  $<HTMLButtonElement>("run").disabled = true;
   for (const name of ["Slope mask", "Channels", "Saddles", "Triangulation", "Graph nodes (corridor field)",
                       "Graph edges", "Corridors"]) setLayer(name, null);
   $("corridors").innerHTML = "";
@@ -333,9 +392,20 @@ const stageStart = new Map<string, number>();
 worker.onmessage = (e: MessageEvent<FromWorker>) => {
   const m = e.data;
   switch (m.type) {
+    case "busy":
+      setBusy(m.task);
+      break;
     case "stage":
-      if (m.state === "start") stageStart.set(m.name, performance.now());
-      else log(`${m.name}: ${((m.ms ?? 0) / 1000).toFixed(2)} s`);
+      if (m.state === "start") {
+        stageStart.set(m.name, performance.now());
+        setStep(m.name);
+      } else log(`${m.name}: ${((m.ms ?? 0) / 1000).toFixed(2)} s`);
+      break;
+    case "progress":
+      setStep(m.name, m.done, m.total);
+      break;
+    case "stopped":
+      log(`stopped (${m.task})`);
       break;
     case "info": {
       info = m.info;
@@ -363,7 +433,6 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       areaGrid = m.grid;
       map.fitBounds(boundsOf(m.grid));
       log(`area: ${m.grid.w.toLocaleString()} x ${m.grid.h.toLocaleString()} cells at ${m.grid.res} m`);
-      $<HTMLButtonElement>("run").disabled = false;
       break;
     case "points": {
       const g = m.grid, rows = new Uint32Array(m.cells.length), cols = new Uint32Array(m.cells.length);
@@ -400,10 +469,13 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       setLayer("Triangulation", layers.get("Triangulation") ?? null, false);
       break;
     }
-    case "corridors":
+    case "corridors": {
       showCorridors(m.grid, m.routes);
-      log(`corridors: ${m.routes.length}`);
+      const r = m.routes[m.routes.length - 1];
+      if (m.final) log(`corridors: ${m.routes.length}`);
+      else log(`corridor ${m.routes.length} (${r.how}): ${Math.round(r.cost).toLocaleString()}, ${(r.length / 1000).toFixed(1)} km`);
       break;
+    }
     case "error":
       log(m.message, "err");
       break;

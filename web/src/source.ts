@@ -174,9 +174,34 @@ export class Source {
     return resample(src, W[2] - W[0], W[3] - W[1], lc, lr, lw, lh, step, g.w, g.h, k);
   }
 
+  /**
+   * The DEM on grid g, read and resampled in horizontal bands so each read covers only its rows,
+   * calling onBand(rows done, rows) after each (it may throw to stop). Bands are whole multiples
+   * of the projection lattice, so the cells are those of a single read. About `pixelsPerBand`
+   * source pixels per band, and at least `minBands` bands when the grid is tall enough.
+   */
+  async resampleBands(g: Grid, resample: Resample, zScale: number, level = -1,
+                      onBand?: (done: number, total: number) => Promise<void> | void,
+                      pixelsPerBand = 4_000_000, minBands = 10): Promise<Float32Array> {
+    const image = level < 0 ? this.image : this.levels[level];
+    const srcM = this.info.resM * this.image.getWidth() / image.getWidth();
+    const ratio = Math.max(g.res / srcM, 1e-9);
+    const byPixels = pixelsPerBand / Math.max(1, g.w * ratio * ratio);
+    const rows = Math.min(byPixels, Math.ceil(g.h / minBands));
+    const band = Math.max(1, Math.ceil(rows / LATTICE_STEP)) * LATTICE_STEP;
+    const z = new Float32Array(g.w * g.h);
+    for (let i0 = 0; i0 < g.h; i0 += band) {
+      const bh = Math.min(band, g.h - i0);
+      z.set(await this.resampleTo({ ...g, y1: g.y1 - i0 * g.res, h: bh }, resample, zScale, level), i0 * g.w);
+      await onBand?.(i0 + bh, g.h);
+    }
+    return z;
+  }
+
   /** A preview grid over the whole DEM about `maxSide` cells across, from the coarsest overview
    *  that is fine enough, or the full image (read band by band through the resampler's window). */
-  async preview(resample: Resample, zScale: number, maxSide = 1200): Promise<{ grid: Grid; z: Float32Array }> {
+  async preview(resample: Resample, zScale: number, maxSide = 1200,
+                onBand?: (done: number, total: number) => Promise<void> | void): Promise<{ grid: Grid; z: Float32Array }> {
     const [xmin, ymin, xmax, ymax] = this.info.bbox;
     const res = Math.max((xmax - xmin) / maxSide, (ymax - ymin) / maxSide, this.info.resM);
     const g: Grid = { x0: xmin, y1: ymax, res, w: Math.ceil((xmax - xmin) / res), h: Math.ceil((ymax - ymin) / res) };
@@ -186,15 +211,7 @@ export class Source {
       if (this.info.resM * this.image.getWidth() / im.getWidth() <= res) level = i;
     });
     if (level >= 0) return { grid: g, z: await this.resampleTo(g, resample, zScale, level) };
-    // No overview: build the preview in horizontal bands, each reading only its rows.
-    const z = new Float32Array(g.w * g.h).fill(NaN);
-    // About 4 million source pixels (16 MB) per band.
-    const band = Math.max(1, Math.floor(4_000_000 / Math.max(1, this.info.width) / (res / this.info.resM)));
-    for (let i0 = 0; i0 < g.h; i0 += band) {
-      const bh = Math.min(band, g.h - i0);
-      const part = await this.resampleTo({ ...g, y1: g.y1 - i0 * res, h: bh }, resample, zScale);
-      z.set(part, i0 * g.w);
-    }
-    return { grid: g, z };
+    // No overview: the full image, band by band (about 4 million source pixels, 16 MB, each).
+    return { grid: g, z: await this.resampleBands(g, resample, zScale, -1, onBand) };
   }
 }

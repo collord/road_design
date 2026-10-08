@@ -7,7 +7,8 @@ export type ToWorker =
   | { type: "load"; start: [number, number]; goal: [number, number]; margin: number; res: number; maxCells: number;
       zUnits: string }
   | { type: "run"; params: Params }
-  | { type: "channels"; aMin: number };
+  | { type: "channels"; aMin: number }
+  | { type: "stop" };
 
 export interface RouteOut {
   rows: number[];
@@ -29,6 +30,9 @@ export type FromWorker =
   | { type: "tin"; grid: Grid; points: Uint32Array; triangles: Uint32Array; n: number }
   | { type: "graph"; grid: Grid; rows: Uint32Array; cols: Uint32Array; kinds: Uint8Array; field: Float32Array;
       pairs: Uint32Array; costPerM: Float32Array }
-  | { type: "corridors"; grid: Grid; routes: RouteOut[] }
+  | { type: "corridors"; grid: Grid; routes: RouteOut[]; final: boolean }
+  | { type: "progress"; name: string; done: number; total: number }
+  | { type: "busy"; task: "open" | "load" | "run" | null }
+  | { type: "stopped"; task: string }
   | { type: "area"; grid: Grid; cells: number }
   | { type: "error"; message: string };

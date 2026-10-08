@@ -157,6 +157,20 @@ pub struct Node {
 /// Nodes: triangulation vertices, channel and saddle nodes (one per block), background (one per
 /// block), and the two endpoints (always, and first: indices 0 and 1). Only open cells.
 pub fn build_nodes(t: &Rasters, p: &TinParams, start: (usize, usize), goal: (usize, usize)) -> Vec<Node> {
+    build_nodes_from(t, p, start, goal, &tin_vertices(t, p.tolerance))
+}
+
+/// The vertices (col, row) of a triangulation of the smoothed DEM to `tolerance` m, nodata
+/// filled from the nearest data: a cliff at the data's edge would draw vertices all along it.
+pub fn tin_vertices(t: &Rasters, tolerance: f64) -> Vec<(usize, usize)> {
+    let heights = terrain::fill_nearest(&t.zs.data, t.nr(), t.nc());
+    delatin::triangulate(&heights, (t.nc(), t.nr()), delatin::Error(tolerance)).map(|(pts, _)| pts).unwrap_or_default()
+}
+
+/// build_nodes with the triangulation's vertices (col, row) already computed.
+pub fn build_nodes_from(
+    t: &Rasters, p: &TinParams, start: (usize, usize), goal: (usize, usize), tin: &[(usize, usize)],
+) -> Vec<Node> {
     let (nr, nc) = (t.nr(), t.nc());
     let mut nodes = vec![
         Node { r: start.0, c: start.1, kind: KIND_ENDPOINT },
@@ -168,13 +182,8 @@ pub fn build_nodes(t: &Rasters, p: &TinParams, start: (usize, usize), goal: (usi
             nodes.push(Node { r, c, kind });
         }
     };
-    // Triangulation of the smoothed DEM, nodata filled from the nearest data: a cliff at the
-    // data's edge would draw vertices all along it.
-    let heights = terrain::fill_nearest(&t.zs.data, nr, nc);
-    if let Ok((pts, _tris)) = delatin::triangulate(&heights, (nc, nr), delatin::Error(p.tolerance)) {
-        for (x, y) in pts {
-            add(&mut nodes, y, x, KIND_TIN);
-        }
+    for &(x, y) in tin {
+        add(&mut nodes, y, x, KIND_TIN);
     }
     let b = p.block.max(1);
     let (br, bc) = (nr.div_ceil(b), nc.div_ceil(b));
@@ -316,10 +325,20 @@ pub struct Graph {
     /// Adjacency: for node u, neighbors start[u]..start[u + 1] in (node, edge index).
     pub start: Vec<usize>,
     pub adj: Vec<(u32, u32)>,
+    /// Heading of each directed edge (radians, atan2 of rows and cols), for turning costs.
+    pub heading: Vec<f64>,
 }
 
 /// Join each node to its `k` nearest neighbors within `edge_max` cells; keep feasible edges.
+/// In steps, for callers that report progress: candidate_pairs, cost_pairs over slices, assemble.
 pub fn build_graph(t: &Rasters, e: &EdgeParams, p: &TinParams, nodes: Vec<Node>) -> Graph {
+    let pairs = candidate_pairs(&nodes, p);
+    let costed = cost_pairs(t, e, &nodes, &pairs);
+    assemble(nodes, pairs, costed)
+}
+
+/// Each node's `k` nearest neighbors within `edge_max` cells, as sorted pairs (u < v).
+pub fn candidate_pairs(nodes: &[Node], p: &TinParams) -> Vec<(u32, u32)> {
     let bucket = p.edge_max.max(1.0);
     let mut buckets: HashMap<(i64, i64), Vec<u32>> = HashMap::new();
     for (i, nd) in nodes.iter().enumerate() {
@@ -327,9 +346,12 @@ pub fn build_graph(t: &Rasters, e: &EdgeParams, p: &TinParams, nodes: Vec<Node>)
         buckets.entry(key).or_default().push(i as u32);
     }
     let mut pairs: HashSet<(u32, u32)> = HashSet::new();
+    let max2 = p.edge_max * p.edge_max;
+    let mut cand: Vec<(i64, u32)> = Vec::new();
     for (i, nd) in nodes.iter().enumerate() {
         let (br, bc) = ((nd.r as f64 / bucket) as i64, (nd.c as f64 / bucket) as i64);
-        let mut cand: Vec<(f64, u32)> = Vec::new();
+        // Squared distances in whole cells: exact, and in the same order as the distances.
+        cand.clear();
         for dr in -1..=1 {
             for dc in -1..=1 {
                 if let Some(list) = buckets.get(&(br + dr, bc + dc)) {
@@ -338,15 +360,21 @@ pub fn build_graph(t: &Rasters, e: &EdgeParams, p: &TinParams, nodes: Vec<Node>)
                             continue;
                         }
                         let o = &nodes[j as usize];
-                        let d = (o.r as f64 - nd.r as f64).hypot(o.c as f64 - nd.c as f64);
-                        if d <= p.edge_max {
-                            cand.push((d, j));
+                        let (dy, dx) = (o.r as i64 - nd.r as i64, o.c as i64 - nd.c as i64);
+                        let d2 = dy * dy + dx * dx;
+                        if (d2 as f64) <= max2 {
+                            cand.push((d2, j));
                         }
                     }
                 }
             }
         }
-        cand.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        // The k nearest (ties to the lower index), without sorting the rest.
+        if cand.len() > p.k && p.k > 0 {
+            cand.select_nth_unstable(p.k - 1);
+            cand.truncate(p.k);
+        }
+        cand.sort_unstable();
         for &(_, j) in cand.iter().take(p.k) {
             let (u, v) = if (i as u32) < j { (i as u32, j) } else { (j, i as u32) };
             pairs.insert((u, v));
@@ -354,10 +382,20 @@ pub fn build_graph(t: &Rasters, e: &EdgeParams, p: &TinParams, nodes: Vec<Node>)
     }
     let mut pairs: Vec<(u32, u32)> = pairs.into_iter().collect();
     pairs.sort_unstable();
-    let costed: Vec<Option<EdgeCost>> = map_edges(&pairs, |&(u, v)| {
+    pairs
+}
+
+/// The cost of each pair's edge on the DEM; None where it is infeasible. Any slice of the
+/// pairs may be costed separately.
+pub fn cost_pairs(t: &Rasters, e: &EdgeParams, nodes: &[Node], pairs: &[(u32, u32)]) -> Vec<Option<EdgeCost>> {
+    map_edges(pairs, |&(u, v)| {
         let (a, b) = (&nodes[u as usize], &nodes[v as usize]);
         edge_cost(t, e, (a.r, a.c), (b.r, b.c))
-    });
+    })
+}
+
+/// The graph from the pairs and their costs, keeping the feasible edges.
+pub fn assemble(nodes: Vec<Node>, pairs: Vec<(u32, u32)>, costed: Vec<Option<EdgeCost>>) -> Graph {
     let mut edges = Vec::new();
     let mut costs = Vec::new();
     for (pr, c) in pairs.into_iter().zip(costed) {
@@ -383,7 +421,15 @@ pub fn build_graph(t: &Rasters, e: &EdgeParams, p: &TinParams, nodes: Vec<Node>)
         adj[fill[v as usize]] = (u, k as u32);
         fill[v as usize] += 1;
     }
-    Graph { nodes, edges, costs, start, adj }
+    let heading = (0..2 * edges.len())
+        .map(|d| {
+            let (a, b) = edges[d / 2];
+            let (p, q) = if d % 2 == 0 { (a, b) } else { (b, a) };
+            let (p, q) = (&nodes[p as usize], &nodes[q as usize]);
+            (q.r as f64 - p.r as f64).atan2(q.c as f64 - p.c as f64)
+        })
+        .collect();
+    Graph { nodes, edges, costs, start, adj, heading }
 }
 
 #[cfg(feature = "parallel")]
@@ -462,16 +508,13 @@ fn out_of(g: &Graph, u: usize, k: u32) -> u32 {
     if g.edges[k as usize].0 as usize == u { 2 * k } else { 2 * k + 1 }
 }
 
-/// Heading change (radians, 0..pi) from directed edge a to directed edge b (b leaves a's head).
+/// Heading change (radians, 0..pi) from directed edge a to directed edge b (b leaves a's head),
+/// from the headings precomputed with the graph: no transcendental functions in the searches'
+/// inner loops (they are slow software routines in WebAssembly).
+#[inline(always)]
 fn turn_angle(g: &Graph, a: u32, b: u32) -> f64 {
-    let (p, q, r) = (&g.nodes[tail(g, a)], &g.nodes[head(g, a)], &g.nodes[head(g, b)]);
-    let (ax, ay) = (q.c as f64 - p.c as f64, q.r as f64 - p.r as f64);
-    let (bx, by) = (r.c as f64 - q.c as f64, r.r as f64 - q.r as f64);
-    let na = ax.hypot(ay) * bx.hypot(by);
-    if na == 0.0 {
-        return 0.0;
-    }
-    ((ax * bx + ay * by) / na).clamp(-1.0, 1.0).acos()
+    let t = (g.heading[b as usize] - g.heading[a as usize]).abs();
+    if t > std::f64::consts::PI { 2.0 * std::f64::consts::PI - t } else { t }
 }
 
 /// A search over directed edges: dist[d] is the cheapest cost of arriving at head(d) along d,
@@ -660,75 +703,152 @@ fn arbitrariness(g: &Graph, field: &[f64], on_route: &HashSet<usize>, v: usize, 
 /// through saddles (ranked by the field), then a penalty loop whose penalties are graded by how
 /// arbitrary each kept route's position was (constrictions are left open).
 pub fn corridors(g: &Graph, p: &TinParams, c_turn: f64, start: usize, goal: usize) -> Corridors {
-    let w: Vec<f64> = g.costs.iter().map(|c| c.total).collect();
-    let fwd = search_directed(g, &w, c_turn, start);
-    let bwd = search_directed(g, &w, c_turn, goal);
-    let n = g.nodes.len();
-    let thr: Vec<(f64, u32, u32)> = (0..n).map(|v| through(g, &fwd, &bwd, c_turn, v, start, goal)).collect();
-    let field: Vec<f64> = thr.iter().map(|t| t.0).collect();
-    let mut routes = Vec::new();
-    let (best_cost, arrive) = best_arrival(g, &fwd, goal);
-    if !best_cost.is_finite() {
-        return Corridors { routes, field };
+    let mut s = CorridorSearch::new(g, p, c_turn, start, goal);
+    while s.next(g).is_some() {}
+    Corridors { routes: s.routes, field: s.field }
+}
+
+/// The corridor search a route at a time. new() runs the two searches, giving the corridor
+/// field and the best route; each next() finds one more distinct alternative, or None when
+/// there are no more. Collecting them all is corridors().
+pub struct CorridorSearch {
+    /// Cost of the best route through each node.
+    pub field: Vec<f64>,
+    /// The routes so far, the best first.
+    pub routes: Vec<Route>,
+    p: TinParams,
+    c_turn: f64,
+    start: usize,
+    goal: usize,
+    fwd: DirectedSearch,
+    bwd: DirectedSearch,
+    thr: Vec<(f64, u32, u32)>,
+    limit: f64,
+    kept: Vec<HashSet<u32>>,
+    /// Saddle candidates, cheapest forced route first, and the next to try.
+    saddles: Vec<usize>,
+    next_saddle: usize,
+    /// Penalized weights, once the saddles are done; and the penalty rounds run.
+    wp: Option<Vec<f64>>,
+    rounds: usize,
+}
+
+/// Width of the arbitrariness ramp: a neighbor 2% dearer than the best is still "as good".
+const ARBITRARY_DELTA: f64 = 0.02;
+
+impl CorridorSearch {
+    pub fn new(g: &Graph, p: &TinParams, c_turn: f64, start: usize, goal: usize) -> Self {
+        let w: Vec<f64> = g.costs.iter().map(|c| c.total).collect();
+        let fwd = search_directed(g, &w, c_turn, start);
+        let bwd = search_directed(g, &w, c_turn, goal);
+        let n = g.nodes.len();
+        let thr: Vec<(f64, u32, u32)> = (0..n).map(|v| through(g, &fwd, &bwd, c_turn, v, start, goal)).collect();
+        let field: Vec<f64> = thr.iter().map(|t| t.0).collect();
+        let mut s = CorridorSearch {
+            field,
+            routes: Vec::new(),
+            p: p.clone(),
+            c_turn,
+            start,
+            goal,
+            fwd,
+            bwd,
+            thr,
+            limit: f64::INFINITY,
+            kept: Vec::new(),
+            saddles: Vec::new(),
+            next_saddle: 0,
+            wp: None,
+            rounds: 0,
+        };
+        let (best_cost, arrive) = best_arrival(g, &s.fwd, goal);
+        if !best_cost.is_finite() {
+            return s; // no route: done() from the start
+        }
+        let best = make_route(g, &directed_path(&s.fwd, arrive), c_turn, "best");
+        s.limit = (1.0 + p.stretch) * best.cost;
+        s.kept.push(best.edges.iter().copied().collect());
+        s.routes.push(best);
+        let mut sad: Vec<usize> = (0..n).filter(|&i| g.nodes[i].kind == KIND_SADDLE && s.field[i] <= s.limit).collect();
+        sad.sort_by(|&a, &b| s.field[a].total_cmp(&s.field[b]).then(a.cmp(&b)));
+        s.saddles = sad;
+        s
     }
-    let best = make_route(g, &directed_path(&fwd, arrive), c_turn, "best");
-    let limit = (1.0 + p.stretch) * best.cost;
-    let mut kept: Vec<HashSet<u32>> = vec![best.edges.iter().copied().collect()];
-    routes.push(best);
-    let distinct = |edges: &[u32], kept: &[HashSet<u32>]| kept.iter().all(|k| shared(g, edges, k) <= p.max_shared);
-    // Saddle candidates, cheapest forced route first.
-    let mut sad: Vec<usize> = (0..n).filter(|&i| g.nodes[i].kind == KIND_SADDLE && field[i] <= limit).collect();
-    sad.sort_by(|&a, &b| field[a].total_cmp(&field[b]).then(a.cmp(&b)));
-    for s in sad {
-        if routes.len() > p.n_alt {
-            break;
-        }
-        let (_, a, b) = thr[s];
-        if a == u32::MAX || b == u32::MAX {
-            continue;
-        }
-        let mut path = directed_path(&fwd, a);
-        let back: Vec<u32> = directed_path(&bwd, b ^ 1).into_iter().rev().map(|d| d ^ 1).collect();
-        path.extend(back);
-        let r = make_route(g, &path, c_turn, "saddle");
-        if r.cost <= limit && distinct(&r.edges, &kept) {
-            kept.push(r.edges.iter().copied().collect());
-            routes.push(r);
-        }
+
+    /// Whether next() has nothing more to find.
+    pub fn done(&self) -> bool {
+        self.routes.is_empty() || self.routes.len() > self.p.n_alt || self.rounds >= 4 * self.p.n_alt
     }
-    // Penalty loop, graded by the field: discourage a kept route where it could as well have
-    // been elsewhere, not where it passes a constriction.
-    let delta = 0.02;
-    let best_cost = routes[0].cost;
-    let mut wp = w.clone();
-    let penalize = |wp: &mut Vec<f64>, r: &Route| {
+
+    fn distinct(&self, g: &Graph, edges: &[u32]) -> bool {
+        self.kept.iter().all(|k| shared(g, edges, k) <= self.p.max_shared)
+    }
+
+    fn keep(&mut self, r: Route) -> &Route {
+        self.kept.push(r.edges.iter().copied().collect());
+        self.routes.push(r);
+        self.routes.last().unwrap()
+    }
+
+    /// Discourage a route where it could as well have been elsewhere, not where it passes a
+    /// constriction.
+    fn penalize(&self, g: &Graph, wp: &mut [f64], r: &Route) {
+        let best_cost = self.routes[0].cost;
         let on: HashSet<usize> = r.nodes.iter().copied().collect();
-        let arb: Vec<f64> = r.nodes.iter().map(|&v| arbitrariness(g, &field, &on, v, best_cost, delta)).collect();
+        let arb: Vec<f64> =
+            r.nodes.iter().map(|&v| arbitrariness(g, &self.field, &on, v, best_cost, ARBITRARY_DELTA)).collect();
         for (i, &k) in r.edges.iter().enumerate() {
             let a = arb[i].min(arb[i + 1]);
-            wp[k as usize] *= 1.0 + (p.penalty - 1.0) * a;
-        }
-    };
-    for r in routes.clone().iter() {
-        penalize(&mut wp, r);
-    }
-    for _ in 0..4 * p.n_alt {
-        if routes.len() > p.n_alt {
-            break;
-        }
-        let s = search_directed(g, &wp, c_turn, start);
-        let (c, a) = best_arrival(g, &s, goal);
-        if !c.is_finite() {
-            break;
-        }
-        let r = make_route(g, &directed_path(&s, a), c_turn, "penalty");
-        penalize(&mut wp, &r);
-        if r.cost <= limit && distinct(&r.edges, &kept) {
-            kept.push(r.edges.iter().copied().collect());
-            routes.push(r);
+            wp[k as usize] *= 1.0 + (self.p.penalty - 1.0) * a;
         }
     }
-    Corridors { routes, field }
+
+    /// The next distinct alternative: saddles first, then penalty rounds.
+    pub fn next(&mut self, g: &Graph) -> Option<&Route> {
+        if self.done() {
+            return None;
+        }
+        while self.wp.is_none() && self.next_saddle < self.saddles.len() {
+            let s = self.saddles[self.next_saddle];
+            self.next_saddle += 1;
+            let (_, a, b) = self.thr[s];
+            if a == u32::MAX || b == u32::MAX {
+                continue;
+            }
+            let mut path = directed_path(&self.fwd, a);
+            let back: Vec<u32> = directed_path(&self.bwd, b ^ 1).into_iter().rev().map(|d| d ^ 1).collect();
+            path.extend(back);
+            let r = make_route(g, &path, self.c_turn, "saddle");
+            if r.cost <= self.limit && self.distinct(g, &r.edges) {
+                return Some(self.keep(r));
+            }
+        }
+        if self.wp.is_none() {
+            let mut wp: Vec<f64> = g.costs.iter().map(|c| c.total).collect();
+            for r in &self.routes {
+                self.penalize(g, &mut wp, r);
+            }
+            self.wp = Some(wp);
+        }
+        while !self.done() {
+            self.rounds += 1;
+            let mut wp = self.wp.take().unwrap();
+            let s = search_directed(g, &wp, self.c_turn, self.start);
+            let (c, a) = best_arrival(g, &s, self.goal);
+            if !c.is_finite() {
+                self.wp = Some(wp);
+                self.rounds = usize::MAX;
+                return None;
+            }
+            let r = make_route(g, &directed_path(&s, a), self.c_turn, "penalty");
+            self.penalize(g, &mut wp, &r);
+            self.wp = Some(wp);
+            if r.cost <= self.limit && self.distinct(g, &r.edges) {
+                return Some(self.keep(r));
+            }
+        }
+        None
+    }
 }
 
 // --- sampling: cost uncertainty, and random node placements ------------------------------------

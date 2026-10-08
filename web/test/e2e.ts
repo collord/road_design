@@ -87,9 +87,24 @@ try {
     await evaluate(`document.querySelector("#load").click()`);
     const runReady = await until(`(${hasError}) || (!document.querySelector("#run").disabled && "ready")`, "the area", 120000);
     if (runReady !== "ready") throw new Error(runReady);
+    // While it runs: the status box's steps, and when the first corridor (the best) shows.
     await evaluate(`document.querySelector("#run").click()`);
-    const done = await until(`(${hasError}) || (document.querySelectorAll("#corridors tr").length > 1 && "done")`, "corridors", 300000);
-    if (done !== "done") throw new Error(done);
+    const tRun = Date.now();
+    const steps = new Set<string>();
+    let firstRow = 0;
+    for (;;) {
+      const st = await evaluate(`({ err: ${hasError} ?? null, step: document.querySelector(".status").hidden ? "" :
+        document.querySelector(".status-step").textContent.replace(/[0-9,]+ of [0-9,]+/, "n of N"),
+        rows: document.querySelectorAll("#corridors tr").length, idle: !document.querySelector("#run").disabled })`);
+      if (st.err) throw new Error(st.err);
+      if (st.step) steps.add(st.step);
+      if (st.rows > 1 && !firstRow) firstRow = Date.now() - tRun;
+      if (st.idle && st.rows > 1) break;
+      if (Date.now() - tRun > 300000) throw new Error("timed out waiting for corridors");
+      await sleep(100);
+    }
+    console.log(`  status steps seen: ${[...steps].join(" | ")}`);
+    console.log(`  best corridor shown after ${(firstRow / 1000).toFixed(1)} s, all after ${((Date.now() - tRun) / 1000).toFixed(1)} s`);
     for (const line of await evaluate(logText)) console.log(`  ${line}`);
     const rows: string[] = await evaluate(`[...document.querySelectorAll("#corridors tr")].slice(0, 3).map((r) => r.textContent.trim().replace(/\\s+/g, " "))`);
     for (const r of rows) console.log(`  | ${r}`);
@@ -112,6 +127,17 @@ try {
       await shot(`${name}-${bm.replace(/\s+/g, "-").toLowerCase()}`);
     }
     await evaluate(`(() => { const s = document.querySelector("#basemap"); s.value = ""; s.dispatchEvent(new Event("change")); })()`);
+    // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.
+    if (name === names[0]) {
+      await evaluate(`document.querySelector("#run").click()`);
+      await until(`(${hasError}) || /cost the edges/i.test(document.querySelector(".status-step").textContent)`, "edge costing", 60000);
+      await evaluate(`document.querySelector(".status-stop").click()`);
+      const stopped = await until(`(${hasError}) || (!document.querySelector("#run").disabled && document.querySelector(".status").hidden &&
+        [...document.querySelectorAll("#log li")].some((li) => li.textContent.startsWith("stopped")) && "stopped")`, "the stop", 30000);
+      if (stopped !== "stopped" && !/^stopped/.test(stopped)) throw new Error(stopped);
+      await evaluate(`document.querySelectorAll("#log li.err").forEach((li) => li.remove())`);
+      console.log(`  stop: the run ended while costing edges; Find corridors is enabled again`);
+    }
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   }
 } catch (e) {

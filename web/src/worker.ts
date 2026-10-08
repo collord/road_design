@@ -1,10 +1,12 @@
 // The pipeline, off the page's thread: the GeoTIFF reader and the Rust core (WebAssembly).
-// The page sends "open", "load" and "run"; the worker answers with layers as each stage finishes.
+// The page sends "open", "load" and "run"; the worker answers with layers as each stage finishes,
+// progress within the long ones, and "busy" when a task starts and ends. "stop" ends a task at
+// its next checkpoint (between bands of a read, slices of the edges, and corridors).
 import init, * as wasm from "./wasm/roadsearch_wasm.js";
 import { Source, Z_UNIT_SCALE, type Grid } from "./source";
 import { get, hairpinAllowance, maxCatchAtMask, sectionTable, sigmaM, sMask, TABLE_NG, TABLE_NS,
          type Params } from "./params";
-import type { FromWorker, ToWorker } from "./messages";
+import type { FromWorker, RouteOut, ToWorker } from "./messages";
 
 const ready = init();
 let source: Source | null = null;
@@ -20,6 +22,17 @@ function timed<T>(name: string, f: () => T): T {
   post({ type: "stage", name, state: "end", ms: performance.now() - t0 });
   return r;
 }
+
+class Stopped extends Error {}
+let stopRequested = false;
+
+/** Lets messages (a "stop") in, then throws if one asked to stop. */
+async function checkpoint(): Promise<void> {
+  await new Promise((r) => setTimeout(r, 0));
+  if (stopRequested) throw new Stopped("stopped");
+}
+
+const progress = (name: string, done: number, total: number) => post({ type: "progress", name, done, total });
 
 async function timedAsync<T>(name: string, f: () => Promise<T>): Promise<T> {
   post({ type: "stage", name, state: "start" });
@@ -77,7 +90,10 @@ async function open(m: Extract<ToWorker, { type: "open" }>) {
   const ends = m.endpointsDem?.map(([x, y]) => source!.utm(x, y));
   post({ type: "info", info: source.info, endpoints: ends });
   const zScale = Z_UNIT_SCALE[m.zUnits] ?? 1;
-  const pv = await timedAsync("preview", () => source!.preview(wasm.resample, zScale));
+  const pv = await timedAsync("preview", () => source!.preview(wasm.resample, zScale, 1200, async (done, total) => {
+    progress("preview", done, total);
+    await checkpoint();
+  }));
   const rgba = grayRgba(wasm.hillshade(pv.z, pv.grid.w, pv.grid.h, pv.grid.res));
   post({ type: "raster", layer: "preview", grid: pv.grid, rgba }, [rgba.buffer]);
 }
@@ -98,7 +114,11 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
       `${(m.maxCells / 1e6).toFixed(0)} million: use cells of ${Math.ceil(fit)} m or more, or a smaller margin`);
   }
   const zScale = Z_UNIT_SCALE[m.zUnits] ?? 1;
-  const z = await timedAsync("read and reproject the area", () => source!.resampleTo(grid, wasm.resample, zScale));
+  const z = await timedAsync("read and reproject the area", () =>
+    source!.resampleBands(grid, wasm.resample, zScale, -1, async (done, total) => {
+      progress("read and reproject the area", done, total);
+      await checkpoint();
+    }));
   const s = cellOf(grid, sx, sy), g = cellOf(grid, gx, gy);
   if (!s || !g) throw new Error("start or finish is outside the DEM");
   area?.session.free();
@@ -108,7 +128,10 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
   post({ type: "area", grid, cells });
 }
 
-function run(p: Params) {
+/** Edges are costed in slices of about this long, between checkpoints. */
+const SLICE_MS = 150;
+
+async function run(p: Params) {
   if (!area) throw new Error("load an area first");
   const { grid, session } = area;
   const res = grid.res;
@@ -135,30 +158,73 @@ function run(p: Params) {
   const breaks = new Float64Array(p.culvert_area_breaks as number[]);
   const costs = new Float64Array(p.culvert_costs as number[]);
   const [sr, sc] = area.start, [gr, gc] = area.goal;
-  const routes = timed("graph, two-way search, corridors", () =>
-    session.corridors(sr, sc, gr, gc, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
+  await checkpoint();
+  const nPairs = timed("graph nodes and candidate edges", () =>
+    session.graph_begin(sr, sc, gr, gc, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
+  // Cost the edges in slices sized to take about SLICE_MS each.
+  const name = "cost the edges on the DEM";
+  post({ type: "stage", name, state: "start" });
+  const t0 = performance.now();
+  let done = 0, slice = 2000;
+  while (done < nPairs) {
+    const ts = performance.now();
+    const next = session.graph_cost(slice);
+    const ms = performance.now() - ts;
+    slice = Math.max(200, Math.min(200_000, Math.round(slice * SLICE_MS / Math.max(ms, 1) * (next - done) / slice)));
+    done = next;
+    progress(name, done, nPairs);
+    await checkpoint();
+  }
+  post({ type: "stage", name, state: "end", ms: performance.now() - t0 });
+  timed("assemble the graph", () => session.graph_finish());
+  await checkpoint();
+  const best = timed("search from both ends: best route", () => session.search_begin()) as RouteOut | null;
   const rows = session.node_rows(), cols = session.node_cols(), kinds = session.node_kinds();
   const field = session.field(), pairs = session.edge_pairs(), cpm = session.edge_cost_per_m();
   post({ type: "graph", grid, rows, cols, kinds, field, pairs, costPerM: cpm },
        [rows.buffer, cols.buffer, kinds.buffer, field.buffer, pairs.buffer, cpm.buffer]);
-  post({ type: "corridors", grid, routes });
+  if (!best) throw new Error("no route: the finish cannot be reached from the start on this graph");
+  const routes: RouteOut[] = [best];
+  const nAlt = get(p, "tin_alternatives");
+  post({ type: "corridors", grid, routes, final: nAlt === 0 });
+  // Alternatives, each as it is found.
+  for (;;) {
+    progress("alternatives", routes.length - 1, nAlt);
+    await checkpoint();
+    const r = timed(`look for alternative ${routes.length}`, () => session.search_next()) as RouteOut | null;
+    if (!r) break;
+    routes.push(r);
+    post({ type: "corridors", grid, routes, final: false });
+  }
+  post({ type: "corridors", grid, routes, final: true });
 }
 
 // One message at a time: a "load" must not start while an "open" is still reading its file.
+// "stop" is the exception: it is read at once, and the running task ends at its next checkpoint.
 let queue: Promise<void> = Promise.resolve();
 self.onmessage = (e: MessageEvent<ToWorker>) => {
+  const m = e.data;
+  if (m.type === "stop") {
+    stopRequested = true;
+    return;
+  }
   queue = queue.then(async () => {
+    stopRequested = false;
+    const task = m.type === "channels" ? null : m.type;
+    if (task) post({ type: "busy", task });
     try {
-      const m = e.data;
       if (m.type === "open") await open(m);
       else if (m.type === "load") await load(m);
-      else if (m.type === "run") run(m.params);
+      else if (m.type === "run") await run(m.params);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);
         post({ type: "raster", layer: "channels", grid: area.grid, rgba: ch }, [ch.buffer]);
       }
     } catch (err) {
-      post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+      if (err instanceof Stopped) post({ type: "stopped", task: task ?? "" });
+      else post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      if (task) post({ type: "busy", task: null });
     }
   });
 };

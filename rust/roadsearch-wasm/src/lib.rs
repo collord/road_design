@@ -3,8 +3,11 @@
 //! Free functions: UTM conversions, resampling a GeoTIFF window onto a UTM grid, hillshade.
 //! `Session` holds one area of interest (a UTM grid of the DEM) and runs the pipeline a step at a
 //! time, so the page can show each layer as it is ready: `prepare` (smoothing, gradients, slope
-//! mask, flow accumulation), then `triangulate`, then `corridors` (graph, two-way search,
-//! distinct corridors). Large results are typed arrays; small ones are JS objects.
+//! mask, flow accumulation), then `triangulate`, then the coarse graph and its corridors, either
+//! in one call (`corridors`) or in steps the worker can report on and stop between:
+//! `graph_begin`, `graph_cost` over slices of the edges, `graph_finish`, `search_begin` (the best
+//! route and the corridor field), then `search_next` once per alternative. Large results are
+//! typed arrays; small ones are JS objects.
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -83,6 +86,37 @@ pub struct Session {
     routes: Vec<RouteOut>,
     tri_points: Vec<u32>,
     tri_triangles: Vec<u32>,
+    /// The tolerance tri_points were made with (NaN before triangulate), for the graph to reuse.
+    tri_tolerance: f64,
+    // The coarse graph in steps.
+    edge_params: Option<tin_graph::EdgeParams>,
+    tin_params: Option<tin_graph::TinParams>,
+    c_turn: f64,
+    section: Vec<f64>,
+    section_shape: (usize, usize, f64, f64),
+    nodes: Vec<tin_graph::Node>,
+    pairs: Vec<(u32, u32)>,
+    costed: Vec<Option<tin_graph::EdgeCost>>,
+    graph: Option<tin_graph::Graph>,
+    search: Option<tin_graph::CorridorSearch>,
+}
+
+fn route_out(r: &tin_graph::Route) -> RouteOut {
+    RouteOut {
+        rows: r.coords.iter().map(|x| x.0 as u32).collect(),
+        cols: r.coords.iter().map(|x| x.1 as u32).collect(),
+        cost: r.cost,
+        construction: r.construction,
+        operating: r.operating,
+        length: r.length,
+        hairpins: r.hairpins,
+        turning: r.turning,
+        how: r.how.to_string(),
+    }
+}
+
+fn to_js<T: Serialize>(v: &T) -> Result<JsValue, JsValue> {
+    serde_wasm_bindgen::to_value(v).map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
 #[wasm_bindgen]
@@ -109,6 +143,32 @@ impl Session {
             routes: Vec::new(),
             tri_points: Vec::new(),
             tri_triangles: Vec::new(),
+            tri_tolerance: f64::NAN,
+            edge_params: None,
+            tin_params: None,
+            c_turn: 0.0,
+            section: Vec::new(),
+            section_shape: (0, 0, 1.0, 1.0),
+            nodes: Vec::new(),
+            pairs: Vec::new(),
+            costed: Vec::new(),
+            graph: None,
+            search: None,
+        }
+    }
+
+    fn rasters(&self) -> tin_graph::Rasters<'_> {
+        let (nr, nc) = (self.nr, self.nc);
+        let (ns, ng, ds, dg) = self.section_shape;
+        tin_graph::Rasters {
+            z: Grid::new(&self.z, nr, nc),
+            zs: Grid::new(&self.zs, nr, nc),
+            gx: Grid::new(&self.gx, nr, nc),
+            gy: Grid::new(&self.gy, nr, nc),
+            open: Grid::new(&self.open, nr, nc),
+            area: Grid::new(&self.area, nr, nc),
+            section: SectionTable { data: &self.section, ns, ng, ds, dg },
+            res: self.res,
         }
     }
 
@@ -116,6 +176,7 @@ impl Session {
     /// g_max: sidehill at least s_mask, dilated by `radius` m) and flow accumulation.
     pub fn prepare(&mut self, sigma_cells: f64, g_max: f64, s_mask: f64, radius: f64) {
         let (nr, nc, res) = (self.nr, self.nc, self.res);
+        self.tri_tolerance = f64::NAN; // the smoothed DEM changes: triangulate again
         self.zs = terrain::smooth(&self.z, nr, nc, sigma_cells);
         let (gx, gy) = terrain::gradient(&self.zs, nr, nc, res, -res);
         let slope: Vec<f64> = gx.iter().zip(&gy).map(|(a, b)| a.hypot(*b)).collect();
@@ -158,6 +219,7 @@ impl Session {
     /// Triangulate the smoothed DEM to `tolerance` m (vertical); returns the number of triangles.
     /// Then tri_points() and tri_triangles().
     pub fn triangulate(&mut self, tolerance: f64) -> Result<usize, JsValue> {
+        self.tri_tolerance = tolerance;
         let h = terrain::fill_nearest(&self.zs, self.nr, self.nc);
         let (pts, tris) = delatin::triangulate(&h, (self.nc, self.nr), delatin::Error(tolerance))
             .map_err(|e| JsValue::from_str(&format!("triangulation failed: {e:?}")))?;
@@ -176,70 +238,129 @@ impl Session {
         self.tri_triangles.clone()
     }
 
-    /// The coarse graph and its corridors between two cells. `edge`: [g_max, C_travel, C_vertical,
-    /// A_min (ha), hairpin allowance, C_turn]; `tin`: [tolerance m, k, edge_max cells, block cells,
-    /// channel node ha, alternatives, penalty, stretch, max_shared]; `section`: cost per meter over
-    /// (sidehill, grade), ns x ng with steps ds, dg. Returns the routes; the graph and corridor
-    /// field are then available from the getters.
+    /// The coarse graph and its corridors between two cells, in one call. `edge`: [g_max,
+    /// C_travel, C_vertical, A_min (ha), hairpin allowance, C_turn]; `tin`: [tolerance m, k,
+    /// edge_max cells, block cells, channel node ha, alternatives, penalty, stretch, max_shared];
+    /// `section`: cost per meter over (sidehill, grade), ns x ng with steps ds, dg. Returns the
+    /// routes; the graph and corridor field are then available from the getters.
     #[allow(clippy::too_many_arguments)]
     pub fn corridors(
         &mut self, start_r: usize, start_c: usize, goal_r: usize, goal_c: usize, edge: &[f64], breaks: &[f64],
         costs: &[f64], tin: &[f64], section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
     ) -> Result<JsValue, JsValue> {
+        let n = self.graph_begin(start_r, start_c, goal_r, goal_c, edge, breaks, costs, tin, section, ns, ng, ds, dg)?;
+        self.graph_cost(n)?;
+        self.graph_finish()?;
+        self.search_begin()?;
+        while !self.search_next()?.is_null() {}
+        to_js(&self.routes)
+    }
+
+    /// Step 1: the graph's nodes and candidate edges (arguments as for `corridors`). Returns the
+    /// number of candidate edges, to cost with `graph_cost`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn graph_begin(
+        &mut self, start_r: usize, start_c: usize, goal_r: usize, goal_c: usize, edge: &[f64], breaks: &[f64],
+        costs: &[f64], tin: &[f64], section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
+    ) -> Result<usize, JsValue> {
         if self.zs.is_empty() {
             return Err(JsValue::from_str("prepare() first"));
         }
-        let (nr, nc) = (self.nr, self.nc);
-        if start_r >= nr || start_c >= nc || goal_r >= nr || goal_c >= nc {
+        if start_r >= self.nr || start_c >= self.nc || goal_r >= self.nr || goal_c >= self.nc {
             return Err(JsValue::from_str("start or goal outside the area"));
         }
         if edge.len() < 6 || tin.len() < 9 || section.len() != ns * ng {
             return Err(JsValue::from_str("bad parameter arrays"));
         }
-        let t = tin_graph::Rasters {
-            z: Grid::new(&self.z, nr, nc),
-            zs: Grid::new(&self.zs, nr, nc),
-            gx: Grid::new(&self.gx, nr, nc),
-            gy: Grid::new(&self.gy, nr, nc),
-            open: Grid::new(&self.open, nr, nc),
-            area: Grid::new(&self.area, nr, nc),
-            section: SectionTable { data: section, ns, ng, ds, dg },
-            res: self.res,
-        };
-        let e = tin_graph::EdgeParams {
+        self.edge_params = Some(tin_graph::EdgeParams {
             g_max: edge[0], c_travel: edge[1], c_vertical: edge[2], a_min: edge[3], hairpin_cost: edge[4],
             culvert_breaks: breaks.to_vec(), culvert_costs: costs.to_vec(),
-        };
-        let c_turn = edge[5];
+        });
+        self.c_turn = edge[5];
         let p = tin_graph::TinParams {
             tolerance: tin[0], k: tin[1] as usize, edge_max: tin[2], block: tin[3] as usize, channel_node_area: tin[4],
             n_alt: tin[5] as usize, penalty: tin[6], stretch: tin[7], max_shared: tin[8],
         };
-        let nodes = tin_graph::build_nodes(&t, &p, (start_r, start_c), (goal_r, goal_c));
-        let g = tin_graph::build_graph(&t, &e, &p, nodes);
-        let c = tin_graph::corridors(&g, &p, c_turn, 0, 1);
+        self.section = section.to_vec();
+        self.section_shape = (ns, ng, ds, dg);
+        self.graph = None;
+        self.search = None;
+        self.routes.clear();
+        // The triangulation's vertices, from triangulate() when it used the same tolerance.
+        let tin: Vec<(usize, usize)> = if self.tri_tolerance == p.tolerance {
+            self.tri_points.chunks_exact(2).map(|v| (v[0] as usize, v[1] as usize)).collect()
+        } else {
+            tin_graph::tin_vertices(&self.rasters(), p.tolerance)
+        };
+        self.nodes = tin_graph::build_nodes_from(&self.rasters(), &p, (start_r, start_c), (goal_r, goal_c), &tin);
+        self.pairs = tin_graph::candidate_pairs(&self.nodes, &p);
+        self.costed = Vec::with_capacity(self.pairs.len());
+        self.tin_params = Some(p);
+        Ok(self.pairs.len())
+    }
+
+    /// Step 2: cost up to `n` more candidate edges on the DEM. Returns how many are costed so far.
+    pub fn graph_cost(&mut self, n: usize) -> Result<usize, JsValue> {
+        let e = self.edge_params.as_ref().ok_or_else(|| JsValue::from_str("graph_begin() first"))?;
+        let (a, b) = (self.costed.len(), (self.costed.len() + n).min(self.pairs.len()));
+        let more = tin_graph::cost_pairs(&self.rasters(), e, &self.nodes, &self.pairs[a..b]);
+        self.costed.extend(more);
+        Ok(self.costed.len())
+    }
+
+    /// Step 3: the graph from the costed edges. Returns its number of (feasible) edges; the
+    /// node and edge getters are then ready.
+    pub fn graph_finish(&mut self) -> Result<usize, JsValue> {
+        if self.tin_params.is_none() || self.costed.len() != self.pairs.len() {
+            return Err(JsValue::from_str("cost every edge (graph_cost) first"));
+        }
+        let g = tin_graph::assemble(
+            std::mem::take(&mut self.nodes),
+            std::mem::take(&mut self.pairs),
+            std::mem::take(&mut self.costed),
+        );
         self.node_rows = g.nodes.iter().map(|n| n.r as u32).collect();
         self.node_cols = g.nodes.iter().map(|n| n.c as u32).collect();
         self.node_kinds = g.nodes.iter().map(|n| n.kind).collect();
-        self.field = c.field.iter().map(|&v| v as f32).collect();
         self.edge_pairs = g.edges.iter().flat_map(|&(u, v)| [u, v]).collect();
         self.edge_cost_per_m = g.costs.iter().map(|k| (k.total / k.length.max(1e-9)) as f32).collect();
-        self.routes = c
-            .routes
-            .iter()
-            .map(|r| RouteOut {
-                rows: r.coords.iter().map(|x| x.0 as u32).collect(),
-                cols: r.coords.iter().map(|x| x.1 as u32).collect(),
-                cost: r.cost,
-                construction: r.construction,
-                operating: r.operating,
-                length: r.length,
-                hairpins: r.hairpins,
-                turning: r.turning,
-                how: r.how.to_string(),
-            })
-            .collect();
-        serde_wasm_bindgen::to_value(&self.routes).map_err(|e| JsValue::from_str(&e.to_string()))
+        let n = g.edges.len();
+        self.graph = Some(g);
+        Ok(n)
+    }
+
+    /// Step 4: the two searches (from the start and from the goal). Returns the best route, or
+    /// null if the goal cannot be reached; the corridor field is then ready.
+    pub fn search_begin(&mut self) -> Result<JsValue, JsValue> {
+        let (g, p) = match (&self.graph, &self.tin_params) {
+            (Some(g), Some(p)) => (g, p),
+            _ => return Err(JsValue::from_str("graph_finish() first")),
+        };
+        let s = tin_graph::CorridorSearch::new(g, p, self.c_turn, 0, 1);
+        self.field = s.field.iter().map(|&v| v as f32).collect();
+        self.routes = s.routes.iter().map(route_out).collect();
+        self.search = Some(s);
+        match self.routes.first() {
+            Some(r) => to_js(r),
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Step 5: the next distinct alternative, or null when there are no more.
+    pub fn search_next(&mut self) -> Result<JsValue, JsValue> {
+        let (g, s) = match (&self.graph, &mut self.search) {
+            (Some(g), Some(s)) => (g, s),
+            _ => return Err(JsValue::from_str("search_begin() first")),
+        };
+        match s.next(g) {
+            Some(r) => {
+                let out = route_out(r);
+                let js = to_js(&out);
+                self.routes.push(out);
+                js
+            }
+            None => Ok(JsValue::NULL),
+        }
     }
 
     pub fn node_rows(&self) -> Vec<u32> {
