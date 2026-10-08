@@ -237,7 +237,12 @@ def cmd_profile(args) -> int:
 
     p = params_from_args(args)
     out = Path(args.out) if args.out else Path(args.line).with_suffix("").parent / (Path(args.line).stem + "_profile")
-    s = profile_report(args.dem, args.line, p, args.resolution, args.label, out, args.run, args.gpkg, args.prefix)
+    grades = [float(g) for g in args.grades.split(",")] if args.grades else None
+    labels = args.run_labels.split(";") if args.run_labels else None
+    if labels and len(labels) != len(args.run):
+        raise SystemExit("--run-labels needs one label per --run")
+    s = profile_report(args.dem, args.line, p, args.resolution, args.label, out, args.run, args.gpkg, args.prefix,
+                       grades=grades, run_labels=labels)
     print((out / "summary.md").read_text(encoding="utf-8"))
     print(f"wrote {out / 'profile.png'}, summary.md and summary.json" + (f"; layers in {args.gpkg}" if args.gpkg else ""))
     return 0
@@ -382,7 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dem", required=True)
     sp.add_argument("--resolution", type=float, required=True, help="working resolution (m), e.g. the run's")
     sp.add_argument("--label", default="reference road")
-    sp.add_argument("--run", default=None, help="a run folder whose routes to cost beside it")
+    sp.add_argument("--run", action="append", default=[], help="a run folder whose routes to cost beside it; repeatable")
+    sp.add_argument("--run-labels", default=None, help="';'-separated label per --run")
+    sp.add_argument("--grades", default=None, help="grades to report length over, e.g. 0.06,0.09,0.105 "
+                                                    "(default: g_hp and g_max)")
     sp.add_argument("--out", default=None, help="folder for profile.png and the summary (default: next to the line)")
     sp.add_argument("--gpkg", default=None, help="also write the line and its profile points to this GeoPackage")
     sp.add_argument("--prefix", default=None, help="layer name prefix in --gpkg")

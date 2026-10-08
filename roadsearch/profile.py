@@ -97,10 +97,11 @@ def _profile(T: RunTerrain, xy: np.ndarray, step: float = PROFILE_STEP_M, window
     return s, pts, z, g
 
 
-def profile_report(dem, line_path, p: Params, res: float, label: str, out_dir, run_dir=None,
-                   gpkg=None, prefix=None, margin: float = 500.0) -> dict:
-    """Cost and profile the line (and a run's routes); write profile.png, summary.json and
-    summary.md to out_dir, and optionally the line and its profile points to a GeoPackage."""
+def profile_report(dem, line_path, p: Params, res: float, label: str, out_dir, run_dirs=(),
+                   gpkg=None, prefix=None, margin: float = 500.0, grades=None, run_labels=None) -> dict:
+    """Cost and profile the line (and the routes of some runs); write profile.png, summary.json
+    and summary.md to out_dir, and optionally the line and its profile points to a GeoPackage.
+    grades: the grade thresholds to report length over (default g_hp and g_max)."""
     import rasterio
 
     out_dir = Path(out_dir)
@@ -110,13 +111,16 @@ def profile_report(dem, line_path, p: Params, res: float, label: str, out_dir, r
     xy, joints = load_centerline(line_path, crs)
     lines = {label: xy}
     search_costs = {}
-    if run_dir is not None:
+    if isinstance(run_dirs, (str, Path)):
+        run_dirs = [run_dirs]
+    for i, run_dir in enumerate(run_dirs or []):
         run_dir = Path(run_dir)
         rec = json.loads((run_dir / "params.json").read_text(encoding="utf-8"))
         summ = gpd.read_parquet(run_dir.parent.parent / "route_summary.parquet")
         summ = summ[summ.run_id == rec["run_id"]].sort_values("rank").to_crs(crs)
+        tag = run_labels[i] if run_labels else f"run {rec['run_id']}"
         for _, r in summ.iterrows():
-            name = f"route {int(r['rank'])} (run {rec['run_id']})"
+            name = f"{tag}, route {int(r['rank'])}"
             lines[name] = np.asarray(r.geometry.coords)[:, :2]
             search_costs[name] = {"cost_true": float(r["cost_true"]), "length": float(r["length"]),
                                   "hairpins": int(r["hairpin_count"])}
@@ -130,11 +134,12 @@ def profile_report(dem, line_path, p: Params, res: float, label: str, out_dir, r
               allxy[:, 1].max() + margin)
     T, grid = line_terrain(dem, p, res, bounds)
     results = {}
+    grades = sorted(set(grades or (p.g_hp, p.g_max)))
     for name, l in lines.items():
         cost = evaluate_polyline(T, l)
-        prof = profile_metrics(T, l, limits=sorted({p.g_hp, p.g_max}), radii=sorted({p.R_min, 2 * p.R_min}))
+        prof = profile_metrics(T, l, limits=grades, radii=sorted({p.R_min, 2 * p.R_min}))
         results[name] = {"cost": cost, "profile": prof, **({"search": search_costs[name]} if name in search_costs else {})}
-    summary = {"label": label, "file": Path(line_path).name, "dem": str(dem), "resolution_m": res,
+    summary = {"label": label, "file": Path(line_path).name, "dem": str(dem), "resolution_m": res, "grades": grades,
                "joints": joints, "params": {k: getattr(p, k) for k in ("w", "g_max", "g_hp", "R_min", "C_travel",
                                                                       "C_vertical", "C_turn")},
                "lines": results}
@@ -161,7 +166,7 @@ def _summary_md(s: dict) -> str:
         ("mean grade, 100 m", lambda r: f"{100 * r['profile']['grades']['100']['mean']:.1f}%"),
         *[(f"length over {100 * g:g}%, 100 m (m)",
            (lambda g: lambda r: f"{r['profile']['grades']['100'].get(f'over_{g:g}_m', 0):,.0f}")(g))
-          for g in sorted({s['params']['g_hp'], s['params']['g_max']})],
+          for g in s["grades"]],
         ("length steeper than g_max, sampled (m)", lambda r: f"{r['cost']['over_grade_m']:,.0f}"),
         ("on slope-masked ground (m)", lambda r: f"{r['cost']['excluded_m']:,.0f}"),
         ("section infeasible (m)", lambda r: f"{r['cost']['infeasible_m']:,.0f}"),
@@ -203,7 +208,7 @@ def _figure(path, T, grid, lines, label, p: Params):
     import matplotlib.pyplot as plt
     from matplotlib.colors import LightSource
 
-    colors = ["#0369a1", "#b91c1c", "#ea580c", "#7c3aed"]
+    colors = ["#0369a1", "#b91c1c", "#ea580c", "#7c3aed", "#15803d", "#a16207", "#be185d"]
     fig = plt.figure(figsize=(15, 9))
     gs = fig.add_gridspec(2, 2, width_ratios=[2.2, 1], height_ratios=[1.6, 1])
     ax_z, ax_g, ax_m = fig.add_subplot(gs[0, 0]), fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[:, 1])
