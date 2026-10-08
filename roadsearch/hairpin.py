@@ -56,6 +56,7 @@ import numpy as np
 from numba import prange
 
 from .culvert import _run_step, culvert_cost
+from .engine import use_rust
 from .lattice import heading_vectors
 from .params import Params
 from .section import _clipped_area
@@ -566,9 +567,9 @@ def _drain(p: Params, drainage, shape):
             np.array(p.culvert_area_breaks, dtype=np.float64), np.array(p.culvert_costs, dtype=np.float64))
 
 
-def hairpin_table(terrain_arrays, p: Params, res: float, drainage=None, cells=None) -> np.ndarray:
+def hairpin_table(terrain_arrays, p: Params, res: float, drainage=None, cells=None, engine=None) -> np.ndarray:
     """Left-hairpin cost per (cell, heading, slot) for the given flat cells (default: the open
-    ones, row-major); inf where infeasible.
+    ones, row-major); inf where infeasible. Built by the Rust core when it is the engine.
 
     terrain_arrays: (open_, zs, gx, gy, soil, z_raw); drainage: (channel, area_ha).
     """
@@ -576,9 +577,26 @@ def hairpin_table(terrain_arrays, p: Params, res: float, drainage=None, cells=No
     vecs = heading_vectors(p.N_theta).astype(np.float64)
     nr, nc = zs.shape
     cells = np.flatnonzero(open_) if cells is None else np.asarray(cells, dtype=np.int64)
+    if use_rust(engine):
+        import roadsearch_core
+
+        terrain, drain = _rust_macro_args(terrain_arrays, p, drainage)
+        return roadsearch_core.hairpin_table(cells.astype(np.int64), vecs[:, 0].copy(), vecs[:, 1].copy(),
+                                             hairpin_slots(p, res), float(res), terrain, drain,
+                                             tuple(float(v) for v in hairpin_params(p, res)))
     return _hairpin_table(cells.astype(np.int64), nr, nc, p.N_theta, vecs[:, 0].copy(), vecs[:, 1].copy(), hairpin_slots(p, res), res,
                           open_, zs, gx, gy, np.nan_to_num(soil), zr, hairpin_params(p, res),
                           _drain(p, drainage, zs.shape))
+
+
+def _rust_macro_args(terrain_arrays, p: Params, drainage):
+    """Terrain and drainage tuples with the dtypes roadsearch_core expects (no copies if already so)."""
+    open_, zs, gx, gy, soil, zr = terrain_arrays
+    f8 = np.float64
+    terrain = (np.ascontiguousarray(open_, dtype=np.uint8), np.ascontiguousarray(zs, dtype=f8),
+               np.ascontiguousarray(gx, dtype=f8), np.ascontiguousarray(gy, dtype=f8),
+               np.ascontiguousarray(np.nan_to_num(soil), dtype=f8), np.ascontiguousarray(zr, dtype=f8))
+    return terrain, _drain(p, drainage, zs.shape)
 
 
 def hairpin_detail(r, c, h, slot, terrain_arrays, p: Params, res: float, drainage=None) -> dict:

@@ -88,6 +88,17 @@ impl SearchResult {
     }
 }
 
+/// How far a search has got, passed to a progress callback.
+#[derive(Clone, Copy, Debug)]
+pub struct Progress {
+    /// States settled so far.
+    pub n_expanded: u64,
+    /// The key (cost to come, plus the estimate for A*) of the state just settled: the frontier.
+    pub key: f64,
+    /// Entries in the priority queue.
+    pub queue_len: usize,
+}
+
 /// Dijkstra or A* over the states of `index`.
 ///
 /// States are settled in order of (key, state id) with key = cost to come
@@ -98,6 +109,25 @@ pub fn search<C, H>(lat: &Lattice, index: &CellIndex, cost: &C, heur: &H, spec: 
 where
     C: EdgeCost + ?Sized,
     H: Heuristic + ?Sized,
+{
+    search_with_progress(lat, index, cost, heur, spec, u64::MAX, &mut |_| true).0
+}
+
+/// As [`search`], calling `progress` every `every` settled states. If it returns false the
+/// search stops there; the second value tells whether it ran to completion.
+pub fn search_with_progress<C, H, P>(
+    lat: &Lattice,
+    index: &CellIndex,
+    cost: &C,
+    heur: &H,
+    spec: &SearchSpec,
+    every: u64,
+    progress: &mut P,
+) -> (SearchResult, bool)
+where
+    C: EdgeCost + ?Sized,
+    H: Heuristic + ?Sized,
+    P: FnMut(&Progress) -> bool + ?Sized,
 {
     let nh = lat.n_theta();
     let n = index.len() * nh;
@@ -129,6 +159,9 @@ where
         }
         closed[ui] = 1;
         n_exp += 1;
+        if n_exp % every == 0 && !progress(&Progress { n_expanded: n_exp, key, queue_len: heap.len() }) {
+            return (SearchResult { g, parent, closed, n_expanded: n_exp, goal_state }, false);
+        }
         let cell = (u / nh as u64) as u32;
         let h = (u % nh as u64) as usize;
         let (r, c) = index.cell(cell);
@@ -162,7 +195,7 @@ where
             }
         }
     }
-    SearchResult { g, parent, closed, n_expanded: n_exp, goal_state }
+    (SearchResult { g, parent, closed, n_expanded: n_exp, goal_state }, true)
 }
 
 #[cfg(test)]
@@ -238,6 +271,22 @@ mod tests {
         let edges = a.edges_to(&lat, &sparse, gs);
         assert!(edges.iter().all(|&(r, c, _)| open[r as usize * nc + c as usize]));
         assert!(edges.iter().any(|&(r, _, _)| r < 3 || r >= 27));
+    }
+
+    #[test]
+    fn progress_reports_and_can_stop() {
+        let lat = grid_lattice();
+        let cost = Len(&lat, vec![true; 400], 20);
+        let ix = CellIndex::full(20, 20);
+        let src = [ix.state(10, 10, 0, 8).unwrap()];
+        let mut seen = Vec::new();
+        let (res, done) = search_with_progress(&lat, &ix, &cost, &ZeroHeuristic, &SearchSpec::dijkstra(&src), 100,
+                                               &mut |p: &Progress| { seen.push(p.n_expanded); p.n_expanded < 500 });
+        assert!(!done);
+        assert_eq!(seen, vec![100, 200, 300, 400, 500]);
+        assert_eq!(res.n_expanded, 500);
+        let full = search(&lat, &ix, &cost, &ZeroHeuristic, &SearchSpec::dijkstra(&src));
+        assert!(full.n_expanded > 500);              // the full search runs on
     }
 
     #[test]

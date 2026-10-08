@@ -655,18 +655,10 @@ def _cell_lookup(cells: np.ndarray, n: int) -> np.ndarray:
     return lookup
 
 
-def _default_engine() -> str:
-    try:
-        import roadsearch_core  # noqa: F401
-        return "rust"
-    except ImportError:
-        return "numba"
-
-
 # Which kernel searches: "rust" (the roadsearch_core package built from rust/, used when it is
 # installed) or "numba" (this module). Both give the same costs and parents, bit for bit; the
-# Rust one is about ten times faster.
-ENGINE = os.environ.get("ROADSEARCH_ENGINE") or _default_engine()
+# Rust one is about ten times faster. See engine.py.
+from .engine import ENGINE  # noqa: E402
 
 
 def rust_args(prob: SearchProblem):
@@ -684,11 +676,36 @@ def rust_args(prob: SearchProblem):
     return lat, tuple(t)
 
 
+PROGRESS_EVERY = 1 << 20      # states settled between progress reports from the Rust search
+
+
+def _progress_callback():
+    """Reports search progress to the event stream. Being Python, it also lets a pending
+    interrupt (the memory guard's) stop a search running in compiled code."""
+    import time
+
+    from . import events, timing
+
+    stage = timing.current_stage()
+    last = [time.perf_counter(), 0]
+
+    def report(n, key, queue):
+        now = time.perf_counter()
+        rate = (n - last[1]) / max(now - last[0], 1e-9)
+        last[0], last[1] = now, n
+        events.emit("progress", stage=stage, settled=int(n), key=float(key), queue=int(queue), rate=round(rate))
+        return True
+
+    return report
+
+
 def _search_rust(prob: SearchProblem, sources, gr, gc, astar, max_cost):
     import roadsearch_core
 
     lat, terr = rust_args(prob)
-    return roadsearch_core.search(prob.n_theta, lat, terr, sources, gr, gc, astar, float(max_cost))
+    out = roadsearch_core.search(prob.n_theta, lat, terr, sources, gr, gc, astar, float(max_cost),
+                                 _progress_callback(), PROGRESS_EVERY)
+    return out[:6]
 
 
 def _search_numba(prob: SearchProblem, sources, gr, gc, astar, max_cost):

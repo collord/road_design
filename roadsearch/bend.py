@@ -23,7 +23,8 @@ import numba
 import numpy as np
 from numba import prange
 
-from .hairpin import _drain, _seg_point, centerline_culverts, centerline_footprint, edge_wedge
+from .engine import use_rust
+from .hairpin import _drain, _rust_macro_args, _seg_point, centerline_culverts, centerline_footprint, edge_wedge
 from .lattice import BendGeometry, build_bends, heading_vectors
 from .params import Params
 
@@ -168,13 +169,24 @@ def _bend_table(cells, nr, nc, nh, vx, vy, BX, BY, BL1, BL2, BDT, R, res, open_,
     return table
 
 
-def bend_table(terrain_arrays, p: Params, res: float, geo: BendGeometry, drainage=None, cells=None) -> np.ndarray:
+def bend_table(terrain_arrays, p: Params, res: float, geo: BendGeometry, drainage=None, cells=None,
+               engine=None) -> np.ndarray:
     """Left-bend cost per (cell, heading, slot) for the given flat cells (default: the open
-    ones, row-major); inf where infeasible."""
+    ones, row-major); inf where infeasible. Built by the Rust core when it is the engine."""
     open_, zs, gx, gy, soil, zr = terrain_arrays
     vecs = heading_vectors(p.N_theta).astype(np.float64)
     nr, nc = zs.shape
     cells = np.flatnonzero(open_) if cells is None else np.asarray(cells, dtype=np.int64)
+    if use_rust(engine):
+        import roadsearch_core
+
+        terrain, drain = _rust_macro_args(terrain_arrays, p, drainage)
+        shapes = tuple(np.ascontiguousarray(a, dtype=dt) for a, dt in
+                       ((geo.X, np.int64), (geo.Y, np.int64), (geo.L1, np.float64), (geo.L2, np.float64),
+                        (geo.dth, np.float64)))
+        return roadsearch_core.bend_table(cells.astype(np.int64), vecs[:, 0].copy(), vecs[:, 1].copy(), shapes,
+                                          float(geo.R), float(res), terrain, drain,
+                                          tuple(float(v) for v in bend_params(p, res)))
     return _bend_table(cells.astype(np.int64), nr, nc, p.N_theta, vecs[:, 0].copy(), vecs[:, 1].copy(), geo.X, geo.Y, geo.L1, geo.L2,
                        geo.dth, geo.R, res, open_, zs, gx, gy, np.nan_to_num(soil), zr, bend_params(p, res),
                        _drain(p, drainage, zs.shape))

@@ -6,6 +6,7 @@
     python -m roadsearch sweep --dem DEM --start X,Y --goal X,Y [--k 0,0.1,1,10,100] [run options]
     python -m roadsearch animate RUN_ID [RUN_ID ...] [--factors 0,1,...]
     python -m roadsearch burn RUN_ID [--rank 1] [--res 2]
+    python -m roadsearch status [RUN_DIR | OUT_ROOT] [--watch 10]
     python -m roadsearch profile LINE --dem DEM --resolution M [--run RUN_DIR] [--gpkg G --prefix P]
     python -m roadsearch tree RUN_ID [RUN_ID ...]
     python -m roadsearch merge SRC [SRC ...] --out DEST
@@ -232,6 +233,19 @@ def cmd_export(args) -> int:
     return 0
 
 
+def cmd_status(args) -> int:
+    import time as _time
+
+    from .status import summarize
+
+    while True:
+        print(summarize(args.path))
+        if not args.watch:
+            return 0
+        _time.sleep(args.watch)
+        print()
+
+
 def cmd_profile(args) -> int:
     from .profile import profile_report
 
@@ -380,6 +394,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--run-ids", nargs="*", default=None, help="these runs, in this order (default: all in the root)")
     sp.add_argument("--labels", default=None, help="';'-separated label per run (default: from the parameters that differ)")
     sp.set_defaults(func=cmd_export)
+
+    sp = sub.add_parser("status", help="where a run is: stage, search progress, memory, last log lines "
+                                       "(from its events.jsonl)")
+    sp.add_argument("path", nargs="?", default="out",
+                    help="a run folder, or an output root (its most recently active run)")
+    sp.add_argument("--watch", type=float, default=0.0, help="repeat every this many seconds")
+    sp.set_defaults(func=cmd_status)
 
     sp = sub.add_parser("profile", help="cost and profile an existing or proposed road (a centerline file), "
                                         "optionally beside a run's routes")

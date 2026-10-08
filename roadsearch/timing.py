@@ -30,12 +30,17 @@ class Profile:
     def __init__(self):
         self.rows: list[dict] = []
         self.depth = 0
+        self.open: list[str] = []         # names of the stages under way, outermost first
 
     @contextlib.contextmanager
     def stage(self, name: str, **info):
+        from . import events
+
         row = {"stage": name, "depth": self.depth, **info}
         self.rows.append(row)
         self.depth += 1
+        self.open.append(name)
+        events.emit("stage_start", stage=name, depth=row["depth"])
         t0 = time.perf_counter()
         try:
             yield row
@@ -43,6 +48,8 @@ class Profile:
             row["seconds"] = round(time.perf_counter() - t0, 3)
             row.update(_memory())
             self.depth -= 1
+            self.open.pop()
+            events.emit("stage_end", **row)
 
     def add(self, name: str, seconds: float, **info):
         """A row for time accumulated elsewhere (e.g. many small calls in a loop)."""
@@ -71,6 +78,16 @@ def stop() -> Profile | None:
     global _current
     p, _current = _current, None
     return p
+
+
+def open_stages() -> list[str]:
+    """The stages under way, outermost first."""
+    return list(_current.open) if _current is not None else []
+
+
+def current_stage() -> str | None:
+    """The innermost stage under way, if a profile is running."""
+    return _current.open[-1] if _current is not None and _current.open else None
 
 
 def stage(name: str, **info):

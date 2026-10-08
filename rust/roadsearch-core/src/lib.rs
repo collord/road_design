@@ -5,11 +5,15 @@
 //! so either engine can serve the same problem. Large arrays are borrowed, not
 //! copied, and the GIL is released while searching.
 
-use lattice_search::{search as lsearch, Action, CellIndex, Lattice, SearchSpec, ZeroHeuristic};
-use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyUntypedArrayMethods};
+use lattice_search::{search_with_progress, Action, CellIndex, Lattice, Progress, SearchSpec, ZeroHeuristic};
+use numpy::{
+    IntoPyArray, PyArray1, PyArray3, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3,
+    PyUntypedArrayMethods,
+};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use road_cost::macros::{self, BendParams, BendShapes, HairpinParams, Headings, MacroTerrain, N_SLOTS};
 use road_cost::{Actions, ClimbHeuristic, CostParams, Grid, MacroTable, RoadCost, SectionTable, Terrain};
 
 fn item<'py, T: FromPyObjectOwned<'py>>(t: &Bound<'py, PyTuple>, i: usize, name: &str) -> PyResult<T> {
@@ -170,16 +174,21 @@ type SearchOut<'py> = (
     Bound<'py, PyArray1<u8>>,
     u64,
     i64,
+    bool,
 );
 
 /// Dijkstra (astar=False) or A* (astar=True, stops at the goal cell) over the open cells.
 ///
 /// sources: dense state ids, (row * ncols + col) * n_theta + h, starting at cost 0.
-/// Returns (cells, G, parent, closed, n_expanded, goal_state): `cells` are the flat grid
-/// indices of the searched cells, and G, parent and closed hold n_theta values per cell in
+/// Returns (cells, G, parent, closed, n_expanded, goal_state, completed): `cells` are the flat
+/// grid indices of the searched cells, and G, parent and closed hold n_theta values per cell in
 /// that order; goal_state is a dense state id, or -1.
+///
+/// progress: called as progress(n_expanded, key, queue_len) every `every` settled states, with the
+/// GIL held. If it returns False the search stops (completed is False); if it raises, the search
+/// stops and the exception propagates (a pending KeyboardInterrupt lands here).
 #[pyfunction]
-#[pyo3(signature = (n_theta, lat, terr, sources, goal_r, goal_c, astar, max_cost))]
+#[pyo3(signature = (n_theta, lat, terr, sources, goal_r, goal_c, astar, max_cost, progress=None, every=1 << 20))]
 #[allow(clippy::too_many_arguments)]
 fn search<'py>(
     py: Python<'py>,
@@ -191,6 +200,8 @@ fn search<'py>(
     goal_c: i64,
     astar: bool,
     max_cost: f64,
+    progress: Option<Py<PyAny>>,
+    every: u64,
 ) -> PyResult<SearchOut<'py>> {
     let (lattice, actions) = lattice_from(n_theta, lat)?;
     let ta = terrain_from(terr)?;
@@ -218,7 +229,19 @@ fn search<'py>(
     }
     let params = &ta.params;
     let model = RoadCost { actions: &actions, terrain, section, hairpins: hp, bends: bend, params };
+    let mut error: Option<PyErr> = None;
     let res = py.detach(|| {
+        let mut report = |p: &Progress| -> bool {
+            let Some(cb) = progress.as_ref() else { return true };
+            Python::attach(|py| match cb.call1(py, (p.n_expanded, p.key, p.queue_len)) {
+                Ok(v) => v.bind(py).is_truthy().unwrap_or(true),
+                Err(e) => {
+                    error = Some(e);
+                    false
+                }
+            })
+        };
+        let every = if progress.is_some() { every.max(1) } else { u64::MAX };
         let index = CellIndex::from_mask(nr, nc, &mask);
         let src: Vec<u64> = sources
             .iter()
@@ -236,19 +259,24 @@ fn search<'py>(
                 c_len: params.c_base + params.c_travel,
                 c_vertical: params.c_vertical,
             };
-            lsearch(&lattice, &index, &model, &heur, &spec)
+            search_with_progress(&lattice, &index, &model, &heur, &spec, every, &mut report)
         } else {
-            lsearch(&lattice, &index, &model, &ZeroHeuristic, &spec)
+            search_with_progress(&lattice, &index, &model, &ZeroHeuristic, &spec, every, &mut report)
         };
+        let (out, completed) = out;
         let goal_state = out.goal_state.map_or(-1, |s| {
             let cell = index.cells()[(s / nh as u64) as usize] as i64;
             cell * nh + (s % nh as u64) as i64
         });
         let cells: Vec<i64> = index.cells().iter().map(|&k| k as i64).collect();
-        (cells, out.g, out.parent, out.closed, out.n_expanded, goal_state)
+        (cells, out.g, out.parent, out.closed, out.n_expanded, goal_state, completed)
     });
-    let (cells, g, parent, closed, n_exp, goal_state) = res;
-    Ok((cells.into_pyarray(py), g.into_pyarray(py), parent.into_pyarray(py), closed.into_pyarray(py), n_exp, goal_state))
+    if let Some(e) = error {
+        return Err(e);
+    }
+    let (cells, g, parent, closed, n_exp, goal_state, completed) = res;
+    Ok((cells.into_pyarray(py), g.into_pyarray(py), parent.into_pyarray(py), closed.into_pyarray(py), n_exp, goal_state,
+        completed))
 }
 
 /// Cost of many edges (rows[i], cols[i], actions[i]), as search.edge_cost gives them.
@@ -274,10 +302,171 @@ fn edge_costs<'py>(
     Ok(out.into_pyarray(py))
 }
 
+/// Borrowed terrain for macro tables: (open_, zs, gx, gy, soil, z_raw) and drainage
+/// (channel, area_ha, culvert breaks, culvert costs).
+struct MacroArrays<'py> {
+    open: PyReadonlyArray2<'py, u8>,
+    zs: PyReadonlyArray2<'py, f64>,
+    gx: PyReadonlyArray2<'py, f64>,
+    gy: PyReadonlyArray2<'py, f64>,
+    soil: PyReadonlyArray2<'py, f64>,
+    zr: PyReadonlyArray2<'py, f64>,
+    channel: PyReadonlyArray2<'py, u8>,
+    area: PyReadonlyArray2<'py, f64>,
+    breaks: PyReadonlyArray1<'py, f64>,
+    costs: PyReadonlyArray1<'py, f64>,
+}
+
+impl<'py> MacroArrays<'py> {
+    fn from_tuples(terrain: &Bound<'py, PyTuple>, drainage: &Bound<'py, PyTuple>) -> PyResult<Self> {
+        Ok(MacroArrays {
+            open: item(terrain, 0, "open_")?,
+            zs: item(terrain, 1, "zs")?,
+            gx: item(terrain, 2, "gx")?,
+            gy: item(terrain, 3, "gy")?,
+            soil: item(terrain, 4, "soil")?,
+            zr: item(terrain, 5, "z_raw")?,
+            channel: item(drainage, 0, "channel")?,
+            area: item(drainage, 1, "area")?,
+            breaks: item(drainage, 2, "culvert breaks")?,
+            costs: item(drainage, 3, "culvert costs")?,
+        })
+    }
+
+    fn view(&self) -> PyResult<MacroTerrain<'_>> {
+        let (nr, nc) = (self.zr.shape()[0], self.zr.shape()[1]);
+        for (name, s) in [
+            ("open_", self.open.shape()),
+            ("zs", self.zs.shape()),
+            ("gx", self.gx.shape()),
+            ("gy", self.gy.shape()),
+            ("soil", self.soil.shape()),
+            ("channel", self.channel.shape()),
+            ("area", self.area.shape()),
+        ] {
+            if s != [nr, nc] {
+                return Err(PyValueError::new_err(format!("{name} has shape {s:?}, z_raw has ({nr}, {nc})")));
+            }
+        }
+        Ok(MacroTerrain {
+            open: Grid::new(self.open.as_slice()?, nr, nc),
+            zs: Grid::new(self.zs.as_slice()?, nr, nc),
+            gx: Grid::new(self.gx.as_slice()?, nr, nc),
+            gy: Grid::new(self.gy.as_slice()?, nr, nc),
+            soil: Grid::new(self.soil.as_slice()?, nr, nc),
+            zr: Grid::new(self.zr.as_slice()?, nr, nc),
+            channel: Grid::new(self.channel.as_slice()?, nr, nc),
+            area: Grid::new(self.area.as_slice()?, nr, nc),
+            culvert_breaks: self.breaks.as_slice()?,
+            culvert_costs: self.costs.as_slice()?,
+        })
+    }
+}
+
+fn floats<const N: usize>(t: &Bound<'_, PyTuple>, what: &str) -> PyResult<[f64; N]> {
+    if t.len() != N {
+        return Err(PyValueError::new_err(format!("{what} needs {N} values, got {}", t.len())));
+    }
+    let mut out = [0.0; N];
+    for (i, v) in out.iter_mut().enumerate() {
+        *v = item(t, i, what)?;
+    }
+    Ok(out)
+}
+
+/// Left-hairpin costs per (cell, heading, slot), float32, inf where infeasible (as hairpin.hairpin_table).
+/// terrain: (open_, zs, gx, gy, soil, z_raw); drainage: (channel, area_ha, breaks, costs);
+/// params: hairpin.HairpinParams as a tuple; slots: (n_theta, 2) leg spacings in lattice steps.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn hairpin_table<'py>(
+    py: Python<'py>,
+    cells: PyReadonlyArray1<'py, i64>,
+    vx: PyReadonlyArray1<'py, f64>,
+    vy: PyReadonlyArray1<'py, f64>,
+    slots: PyReadonlyArray2<'py, i64>,
+    res: f64,
+    terrain: &Bound<'py, PyTuple>,
+    drainage: &Bound<'py, PyTuple>,
+    params: &Bound<'py, PyTuple>,
+) -> PyResult<Bound<'py, PyArray3<f32>>> {
+    let a = MacroArrays::from_tuples(terrain, drainage)?;
+    let t = a.view()?;
+    let p = floats::<21>(params, "hairpin params")?;
+    let hp = HairpinParams {
+        w_hp: p[0], g_hp: p[1], g_max: p[2], leg_max: p[3], c_soil: p[4], c_rock: p[5], f_soil: p[6],
+        f_rock: p[7], k_soil: p[8], k_rock: p[9], cost_base: p[10], cost_soil: p[11], cost_rock: p[12],
+        cost_borrow: p[13], catch_max: p[14], delta: p[15], r_hp: p[16], rho: p[17], cost_wall: p[18],
+        c_travel: p[19], c_vertical: p[20],
+    };
+    let nh = vx.len();
+    if slots.shape() != [nh, N_SLOTS] {
+        return Err(PyValueError::new_err(format!("slots must be ({nh}, {N_SLOTS})")));
+    }
+    let (cells, vx, vy, slots) = (cells.as_slice()?, vx.as_slice()?, vy.as_slice()?, slots.as_slice()?);
+    let heads = Headings { vx, vy };
+    let table = py.detach(|| macros::hairpin_table(cells, &heads, slots, res, &t, &hp));
+    Ok(table.into_pyarray(py).reshape([cells.len(), nh, N_SLOTS])?)
+}
+
+/// Left-bend costs per (cell, heading, slot), float32, inf where infeasible (as bend.bend_table).
+/// shapes: (X, Y, L1, L2, dth), each (n_theta, slots), from lattice.BendGeometry; radius in cells;
+/// params: bend.BendParams as a tuple.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn bend_table<'py>(
+    py: Python<'py>,
+    cells: PyReadonlyArray1<'py, i64>,
+    vx: PyReadonlyArray1<'py, f64>,
+    vy: PyReadonlyArray1<'py, f64>,
+    shapes: &Bound<'py, PyTuple>,
+    radius: f64,
+    res: f64,
+    terrain: &Bound<'py, PyTuple>,
+    drainage: &Bound<'py, PyTuple>,
+    params: &Bound<'py, PyTuple>,
+) -> PyResult<Bound<'py, PyArray3<f32>>> {
+    let a = MacroArrays::from_tuples(terrain, drainage)?;
+    let t = a.view()?;
+    let p = floats::<16>(params, "bend params")?;
+    let bp = BendParams {
+        w: p[0], g_max: p[1], c_soil: p[2], c_rock: p[3], f_soil: p[4], f_rock: p[5], k_soil: p[6], k_rock: p[7],
+        cost_base: p[8], cost_soil: p[9], cost_rock: p[10], cost_borrow: p[11], catch_max: p[12], delta: p[13],
+        c_travel: p[14], c_vertical: p[15],
+    };
+    let bx: PyReadonlyArray2<i64> = item(shapes, 0, "X")?;
+    let by: PyReadonlyArray2<i64> = item(shapes, 1, "Y")?;
+    let l1: PyReadonlyArray2<f64> = item(shapes, 2, "L1")?;
+    let l2: PyReadonlyArray2<f64> = item(shapes, 3, "L2")?;
+    let dth: PyReadonlyArray2<f64> = item(shapes, 4, "dth")?;
+    let nh = vx.len();
+    let ns = bx.shape()[1];
+    for (name, s) in [("X", bx.shape()), ("Y", by.shape()), ("L1", l1.shape()), ("L2", l2.shape()), ("dth", dth.shape())] {
+        if s != [nh, ns] {
+            return Err(PyValueError::new_err(format!("{name} must be ({nh}, {ns})")));
+        }
+    }
+    let shapes = BendShapes {
+        ns,
+        x: bx.as_slice()?,
+        y: by.as_slice()?,
+        l1: l1.as_slice()?,
+        l2: l2.as_slice()?,
+        dth: dth.as_slice()?,
+        radius,
+    };
+    let (cells, vx, vy) = (cells.as_slice()?, vx.as_slice()?, vy.as_slice()?);
+    let heads = Headings { vx, vy };
+    let table = py.detach(|| macros::bend_table(cells, &heads, &shapes, res, &t, &bp));
+    Ok(table.into_pyarray(py).reshape([cells.len(), nh, ns])?)
+}
+
 #[pymodule]
 fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(search, m)?)?;
     m.add_function(wrap_pyfunction!(edge_costs, m)?)?;
+    m.add_function(wrap_pyfunction!(hairpin_table, m)?)?;
+    m.add_function(wrap_pyfunction!(bend_table, m)?)?;
     Ok(())
 }

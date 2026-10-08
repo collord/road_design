@@ -93,3 +93,28 @@ def test_results_and_tables_hold_only_open_cells(prob):
     sub = crop_problem(prob, 10, 60, 20, 70)
     assert sub.hp is prob.hp and sub.macro_lookup.shape == (50, 50)
     assert (sub.macro_lookup == prob.macro_lookup[10:60, 20:70]).all()
+
+
+@pytest.mark.parametrize("kind", ["hairpin", "bend"])
+def test_macro_tables_match(prob, kind):
+    """Hairpin and bend tables from the Rust core against numba's: same feasibility everywhere,
+    and float32 costs equal (sines and cosines may differ in the last bit before rounding)."""
+    from roadsearch.bend import bend_table
+    from roadsearch.hairpin import hairpin_table
+
+    p = prob.params
+    terr = prob.macro_terrain_arrays
+    drain = (prob.channel, prob.area)
+    cells = np.flatnonzero(prob.open_tables)
+    if kind == "hairpin":
+        build = lambda e: hairpin_table(terr, p, prob.res, drain, cells, engine=e)  # noqa: E731
+    else:
+        build = lambda e: bend_table(terr, p, prob.res, prob.bend_geo, drain, cells, engine=e)  # noqa: E731
+    a, b = build("numba"), build("rust")
+    assert a.shape == b.shape and a.dtype == b.dtype == np.float32
+    fa, fb = np.isfinite(a), np.isfinite(b)
+    assert fa.sum() > 1000
+    assert np.array_equal(fa, fb)
+    same = a[fa] == b[fa]
+    assert same.mean() > 0.999, same.mean()
+    assert np.max(np.abs(a[fa] - b[fa]) / np.abs(a[fa])) < 1e-6

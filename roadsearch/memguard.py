@@ -159,6 +159,8 @@ class Watchdog:
     def _loop(self):
         while not self._stop.wait(self.every):
             s = snapshot()
+            from . import events
+            events.emit("memory", **s)
             self._watch_pool(s)
             for k, v in s.items():
                 key = "min_avail_gb" if k == "avail_gb" else f"max_{k}"

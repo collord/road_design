@@ -179,8 +179,15 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
 
     Stages are timed (roadsearch.timing): the profile is saved in params.json and logged.
     Memory is guarded (roadsearch.memguard): if the machine runs short, or the kernel's non-paged
-    pool balloons, the run stops, records why, and raises MemoryGuardError."""
-    from . import timing
+    pool balloons, the run stops, records why, and raises MemoryGuardError.
+    Events (stages, progress, memory, log lines) stream to events.jsonl in the run folder."""
+    from . import events, timing
+
+    plain_log = log
+
+    def log(msg):
+        plain_log(msg)
+        events.emit("log", message=str(msg))
 
     s0 = memguard.snapshot()
     if s0.get("kernel_nonpaged_gb", 0.0) > memguard.POOL_WARN_GB:
@@ -193,6 +200,7 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
 
     def record_abort(why):
         rec = ctx.get("record")
+        events.emit("run_end", status="stopped", error=f"MemoryGuardError: {why}")
         if rec is not None:
             rec["error"] = f"MemoryGuardError: {why}"
             rec["memory"] = memory_record()
@@ -206,17 +214,21 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
         with wd, timing.stage("run"):
             rec = _run(dem, start_txt, goal_txt, p, exclude, out, resolution, clip, clip_margin, coarse_res,
                        run_id, endpoint_crs, log, reuse, ctx, tree)
-    except BaseException:
+    except BaseException as exc:
         # The interrupt can surface as something else (numba turns it into SystemError) or be
         # swallowed below, so the watchdog's reason, not the exception type, decides.
         if wd.reason is None:
+            events.emit("run_end", status="failed", error=f"{type(exc).__name__}: {exc}")
+            events.stop()
             raise
         record_abort(wd.reason)
+        events.stop()
         raise memguard.MemoryGuardError(wd.reason) from None
     finally:
         timing.stop()
     if wd.reason is not None:
         record_abort(wd.reason)
+        events.stop()
         raise memguard.MemoryGuardError(wd.reason)
     if "timings" in rec and "profile" not in rec:
         rec["profile"] = prof.rows
@@ -224,6 +236,9 @@ def run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", re
         write_params_json(Path(out) / "runs" / rec["run_id"], rec)
         log("time by stage:" + chr(10) + prof.table())
         log("memory: " + ", ".join(f"{k} {v}" for k, v in wd.peak.items()))
+    if events._current is not None:
+        events.emit("run_end", status="failed" if "error" in rec else "finished", error=rec.get("error"))
+        events.stop()
     return rec
 
 
@@ -259,6 +274,12 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
     record = {"run_id": run_id, "inputs": inputs, "params": p.to_dict(), "dem": dem_info}
     if ctx is not None:
         ctx.update(record=record, run_dir=run_dir)
+    from . import events
+    events.start(run_dir / "events.jsonl")
+    events.emit("run_start", run_id=run_id, inputs=inputs)
+    from .timing import open_stages
+    for depth, name in enumerate(open_stages()):         # begun before the stream was open
+        events.emit("stage_start", stage=name, depth=depth)
     log(f"run {run_id}")
 
     def fail(exc):

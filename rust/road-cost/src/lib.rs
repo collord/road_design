@@ -17,6 +17,8 @@
 
 use lattice_search::{EdgeCost, Heuristic};
 
+pub mod macros;
+
 pub const ACTION_PRIM: u8 = 0;
 pub const ACTION_HP_LEFT: u8 = 1;
 pub const ACTION_HP_RIGHT: u8 = 2;
