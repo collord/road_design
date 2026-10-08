@@ -156,3 +156,15 @@ def test_cases_exercise_the_model(case):
     if name == "steep":
         assert {"hairpin", "bend", "fill_crossing", "full_bench"} <= kinds
         assert len(got["history"]) > 1 and got["best"]["cost"]["haul_cost"] > 0
+
+
+def test_lazy_macros_match_tables(case):
+    """Hairpin and bend costs computed as the search reaches them (the browser's way) give the
+    same route and costs as whole tables."""
+    name, p, t, _ = case
+    args = (*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc))
+    eager = roadsearch_core.fine_route(*args)
+    lazy = roadsearch_core.fine_route(*args, lazy=True)
+    assert lazy["best"]["edges"] == eager["best"]["edges"], name
+    assert lazy["best"]["cost"] == eager["best"]["cost"]
+    assert [h["true"] for h in lazy["history"]] == [h["true"] for h in eager["history"]]

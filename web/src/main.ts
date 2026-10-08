@@ -5,7 +5,7 @@ import proj4 from "proj4";
 import "./style.css";
 import { BASEMAPS, ExportLayer, utmEpsg } from "./basemap";
 import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
-import type { FromWorker, RouteOut, ToWorker } from "./messages";
+import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
 import type { Params } from "./params";
 import type { Grid, SourceInfo } from "./source";
 
@@ -29,6 +29,8 @@ let start: [number, number] | null = null;
 let goal: [number, number] | null = null;
 let picking: "start" | "goal" | null = null;
 let areaGrid: Grid | null = null;
+let haveCorridors = false;
+const fineRoutes: FineOut[] = [];
 const layers = new Map<string, L.Layer>();
 const markers: { start?: L.CircleMarker; goal?: L.CircleMarker } = {};
 
@@ -71,7 +73,7 @@ function log(text: string, cls = "") {
 
 // ---------------------------------------------------------------- status: what the worker is doing
 
-const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors" } as const;
+const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors", refine: "Refining corridors" } as const;
 let busy: keyof typeof TASK_TEXT | null = null;
 let busySince = 0;
 let ticker: ReturnType<typeof setInterval> | undefined;
@@ -91,12 +93,13 @@ statusEl<HTMLButtonElement>("status-stop").addEventListener("click", () => {
 
 function setBusy(task: keyof typeof TASK_TEXT | null) {
   busy = task;
-  const buttons = { load: $<HTMLButtonElement>("load"), run: $<HTMLButtonElement>("run") };
+  const buttons = { load: $<HTMLButtonElement>("load"), run: $<HTMLButtonElement>("run"),
+                    refine: $<HTMLButtonElement>("refine") };
   for (const [k, b] of Object.entries(buttons)) b.classList.toggle("working", k === task);
   clearInterval(ticker);
   if (task) {
     busySince = performance.now();
-    buttons.load.disabled = buttons.run.disabled = true;
+    buttons.load.disabled = buttons.run.disabled = buttons.refine.disabled = true;
     statusEl("status-task").textContent = TASK_TEXT[task];
     statusEl("status-step").textContent = "";
     statusEl<HTMLProgressElement>("status-bar").removeAttribute("value");
@@ -108,15 +111,19 @@ function setBusy(task: keyof typeof TASK_TEXT | null) {
     statusBox.hidden = true;
     estimate();
     buttons.run.disabled = !areaGrid;
+    buttons.refine.disabled = !haveCorridors;
   }
 }
 
 function setStep(name: string, done?: number, total?: number) {
   const bar = statusEl<HTMLProgressElement>("status-bar");
   const step = name.charAt(0).toUpperCase() + name.slice(1);
-  if (done === undefined || !total) {
+  if (done === undefined) {
     bar.removeAttribute("value");
     statusEl("status-step").textContent = `${step}...`;
+  } else if (!total) {
+    bar.removeAttribute("value");
+    statusEl("status-step").textContent = `${step}: ${done.toLocaleString()}`;
   } else {
     bar.max = total;
     bar.value = done;
@@ -241,7 +248,8 @@ function setControls(p: Params) {
 }
 
 function openDem(m: ToWorker & { type: "open" }) {
-  info = null; start = null; goal = null; areaGrid = null;
+  info = null; start = null; goal = null; areaGrid = null; haveCorridors = false;
+  clearFine();
   for (const name of [...layers.keys()]) setLayer(name, null);
   markers.start?.remove(); markers.goal?.remove();
   $("corridors").innerHTML = "";
@@ -310,12 +318,23 @@ $("A_min").addEventListener("change", () => {
 $("load").addEventListener("click", () => {
   if (!start || !goal) return;
   areaGrid = null;
+  haveCorridors = false;
+  clearFine();
   $<HTMLButtonElement>("load").disabled = true;
   $<HTMLButtonElement>("run").disabled = true;
   send({ type: "load", start, goal, margin: Number($<HTMLInputElement>("margin").value) * 1000,
          res: Number($<HTMLInputElement>("res").value), maxCells: MAX_CELLS, zUnits: zUnits() });
 });
+$("refine").addEventListener("click", () => {
+  const res = Number($<HTMLInputElement>("fine-res").value);
+  if (!(res > 0)) return;
+  for (const b of ["load", "run", "refine"]) $<HTMLButtonElement>(b).disabled = true;
+  send({ type: "refine", params: params(), res, which: $<HTMLSelectElement>("fine-which").value as "best" | "all" });
+});
+
 $("run").addEventListener("click", () => {
+  haveCorridors = false;
+  clearFine();
   $<HTMLButtonElement>("load").disabled = true;
   $<HTMLButtonElement>("run").disabled = true;
   for (const name of ["Slope mask", "Channels", "Saddles", "Triangulation", "Graph nodes (corridor field)",
@@ -369,6 +388,38 @@ function segmentsLayer(g: Grid, rows: ArrayLike<number>, cols: ArrayLike<number>
     }
     ctx.stroke();
   });
+}
+
+function clearFine() {
+  fineRoutes.length = 0;
+  setLayer("Fine routes", null);
+  $("fine").innerHTML = "";
+}
+
+/** The fine routes, drawn over their corridors, and their table. */
+function showFine() {
+  const css = getComputedStyle(document.documentElement);
+  const group = L.layerGroup();
+  const sorted = [...fineRoutes].sort((a, b) => a.cost.total - b.cost.total);
+  for (const f of sorted) {
+    const pts = f.x.map((x, i) => [f.y[i], x] as [number, number]);
+    const best = f === sorted[0];
+    // A dark casing under the line keeps it readable over imagery.
+    L.polyline(pts, { color: "#111", weight: best ? 7 : 5, opacity: 0.55, interactive: false }).addTo(group);
+    L.polyline(pts, { color: (best ? css.getPropertyValue("--fine") : css.getPropertyValue("--fine-alt")).trim(),
+                      weight: best ? 4 : 3 })
+      .bindTooltip(`corridor ${f.index + 1}, fine: ${Math.round(f.cost.total).toLocaleString()}, ` +
+                   `${(f.length / 1000).toFixed(1)} km, ${f.hairpins} hairpins`)
+      .addTo(group);
+  }
+  setLayer("Fine routes", group);
+  const head = "<tr><th>corridor</th><th>cost</th><th>build</th><th>operate</th><th>km</th><th>hairpins</th>" +
+               "<th>bends</th><th>crossings</th><th>s</th></tr>";
+  $("fine").innerHTML = head + sorted.map((f) =>
+    `<tr><td>${f.index + 1}</td><td>${Math.round(f.cost.total).toLocaleString()}</td>` +
+    `<td>${Math.round(f.cost.construction).toLocaleString()}</td><td>${Math.round(f.cost.operating).toLocaleString()}</td>` +
+    `<td>${(f.length / 1000).toFixed(2)}</td><td>${f.hairpins}</td><td>${f.bends}</td><td>${f.fill_crossings}</td>` +
+    `<td>${f.seconds.toFixed(0)}</td></tr>`).join("");
 }
 
 function showCorridors(g: Grid, routes: RouteOut[]) {
@@ -469,7 +520,18 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       setLayer("Triangulation", layers.get("Triangulation") ?? null, false);
       break;
     }
+    case "fine": {
+      const f = m.route;
+      const i = fineRoutes.findIndex((x) => x.index === f.index);
+      if (i >= 0) fineRoutes[i] = f; else fineRoutes.push(f);
+      showFine();
+      log(`corridor ${f.index + 1} at ${f.res} m: ${Math.round(f.cost.total).toLocaleString()}, ` +
+          `${(f.length / 1000).toFixed(2)} km, ${f.hairpins} hairpins, ${f.bends} bends, ${f.fill_crossings} crossings ` +
+          `(${f.history.length} searches, ${f.cells.toLocaleString()} cells, ${f.macros_computed.toLocaleString()} macro designs)`);
+      break;
+    }
     case "corridors": {
+      if (m.final) haveCorridors = m.routes.length > 0;
       showCorridors(m.grid, m.routes);
       const r = m.routes[m.routes.length - 1];
       if (m.final) log(`corridors: ${m.routes.length}`);

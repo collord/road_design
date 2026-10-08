@@ -411,15 +411,21 @@ impl Problem {
 
     /// Every edge of a route, evaluated (route.py's evaluate_route).
     pub fn evaluate_route(&self, edges: &[Edge]) -> Result<Vec<Segment>, String> {
-        let cp = self.cost_params();
-        let model = self.model(&cp);
+        let costs: Vec<(f64, (f64, f64))> = self.with_model(|model| {
+            edges
+                .iter()
+                .map(|&(r, c, a)| {
+                    let culvert =
+                        if self.lat.kind[a] as u8 == ACTION_PRIM { model.culvert_charges(r, c, a) } else { (0.0, 0.0) };
+                    (model.edge_cost(r, c, a), culvert)
+                })
+                .collect()
+        });
         edges
             .iter()
+            .zip(costs)
             .enumerate()
-            .map(|(i, &(r, c, a))| {
-                let culvert = if self.lat.kind[a] as u8 == ACTION_PRIM { model.culvert_charges(r, c, a) } else { (0.0, 0.0) };
-                self.evaluate_edge(i, r, c, a, model.edge_cost(r, c, a), culvert)
-            })
+            .map(|(i, (&(r, c, a), (cost, culvert)))| self.evaluate_edge(i, r, c, a, cost, culvert))
             .collect()
     }
 

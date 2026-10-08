@@ -1,6 +1,6 @@
 :root {
   --bg: #f4f3ef; --panel: #fbfaf7; --ink: #1f2420; --muted: #5f6760; --rule: #d6d4cc; --accent: #9a3412;
-  --start: #15803d; --goal: #b91c1c; --route: #dc2626; --alt: #2563eb;
+  --start: #15803d; --goal: #b91c1c; --route: #dc2626; --alt: #2563eb; --fine: #facc15; --fine-alt: #f0abfc;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {

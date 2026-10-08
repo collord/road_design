@@ -130,6 +130,18 @@ try {
       await shot(`${name}-${bm.replace(/\s+/g, "-").toLowerCase()}`);
     }
     await evaluate(`(() => { const s = document.querySelector("#basemap"); s.value = ""; s.dispatchEvent(new Event("change")); })()`);
+    // The fine search of the best corridor (one example: it takes a minute or more).
+    if (name === (process.env.FINE ?? "red-mountain")) {
+      const tFine = Date.now();
+      await evaluate(`document.querySelector("#refine").click()`);
+      const fine = await until(`(${hasError}) || (!document.querySelector("#refine").disabled &&
+        document.querySelectorAll("#fine tr").length > 1 && "done")`, "the fine route", 900000);
+      if (fine !== "done") throw new Error(fine);
+      const row: string = await evaluate(`[...document.querySelectorAll("#fine tr")][1].textContent.trim()`);
+      const logLine: string = await evaluate(`[...document.querySelectorAll("#log li")].map((li) => li.textContent).filter((t) => /^corridor 1 at/.test(t)).pop()`);
+      console.log(`  fine: ${logLine} in ${((Date.now() - tFine) / 1000).toFixed(0)} s`);
+      await shot(`${name}-fine`);
+    }
     // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.
     if (name === names[0]) {
       await evaluate(`document.querySelector("#run").click()`);

@@ -162,4 +162,13 @@ Quadric-error decimation (`meshopt-rs`) is available if a non-heightfield mesh i
    the unit, and better third and fourth ones, in 7 minutes all told (the lattice run, 100).
 4. **Browser**: the WebAssembly crate, a Web Worker, the viewer in TypeScript (Vite, still a static
    site), streamed convergence, weighted-A* candidates and exact refinement, chunked fine search.
+   Done so far: the viewer (GeoTIFFs in any CRS, hillshade, base maps, the coarse graph and its
+   corridors as they are found, progress and stopping). The fine stage is ported (`road-fine`:
+   lattice, section, problem, fill-price iteration, self-overlap avoidance, segment evaluation and
+   true cost with mass haul), at parity with the Python (same edges and costs on three terrains),
+   and runs per corridor in the browser with hairpin and bend costs computed lazily, as the search
+   reaches them (the same values as the tables). On Red Mountain at 5 m a corridor costs 263,468
+   in the browser against 275,504 for the command line's run; it takes about 6 minutes in one
+   thread, two thirds of it in the first search's macro designs (about 13 microseconds each).
+   Next: those designs in parallel (workers or WebAssembly threads), and weighted-A* drafts.
 5. **Browser input and output**, and a memory budget for a whole run in a tab.

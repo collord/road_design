@@ -11,7 +11,8 @@ import type { FromWorker, RouteOut, ToWorker } from "./messages";
 const ready = init();
 let source: Source | null = null;
 let area: { grid: Grid; session: wasm.Session; start: [number, number]; goal: [number, number];
-             acc?: Float32Array } | null = null;
+             startXY: [number, number]; goalXY: [number, number]; zScale: number;
+             acc?: Float32Array; routes?: RouteOut[] } | null = null;
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
@@ -122,7 +123,8 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
   const s = cellOf(grid, sx, sy), g = cellOf(grid, gx, gy);
   if (!s || !g) throw new Error("start or finish is outside the DEM");
   area?.session.free();
-  area = { grid, session: new wasm.Session(z, grid.w, grid.h, res), start: s, goal: g };
+  area = { grid, session: new wasm.Session(z, grid.w, grid.h, res), start: s, goal: g, startXY: m.start, goalXY: m.goal,
+           zScale };
   const rgba = grayRgba(wasm.hillshade(z, grid.w, grid.h, res));
   post({ type: "raster", layer: "hillshade", grid, rgba }, [rgba.buffer]);
   post({ type: "area", grid, cells });
@@ -197,6 +199,69 @@ async function run(p: Params) {
     post({ type: "corridors", grid, routes, final: false });
   }
   post({ type: "corridors", grid, routes, final: true });
+  area.routes = routes;
+}
+
+/**
+ * The fine search of each corridor (or the best): the DEM read at `res` over the corridor's
+ * buffer, preprocessed there, and searched on the heading lattice with hairpins, bends and fill
+ * crossings, as the command line's fine stage does over its corridors.
+ */
+async function refine(p: Params, res: number, which: "best" | "all") {
+  if (!area?.routes?.length || !source) throw new Error("find corridors first");
+  const { grid: cg, routes, startXY, goalXY, zScale } = area;
+  const buffer = get(p, "tin_buffer");
+  const [bx0, by0, bx1, by1] = source.info.bbox;
+  const todo = which === "best" ? [0] : routes.map((_, i) => i);
+  for (const k of todo) {
+    const t0 = performance.now();
+    const name = `corridor ${k + 1}`;
+    const r = routes[k];
+    // The corridor's line in UTM, and a grid at `res` over it plus the buffer, within the DEM.
+    const xs = r.cols.map((c) => cg.x0 + (c + 0.5) * cg.res), ys = r.rows.map((row) => cg.y1 - (row + 0.5) * cg.res);
+    let [xmin, xmax, ymin, ymax] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (let i = 0; i < xs.length; i++) {
+      xmin = Math.min(xmin, xs[i]); xmax = Math.max(xmax, xs[i]); ymin = Math.min(ymin, ys[i]); ymax = Math.max(ymax, ys[i]);
+    }
+    const x0 = Math.floor(Math.max(xmin - buffer, bx0) / res) * res, y1 = Math.ceil(Math.min(ymax + buffer, by1) / res) * res;
+    const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(xmax + buffer, bx1) - x0) / res),
+                       h: Math.ceil((y1 - Math.max(ymin - buffer, by0)) / res) };
+    const z = await timedAsync(`${name}: read the DEM at ${res} m`, () =>
+      source!.resampleBands(fg, wasm.resample, zScale, -1, async (done, total) => {
+        progress(`${name}: read the DEM at ${res} m`, done, total);
+        await checkpoint();
+      }));
+    const lr = new Float64Array(ys.map((y) => (fg.y1 - y) / res - 0.5));
+    const lc = new Float64Array(xs.map((x) => (x - fg.x0) / res - 0.5));
+    const fs = timed(`${name}: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
+      new wasm.FineSession(z, fg.w, fg.h, res, JSON.stringify(p), lr, lc, buffer));
+    await checkpoint();
+    try {
+      const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
+      const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
+      let stage = "", tStage = 0;
+      const out = fs.search(sr, sc, gr, gc, (st: string, settled: number) => {
+        if (st !== stage) {
+          if (stage) post({ type: "stage", name: `${name}: ${stage}`, state: "end", ms: performance.now() - tStage });
+          stage = st;
+          tStage = performance.now();
+          post({ type: "stage", name: `${name}: ${st}`, state: "start" });
+        }
+        progress(`${name}: ${st}, states settled`, settled, 0);
+      });
+      if (stage) post({ type: "stage", name: `${name}: ${stage} and the route's costs`, state: "end", ms: performance.now() - tStage });
+      if (!out) throw new Error(`${name}: no route at ${res} m within ${buffer} m of the corridor`);
+      post({ type: "fine", route: {
+        index: k, res, x: out.cols.map((c: number) => fg.x0 + (c + 0.5) * res), y: out.rows.map((row: number) => fg.y1 - (row + 0.5) * res),
+        z: out.z, cost: out.cost, length: out.length, hairpins: out.hairpins, bends: out.bends,
+        fill_crossings: out.fill_crossings, segments: out.segments, history: out.history,
+        seconds: (performance.now() - t0) / 1000, cells: fs.cells(), macros_computed: out.macros_computed,
+      } });
+    } finally {
+      fs.free();
+    }
+    await checkpoint();
+  }
 }
 
 // One message at a time: a "load" must not start while an "open" is still reading its file.
@@ -216,6 +281,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (m.type === "open") await open(m);
       else if (m.type === "load") await load(m);
       else if (m.type === "run") await run(m.params);
+      else if (m.type === "refine") await refine(m.params, m.res, m.which);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);
         post({ type: "raster", layer: "channels", grid: area.grid, rgba: ch }, [ch.buffer]);

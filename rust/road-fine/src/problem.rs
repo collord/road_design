@@ -1,13 +1,17 @@
 //! The search problem on a fine grid (search.py's make_problem and SearchProblem): the masks
 //! and rasters the cost model reads, the lattice, the section cost table and the macro tables.
 
+use std::sync::atomic::AtomicU32;
+
 use lattice_search::Lattice;
-use road_cost::macros::{self, BendParams, BendShapes, HairpinParams, Headings, MacroTerrain, N_ACROSS, N_SLOTS};
+use road_cost::macros::{
+    self, BendParams, BendShapes, HairpinParams, Headings, LazyMacro, MacroShape, MacroTerrain, N_ACROSS, N_SLOTS,
+};
 use road_cost::{Actions, CostParams, Grid, MacroTable, RoadCost, SectionTable, Terrain};
 
 use crate::lattice::{build_bends, heading_vectors, lattice_arrays, BendGeometry, LatticeArrays};
 use crate::params::Params;
-use crate::section::{cost_table, soil_depth, TABLE_NG, TABLE_NS};
+use crate::section::{cost_table, max_catch_at_mask, soil_depth, TABLE_NG, TABLE_NS};
 
 /// The rasters of a fine grid, as preprocessing leaves them (row-major nr x nc).
 pub struct FineInputs {
@@ -24,6 +28,44 @@ pub struct FineInputs {
     pub area: Vec<f64>,
     /// 1 where the search may go: not excluded (slope mask, zones) and inside the clip region.
     pub open: Vec<u8>,
+}
+
+/// Preprocessing of a fine grid (preprocess.py without exclusion zones): smoothing, gradients,
+/// the dilated slope mask, flow accumulation. `clip` (1 = the search may go there, e.g. a
+/// corridor's buffer) is combined into the open mask. Also returns the slope mask, for checking
+/// the endpoints.
+pub fn preprocess(z_raw: Vec<f64>, nr: usize, nc: usize, res: f64, p: &Params, clip: &[u8]) -> (FineInputs, Vec<bool>) {
+    let zs = terrain::smooth(&z_raw, nr, nc, p.sigma_m() / res);
+    let (gx, gy) = terrain::gradient(&zs, nr, nc, res, -res);
+    let slope: Vec<f64> = gx.iter().zip(&gy).map(|(a, b)| a.hypot(*b)).collect();
+    let (_raw, excluded) = terrain::slope_mask(&slope, nr, nc, p.g_max, p.s_mask(), max_catch_at_mask(p), res, res);
+    let area = terrain::contributing_area(&z_raw, nr, nc, res, res, res * res / 1e4);
+    let open = (0..nr * nc).map(|k| u8::from(!excluded[k] && clip[k] != 0)).collect();
+    (FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open }, excluded)
+}
+
+/// 1 within `buffer` meters of a polyline of (row, col) points (cell coordinates, centers at
+/// whole numbers): the region a corridor's fine search may use.
+pub fn corridor_mask(nr: usize, nc: usize, res: f64, line: &[(f64, f64)], buffer: f64) -> Vec<u8> {
+    let mut on = vec![false; nr * nc];
+    let mut mark = |fr: f64, fc: f64| {
+        let (r, c) = ((fr + 0.5).floor(), (fc + 0.5).floor());
+        if r >= 0.0 && c >= 0.0 && (r as usize) < nr && (c as usize) < nc {
+            on[r as usize * nc + c as usize] = true;
+        }
+    };
+    if let Some(&(r, c)) = line.first() {
+        mark(r, c);
+    }
+    for w in line.windows(2) {
+        let ((r0, c0), (r1, c1)) = (w[0], w[1]);
+        let n = (4.0 * (r1 - r0).hypot(c1 - c0)).ceil().max(1.0) as usize;
+        for k in 1..=n {
+            let f = k as f64 / n as f64;
+            mark(r0 + f * (r1 - r0), c0 + f * (c1 - c0));
+        }
+    }
+    terrain::distance_to(&on, nr, nc, res, res).iter().map(|&d| u8::from(d <= buffer)).collect()
 }
 
 pub struct Problem {
@@ -56,14 +98,21 @@ pub struct Problem {
     pub hp_params: HairpinParams,
     pub bend_params: BendParams,
     /// Flat indices of the cells the macro tables cover (the open ones), each grid cell's row
-    /// among them (-1: none), and the tables (cells, headings, slots), filled by build_tables.
+    /// among them (-1: none), and the tables (cells, headings, slots), filled by build_tables;
+    /// or, for a lazy problem, caches filled as the search asks for entries.
     pub table_cells: Vec<i64>,
     pub macro_lookup: Vec<i32>,
     pub hp: Vec<f32>,
     pub bend: Vec<f32>,
+    pub lazy: bool,
+    pub hp_cache: Vec<AtomicU32>,
+    pub bend_cache: Vec<AtomicU32>,
     pub n_bend_slots: usize,
     /// Cells of the tables built so far.
     pub tables_done: usize,
+    /// Heading vectors (x east, y north), in lattice cells.
+    pub vx: Vec<f64>,
+    pub vy: Vec<f64>,
     /// Current price of crossing fill per m3.
     pub lam_fill: f64,
 }
@@ -102,8 +151,10 @@ pub fn hairpin_slots(p: &Params, res: f64) -> Vec<i64> {
 }
 
 impl Problem {
-    /// Everything but the macro tables, which build_tables fills (in slices, for progress).
-    pub fn new(inputs: FineInputs, params: Params) -> Result<Problem, String> {
+    /// Everything but the macro tables, which build_tables fills (in slices, for progress); or,
+    /// if `lazy`, with macro costs computed as the search asks for them (the same values; a
+    /// search reaches a fraction of the states, and each entry costs a whole macro design).
+    pub fn new(inputs: FineInputs, params: Params, lazy: bool) -> Result<Problem, String> {
         let FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open } = inputs;
         let n = nr * nc;
         for (name, len) in [("z_raw", z_raw.len()), ("zs", zs.len()), ("gx", gx.len()), ("gy", gy.len()),
@@ -136,23 +187,31 @@ impl Problem {
         }
         let nh = p.n_theta;
         let n_bend_slots = bend_geo.ns;
+        let (n_hp, n_bend) = (table_cells.len() * nh * N_SLOTS, table_cells.len() * nh * n_bend_slots);
+        let vecs = heading_vectors(nh);
         Ok(Problem {
             nr, nc, res,
             hp_params: hairpin_params(p, res),
             bend_params: bend_params(p, res),
             lam_fill: p.c_borrow,
-            hp: vec![f32::INFINITY; table_cells.len() * nh * N_SLOTS],
-            bend: vec![f32::INFINITY; table_cells.len() * nh * n_bend_slots],
+            hp: if lazy { Vec::new() } else { vec![f32::INFINITY; n_hp] },
+            bend: if lazy { Vec::new() } else { vec![f32::INFINITY; n_bend] },
+            hp_cache: if lazy { macros::lazy_cache(n_hp) } else { Vec::new() },
+            bend_cache: if lazy { macros::lazy_cache(n_bend) } else { Vec::new() },
+            lazy,
+            tables_done: if lazy { table_cells.len() } else { 0 },
+            vx: vecs.iter().map(|v| v.0 as f64).collect(),
+            vy: vecs.iter().map(|v| v.1 as f64).collect(),
             open_tables: open.clone(),
             open, gx, gy, zs, soil, z_raw, channel, area, chdist, lat, lattice, actions, table, ds, dg, hp_slots,
-            bend_geo, table_cells, macro_lookup, n_bend_slots, tables_done: 0,
+            bend_geo, table_cells, macro_lookup, n_bend_slots,
             params,
         })
     }
 
     /// The whole problem at once (search.py's make_problem).
     pub fn build(inputs: FineInputs, params: Params) -> Result<Problem, String> {
-        let mut prob = Problem::new(inputs, params)?;
+        let mut prob = Problem::new(inputs, params, false)?;
         let n = prob.table_cells.len();
         prob.build_tables(n);
         Ok(prob)
@@ -161,14 +220,11 @@ impl Problem {
     /// Hairpin and bend costs for up to `n` more table cells. Returns the cells done so far.
     pub fn build_tables(&mut self, n: usize) -> usize {
         let (a, b) = (self.tables_done, (self.tables_done + n).min(self.table_cells.len()));
-        if a == b {
+        if a == b || self.lazy {
             return b;
         }
         let nh = self.params.n_theta;
-        let vecs = heading_vectors(nh);
-        let vx: Vec<f64> = vecs.iter().map(|v| v.0 as f64).collect();
-        let vy: Vec<f64> = vecs.iter().map(|v| v.1 as f64).collect();
-        let heads = Headings { vx: &vx, vy: &vy };
+        let heads = Headings { vx: &self.vx, vy: &self.vy };
         let cells = &self.table_cells[a..b];
         let t = self.macro_terrain();
         let hp = macros::hairpin_table(cells, &heads, &self.hp_slots, self.res, &t, &self.hp_params);
@@ -212,13 +268,34 @@ impl Problem {
         }
     }
 
-    /// The cost model over this problem, with `cp` from cost_params() (it carries lam_fill).
-    pub fn model<'a>(&'a self, cp: &'a CostParams) -> RoadCost<'a> {
+    /// Macro entries the lazy caches hold so far (hairpins, bends).
+    pub fn lazy_computed(&self) -> (usize, usize) {
+        let count = |c: &[AtomicU32]| c.iter().filter(|v| v.load(std::sync::atomic::Ordering::Relaxed) != macros::UNSET).count();
+        (count(&self.hp_cache), count(&self.bend_cache))
+    }
+
+    /// Calls `f` with the cost model over this problem (its lam_fill included).
+    pub fn with_model<R>(&self, f: impl FnOnce(&RoadCost) -> R) -> R {
+        let cp = self.cost_params();
+        let heads = Headings { vx: &self.vx, vy: &self.vy };
+        let g = &self.bend_geo;
+        let shapes = BendShapes { ns: g.ns, x: &g.x, y: &g.y, l1: &g.l1, l2: &g.l2, dth: &g.dth, radius: g.r };
+        let lazy = |cache, shape| LazyMacro {
+            cache, cells: &self.table_cells, heads, res: self.res, t: self.macro_terrain(), shape,
+        };
+        let hp_lazy = lazy(&self.hp_cache[..], MacroShape::Hairpin { slots: &self.hp_slots, hp: &self.hp_params });
+        let bend_lazy = lazy(&self.bend_cache[..], MacroShape::Bend { shapes, bp: &self.bend_params });
         let (nr, nc) = (self.nr, self.nc);
         let look = Grid::new(&self.macro_lookup, nr, nc);
         let nh = self.n_theta();
         let n = self.table_cells.len();
-        RoadCost {
+        let (hp_shape, bend_shape) = ([n, nh, N_SLOTS], [n, nh, self.n_bend_slots]);
+        let (hairpins, bends) = if self.lazy {
+            (MacroTable::lazy(&hp_lazy, hp_shape, look), MacroTable::lazy(&bend_lazy, bend_shape, look))
+        } else {
+            (MacroTable::new(&self.hp, hp_shape, look), MacroTable::new(&self.bend, bend_shape, look))
+        };
+        let model = RoadCost {
             actions: &self.actions,
             terrain: Terrain {
                 open: Grid::new(&self.open, nr, nc),
@@ -231,9 +308,10 @@ impl Problem {
                 chdist: Grid::new(&self.chdist, nr, nc),
             },
             section: SectionTable { data: &self.table, ns: TABLE_NS, ng: TABLE_NG, ds: self.ds, dg: self.dg },
-            hairpins: MacroTable::new(&self.hp, [n, nh, N_SLOTS], look),
-            bends: MacroTable::new(&self.bend, [n, nh, self.n_bend_slots], look),
-            params: cp,
-        }
+            hairpins,
+            bends,
+            params: &cp,
+        };
+        f(&model)
     }
 }

@@ -120,16 +120,17 @@ fn route_dict<'py>(py: Python<'py>, prob: &Problem, r: &RouteResult, start: (i64
 /// The fine stage on one grid (pipeline.fill_price_iteration then avoid_self_overlap):
 /// {best: {edges, lam_fill, cost, segments, path} or None, history, rounds, blocked, completed}.
 #[pyfunction]
+#[pyo3(signature = (z_raw, zs, gx, gy, area, open, res, params_json, start, goal, lazy=false))]
 #[allow(clippy::too_many_arguments)]
 fn fine_route<'py>(py: Python<'py>, z_raw: PyReadonlyArray2<'py, f64>, zs: PyReadonlyArray2<'py, f64>,
                    gx: PyReadonlyArray2<'py, f64>, gy: PyReadonlyArray2<'py, f64>, area: PyReadonlyArray2<'py, f64>,
-                   open: PyReadonlyArray2<'py, u8>, res: f64, params_json: &str, start: (i64, i64), goal: (i64, i64))
-                   -> PyResult<Bound<'py, PyDict>> {
+                   open: PyReadonlyArray2<'py, u8>, res: f64, params_json: &str, start: (i64, i64), goal: (i64, i64),
+                   lazy: bool) -> PyResult<Bound<'py, PyDict>> {
     let inp = inputs(z_raw, zs, gx, gy, area, open, res)?;
     let (nr, nc) = (inp.nr, inp.nc);
     let p = params(params_json)?;
     let out = py.detach(|| -> Result<_, String> {
-        let mut prob = Problem::build(inp, p)?;
+        let mut prob = if lazy { Problem::new(inp, p, true)? } else { Problem::build(inp, p)? };
         let r = find_route(&mut prob, start, goal, &mut |_, _| true)?;
         Ok((prob, r))
     });

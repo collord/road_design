@@ -9,6 +9,9 @@
 //! route and the corridor field), then `search_next` once per alternative. Large results are
 //! typed arrays; small ones are JS objects.
 
+mod fine;
+
+pub use fine::FineSession;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 

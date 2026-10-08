@@ -31,8 +31,6 @@ pub fn astar(prob: &Problem, start: (i64, i64), goal: (i64, i64), stage: &str, r
     mask[goal.0 as usize * nc + goal.1 as usize] = true;
     let index = CellIndex::from_mask(nr, nc, &mask);
     let sources: Vec<u64> = (0..nh).map(|h| index.state(start.0, start.1, h as u16, nh).unwrap()).collect();
-    let cp = prob.cost_params();
-    let model = prob.model(&cp);
     let p = &prob.params;
     let heur = ClimbHeuristic {
         goal: (goal.0 as i32, goal.1 as i32),
@@ -44,8 +42,9 @@ pub fn astar(prob: &Problem, start: (i64, i64), goal: (i64, i64), stage: &str, r
         c_vertical: p.c_vertical,
     };
     let spec = SearchSpec::astar(&sources, (goal.0 as i32, goal.1 as i32));
-    let (res, completed) =
-        search_with_progress(&prob.lattice, &index, &model, &heur, &spec, PROGRESS_EVERY, &mut |pr: &Progress| report(stage, pr));
+    let (res, completed) = prob.with_model(|model| {
+        search_with_progress(&prob.lattice, &index, model, &heur, &spec, PROGRESS_EVERY, &mut |pr: &Progress| report(stage, pr))
+    });
     let edges = res.goal_state.map(|s| {
         res.edges_to(&prob.lattice, &index, s).into_iter().map(|(r, c, a)| (r as i64, c as i64, a)).collect()
     });

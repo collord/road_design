@@ -8,6 +8,7 @@ export type ToWorker =
       zUnits: string }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
+  | { type: "refine"; params: Params; res: number; which: "best" | "all" }
   | { type: "stop" };
 
 export interface RouteOut {
@@ -22,6 +23,26 @@ export interface RouteOut {
   how: string;
 }
 
+/** A corridor's fine route: centerline in UTM with the road's design elevation, and its costs. */
+export interface FineOut {
+  index: number;
+  res: number;
+  x: number[];
+  y: number[];
+  z: number[];
+  cost: { total: number; construction: number; operating: number; base: number; excavation: number; culverts: number;
+          crossing_fill: number; fill_m3: number; borrow_m3: number; surrogate: number };
+  length: number;
+  hairpins: number;
+  bends: number;
+  fill_crossings: number;
+  segments: { kind: string; first: number; length: number; grade: number; cost: number }[];
+  history: { iteration: number; lam_fill: number; true_cost: number; settled: number }[];
+  seconds: number;
+  cells: number;
+  macros_computed: number;
+}
+
 export type FromWorker =
   | { type: "stage"; name: string; state: "start" | "end"; ms?: number }
   | { type: "info"; info: SourceInfo; endpoints?: [number, number][] }
@@ -32,7 +53,8 @@ export type FromWorker =
       pairs: Uint32Array; costPerM: Float32Array }
   | { type: "corridors"; grid: Grid; routes: RouteOut[]; final: boolean }
   | { type: "progress"; name: string; done: number; total: number }
-  | { type: "busy"; task: "open" | "load" | "run" | null }
+  | { type: "busy"; task: "open" | "load" | "run" | "refine" | null }
+  | { type: "fine"; route: FineOut }
   | { type: "stopped"; task: string }
   | { type: "area"; grid: Grid; cells: number }
   | { type: "error"; message: string };

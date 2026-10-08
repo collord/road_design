@@ -54,6 +54,20 @@
       </div>
     </section>
     <section>
+      <h2>4. Fine search</h2>
+      <div class="grid2">
+        <label title="The fine search's cell size. Hairpins and bends need fine cells: on Red Mountain (6%, R_min 10 m) 10 m cells give a route six times dearer than 5 m.">Cell size (m) <input id="fine-res" type="number" min="1" step="1" value="5"></label>
+        <label>Corridors
+          <select id="fine-which"><option value="best">the best</option><option value="all">all</option></select>
+        </label>
+      </div>
+      <p class="muted">Each corridor's buffer is searched on the heading lattice, with hairpins, bends and fill crossings, as the command line's fine stage does. A corridor at 5 m takes a few minutes; Stop takes effect between searches.</p>
+      <div class="row">
+        <button id="refine" type="button" disabled>Refine</button>
+      </div>
+      <div class="table-wrap"><table id="fine"></table></div>
+    </section>
+    <section>
       <h2>Layers</h2>
       <div class="grid2">
         <label>Base map

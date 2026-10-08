@@ -9,6 +9,7 @@
 //! centerline crosses channels, and truck travel and climb. Right-hand macros are the reverses of
 //! left ones, so tables of left macros price both directions.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use crate::{culvert_cost, Grid, Run};
 
 const BIG: f64 = 1e6;
@@ -782,6 +783,7 @@ pub fn bend_core(
 }
 
 /// Per-heading geometry of the lattice, for building tables.
+#[derive(Clone, Copy, Debug)]
 pub struct Headings<'a> {
     /// Heading vectors (x east, y north), in lattice cells.
     pub vx: &'a [f64],
@@ -796,6 +798,7 @@ impl Headings<'_> {
 }
 
 /// Bend lattice geometry per (heading, slot) (lattice.BendGeometry), row-major (nh, ns).
+#[derive(Clone, Copy, Debug)]
 pub struct BendShapes<'a> {
     pub ns: usize,
     pub x: &'a [i64],
@@ -824,6 +827,37 @@ where
     table
 }
 
+/// One entry of the hairpin table: the left hairpin from (r, c) in heading h, slot j.
+#[allow(clippy::too_many_arguments)]
+pub fn hairpin_entry(r: i64, c: i64, h: usize, j: usize, heads: &Headings, slots: &[i64], res: f64, t: &MacroTerrain,
+                     hp: &HairpinParams) -> f32 {
+    let k = slots[h * N_SLOTS + j];
+    if t.open.at(r, c) == 0 || k == 0 {
+        return f32::INFINITY;
+    }
+    let (ux, uy, vlen) = heads.unit(h);
+    let mut out = [0.0f64; HP_N];
+    let cost = best_hairpin(r, c, ux, uy, k, vlen, res, t, hp, &mut out);
+    if cost < f64::INFINITY { cost as f32 } else { f32::INFINITY }
+}
+
+/// One entry of the bend table: the left bend from (r, c) in heading h, slot j.
+#[allow(clippy::too_many_arguments)]
+pub fn bend_entry(r: i64, c: i64, h: usize, j: usize, heads: &Headings, shapes: &BendShapes, res: f64, t: &MacroTerrain,
+                  bp: &BendParams) -> f32 {
+    if t.open.at(r, c) == 0 {
+        return f32::INFINITY;
+    }
+    let (ux, uy, _) = heads.unit(h);
+    let q = h * shapes.ns + j;
+    let mut out = [0.0f64; BEND_N];
+    let cost = bend_core(
+        r, c, ux, uy, shapes.x[q], shapes.y[q], shapes.l1[q], shapes.radius, shapes.dth[q], shapes.l2[q], res, t, bp,
+        &mut out,
+    );
+    if cost < f64::INFINITY { cost as f32 } else { f32::INFINITY }
+}
+
 /// Left-hairpin cost per (cell, heading, slot) for the given flat cells (row * nc + col);
 /// slots[h * N_SLOTS + j] is the leg spacing in lattice steps, 0 for an unused slot.
 /// Infinite where infeasible; float32 like the numba table.
@@ -832,21 +866,9 @@ pub fn hairpin_table(cells: &[i64], heads: &Headings, slots: &[i64], res: f64, t
     let nc = t.nc();
     map_cells(cells.len(), nh * N_SLOTS, |i, row| {
         let (r, c) = (cells[i] / nc, cells[i] % nc);
-        if t.open.at(r, c) == 0 {
-            return;
-        }
-        let mut out = [0.0f64; HP_N];
         for h in 0..nh {
-            let (ux, uy, vlen) = heads.unit(h);
             for j in 0..N_SLOTS {
-                let k = slots[h * N_SLOTS + j];
-                if k == 0 {
-                    continue;
-                }
-                let cost = best_hairpin(r, c, ux, uy, k, vlen, res, t, hp, &mut out);
-                if cost < f64::INFINITY {
-                    row[h * N_SLOTS + j] = cost as f32;
-                }
+                row[h * N_SLOTS + j] = hairpin_entry(r, c, h, j, heads, slots, res, t, hp);
             }
         }
     })
@@ -859,22 +881,63 @@ pub fn bend_table(cells: &[i64], heads: &Headings, shapes: &BendShapes, res: f64
     let nc = t.nc();
     map_cells(cells.len(), nh * ns, |i, row| {
         let (r, c) = (cells[i] / nc, cells[i] % nc);
-        if t.open.at(r, c) == 0 {
-            return;
-        }
-        let mut out = [0.0f64; BEND_N];
         for h in 0..nh {
-            let (ux, uy, _) = heads.unit(h);
             for j in 0..ns {
-                let q = h * ns + j;
-                let cost = bend_core(
-                    r, c, ux, uy, shapes.x[q], shapes.y[q], shapes.l1[q], shapes.radius, shapes.dth[q], shapes.l2[q],
-                    res, t, bp, &mut out,
-                );
-                if cost < f64::INFINITY {
-                    row[q] = cost as f32;
-                }
+                row[h * ns + j] = bend_entry(r, c, h, j, heads, shapes, res, t, bp);
             }
         }
     })
+}
+
+/// A cache entry not computed yet: a NaN no computation produces.
+pub const UNSET: u32 = 0x7fc0_dead;
+
+/// A cache for lazily computed macro costs, all entries UNSET.
+pub fn lazy_cache(n: usize) -> Vec<AtomicU32> {
+    (0..n).map(|_| AtomicU32::new(UNSET)).collect()
+}
+
+/// Which macro a lazy table prices.
+#[derive(Clone, Copy, Debug)]
+pub enum MacroShape<'a> {
+    Hairpin { slots: &'a [i64], hp: &'a HairpinParams },
+    Bend { shapes: BendShapes<'a>, bp: &'a BendParams },
+}
+
+/// A macro table computed entry by entry as the search asks for them (the same values as the
+/// whole table: hairpin_entry and bend_entry), remembered in `cache` (cells, nh, slots).
+/// Atomics make it shareable between threads; a race computes an entry twice, alike.
+#[derive(Debug)]
+pub struct LazyMacro<'a> {
+    pub cache: &'a [AtomicU32],
+    pub cells: &'a [i64],
+    pub heads: Headings<'a>,
+    pub res: f64,
+    pub t: MacroTerrain<'a>,
+    pub shape: MacroShape<'a>,
+}
+
+impl LazyMacro<'_> {
+    /// Entry (table row k, heading h, slot j) of a table with nh headings and ns slots.
+    #[inline]
+    pub fn entry(&self, k: usize, h: usize, j: usize, nh: usize, ns: usize) -> f32 {
+        let slot = &self.cache[(k * nh + h) * ns + j];
+        let v = slot.load(Ordering::Relaxed);
+        if v != UNSET {
+            return f32::from_bits(v);
+        }
+        let nc = self.t.nc();
+        let (r, c) = (self.cells[k] / nc, self.cells[k] % nc);
+        let cost = match self.shape {
+            MacroShape::Hairpin { slots, hp } => hairpin_entry(r, c, h, j, &self.heads, slots, self.res, &self.t, hp),
+            MacroShape::Bend { shapes, bp } => bend_entry(r, c, h, j, &self.heads, &shapes, self.res, &self.t, bp),
+        };
+        slot.store(cost.to_bits(), Ordering::Relaxed);
+        cost
+    }
+
+    /// Entries computed so far.
+    pub fn computed(&self) -> usize {
+        self.cache.iter().filter(|v| v.load(Ordering::Relaxed) != UNSET).count()
+    }
 }

@@ -78,12 +78,20 @@ pub struct MacroTable<'a> {
     /// (cells, headings, slots)
     pub shape: [usize; 3],
     pub lookup: Grid<'a, i32>,
+    /// Entries computed when first asked for, instead of `data`.
+    pub lazy: Option<&'a macros::LazyMacro<'a>>,
 }
 
 impl<'a> MacroTable<'a> {
     pub fn new(data: &'a [f32], shape: [usize; 3], lookup: Grid<'a, i32>) -> Self {
         assert_eq!(data.len(), shape.iter().product::<usize>());
-        MacroTable { data, shape, lookup }
+        MacroTable { data, shape, lookup, lazy: None }
+    }
+
+    /// A table whose entries are computed as the search asks for them.
+    pub fn lazy(lazy: &'a macros::LazyMacro<'a>, shape: [usize; 3], lookup: Grid<'a, i32>) -> Self {
+        assert_eq!(lazy.cache.len(), shape.iter().product::<usize>());
+        MacroTable { data: &[], shape, lookup, lazy: Some(lazy) }
     }
 
     #[inline(always)]
@@ -95,6 +103,9 @@ impl<'a> MacroTable<'a> {
         let k = self.lookup.at(r, c);
         if k < 0 || k as usize >= n {
             return f64::INFINITY;
+        }
+        if let Some(l) = self.lazy {
+            return l.entry(k as usize, h, s, nh, ns) as f64;
         }
         self.data[(k as usize * nh + h) * ns + s] as f64
     }
