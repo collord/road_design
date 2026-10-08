@@ -8,7 +8,9 @@ steeper than g_max). Two exact searches give the best route and the corridor fie
 corridors come from saddles and a penalty loop. The corridors, buffered by tin_buffer, are the
 region the fine lattice search covers.
 
-Unlike `--clip auto` there is no search window: the whole DEM is in play.
+The graph covers the endpoints' box plus tin_margin (by default 10 km, room for detours down
+valleys), within the DEM: a whole USGS tile is never loaded. If that window at tin_res would
+exceed tin_max_cells, the graph is built coarser, and the log says so.
 """
 
 from __future__ import annotations
@@ -32,7 +34,40 @@ KINDS = {0: "triangulation", 1: "channel", 2: "saddle", 3: "background", 4: "end
 # Recorded in a --clip tin run's inputs (so in its id): bump it when the graph or its corridor
 # search changes what corridors it finds. (The first version, with no turning cost on the graph,
 # recorded nothing.) tin-2: turning cost on the graph, penalties graded by the corridor field.
-COARSE_ENGINE = "tin-2"   # node sampling (optional) adds corridors only when asked for
+# tin-3: the graph covers the endpoints' box plus tin_margin, not the whole DEM.
+COARSE_ENGINE = "tin-3"
+
+# What building the graph holds per cell of its window: the rasters (working and smoothed DEM,
+# gradients, slope, soil, area, codes...) and the graph's share. For the memory check.
+BYTES_PER_GRAPH_CELL = 160
+
+
+def graph_window(dem, p: Params, start, goal, log=print):
+    """(bounds, resolution) of the graph: the endpoints' box plus tin_margin, within the DEM's
+    extent (in the working CRS), at tin_res or coarser if it would exceed tin_max_cells."""
+    import rasterio
+    from rasterio.warp import transform_bounds
+
+    from .terrain import NICE_RESOLUTIONS, working_crs
+
+    from pyproj import CRS
+
+    with rasterio.open(dem) as ds:
+        src = CRS.from_user_input(ds.crs)
+        wcrs = working_crs(src, ds.bounds)
+        dx0, dy0, dx1, dy1 = transform_bounds(src, wcrs, *ds.bounds)
+    m = p.tin_margin
+    bounds = (max(min(start[0], goal[0]) - m, dx0), max(min(start[1], goal[1]) - m, dy0),
+              min(max(start[0], goal[0]) + m, dx1), min(max(start[1], goal[1]) + m, dy1))
+    area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+    res = p.tin_res
+    if area / res**2 > p.tin_max_cells:
+        res = next((r for r in NICE_RESOLUTIONS if r >= res and area / r**2 <= p.tin_max_cells),
+                   math.sqrt(area / p.tin_max_cells))
+        log(f"coarse graph: a {area / 1e6:,.0f} km2 window at {p.tin_res:g} m would be "
+            f"{area / p.tin_res**2 / 1e6:,.1f} million cells (tin_max_cells {p.tin_max_cells / 1e6:g} million); "
+            f"building it at {res:g} m")
+    return bounds, float(res)
 
 
 def hairpin_allowance(p: Params) -> float:
@@ -49,9 +84,14 @@ def tin_corridor(dem, p: Params, start, goal, exclude, log=print, buffer: float 
 
     from .search import build_cost_table
 
+    from . import memguard
+
     buffer = p.tin_buffer if buffer is None else buffer
-    with stage("load and preprocess"):
-        grid, _ = load_grid(dem, p, p.tin_res, None)
+    bounds, gres = graph_window(dem, p, start, goal, log)
+    cells = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1]) / gres**2
+    memguard.require(cells * BYTES_PER_GRAPH_CELL / memguard.GB, "coarse graph", memguard.FLOOR_GB)
+    with stage("load and preprocess", resolution_m=gres):
+        grid, _ = load_grid(dem, p, gres, bounds)
         t = preprocess(grid, start, goal, p, exclude)
     res = grid.res
     f8 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
@@ -85,7 +125,7 @@ def tin_corridor(dem, p: Params, start, goal, exclude, log=print, buffer: float 
     gdf = gpd.GeoDataFrame(recs, geometry=lines, crs=grid.crs)
     region = features.rasterize([(unary_union([l.buffer(buffer) for l in lines]), 1)], out_shape=grid.shape,
                                 transform=grid.transform, fill=0, dtype="uint8").astype(bool)
-    info = {"tin_res_m": res, "nodes": int(rows.size), "node_kinds": {KINDS[k]: int((kinds == k).sum()) for k in KINDS},
+    info = {"tin_res_m": res, "window_bounds": [round(v, 1) for v in bounds], "nodes": int(rows.size), "node_kinds": {KINDS[k]: int((kinds == k).sum()) for k in KINDS},
             "edges": int(n_edges), "buffer_m": buffer, "region_cells": int(region.sum()), "corridors": recs,
             "cost_samples": int(p.cost_samples), "cost_sample_share_none": nan(cost_none),
             "node_samples": int(p.tin_node_samples), "node_sample_nodes": int(node_s[1]),

@@ -73,6 +73,8 @@ class Params:
     clip_buffer: float
     clip_coarse_margin: float
     tin_res: float
+    tin_margin: float
+    tin_max_cells: float
     tin_tolerance: float
     tin_k: float
     tin_edge_max: float

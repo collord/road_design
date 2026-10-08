@@ -52,3 +52,35 @@ def test_node_and_cost_sampling(tmp_path):
     p0 = load_params(overrides={"tin_res": 5.0, "tin_buffer": 100.0, "tin_block": 25.0, "tin_edge_max": 60.0})
     _, _, info0, gdf0 = tin_corridor(path, p0, s, g, [], log=lambda m: None)
     assert gdf0.node_sample_share.isna().all() and info0["node_sample_share_new"] is None
+
+
+def test_graph_window_on_a_geographic_dem(tmp_path):
+    """A NAD83 latitude/longitude DEM larger than the endpoints' box plus tin_margin: the graph
+    covers only that window (reprojected to UTM), not the whole DEM."""
+    import numpy as np
+    from affine import Affine
+    from pyproj import CRS, Transformer
+
+    from roadsearch.params import load_params
+    from roadsearch.tin import graph_window, tin_corridor
+
+    from .conftest import write_dem
+    from .test_search import random_terrain
+
+    n = 240
+    z = random_terrain(5, n=n, relief=20.0) + 1500.0
+    d = 1.0 / 10800.0                                   # 1/3 arc-second
+    lon0, lat0 = -115.5, 44.95
+    path = write_dem(tmp_path / "geo.tif", z, Affine(d, 0, lon0, 0, -d, lat0), CRS.from_epsg(4269))
+    # Endpoints 60 cells in from opposite corners of the middle third, in UTM 11N.
+    to_utm = Transformer.from_crs(4269, 32611, always_xy=True)
+    s = to_utm.transform(lon0 + 90 * d, lat0 - 90 * d)
+    g = to_utm.transform(lon0 + 150 * d, lat0 - 150 * d)
+    p = load_params(overrides={"tin_res": 5.0, "tin_margin": 150.0, "tin_buffer": 100.0, "tin_block": 25.0,
+                               "tin_edge_max": 60.0})
+    bounds, res = graph_window(path, p, s, g)
+    dem_w = n * d * 111_320 * np.cos(np.radians(lat0))   # m
+    assert res == 5.0 and bounds[2] - bounds[0] < 0.75 * dem_w
+    grid, region, info, gdf = tin_corridor(path, p, s, g, [], log=lambda m: None)
+    assert grid.crs.to_epsg() == 32611 and info["window_bounds"] == [round(v, 1) for v in bounds]
+    assert len(gdf) >= 1 and gdf.crs.to_epsg() == 32611

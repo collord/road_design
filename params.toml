@@ -103,6 +103,8 @@ clip_coarse_margin = 2000.0  # --clip auto: the coarse pass covers the endpoint 
 
 # --clip tin: the coarse stage on a sparse graph over the whole DEM (rust/tin-graph)
 tin_res = 15.0         # cell size (m) of the rasters the graph is built and costed on
+tin_margin = 10000.0   # the graph covers the endpoints' box plus this margin (m), within the DEM
+tin_max_cells = 10000000  # ... and if that window at tin_res is more cells than this, a coarser one
 tin_tolerance = 5.0    # maximum vertical error (m) of the DEM triangulation that places most nodes
 tin_k = 16             # edges per node (nearest neighbors)
 tin_edge_max = 600.0   # longest edge (m)
