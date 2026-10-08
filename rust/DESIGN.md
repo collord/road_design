@@ -170,5 +170,14 @@ Quadric-error decimation (`meshopt-rs`) is available if a non-heightfield mesh i
    reaches them (the same values as the tables). On Red Mountain at 5 m a corridor costs 263,468
    in the browser against 275,504 for the command line's run; it takes about 6 minutes in one
    thread, two thirds of it in the first search's macro designs (about 13 microseconds each).
-   Next: those designs in parallel (workers or WebAssembly threads), and weighted-A* drafts.
+   Since then: up to 8 helper workers compute the designs (all of them, about 42 million on Red
+   Mountain at 5 m) into the search's cache, and each search's route is drawn as it is found:
+   about 2 minutes in all, the first route at about 80 to 110 s. A long profile and a GeoJSON
+   download follow, and a corridor needing more than 1.5 GB is refused.
+   Tried and dropped: weighted-A* drafts. The climb heuristic underestimates the cost about
+   threefold here, so w = 3 still settled half the states; a draft confined near the coarse line
+   (150 m) cost four times the best, as the fine route leaves the coarse line. A tighter
+   admissible heuristic (a relaxed cell-graph search pricing earthwork from the slope) would cut
+   the states every search settles; it has to stay admissible to keep routes exact.
+   Next: that heuristic, and long corridors in pieces (the gates above).
 5. **Browser input and output**, and a memory budget for a whole run in a tab.
