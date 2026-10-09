@@ -35,15 +35,21 @@ pub struct SearchSpec<'a> {
     pub stop_at_goal: bool,
     /// Stop once the smallest key (cost, plus the estimate for A*) exceeds this.
     pub max_cost: f64,
+    /// Goal states instead of a goal cell (arrivals with given headings, e.g. a pad's entries):
+    /// the first settled is `goal_state`, and A* stops there.
+    pub goal_states: Option<&'a [u64]>,
+    /// Starting costs of the sources (default 0): a search from a road network, say, where each
+    /// junction carries the cost of its way back to the network's root.
+    pub source_costs: Option<&'a [f64]>,
 }
 
 impl<'a> SearchSpec<'a> {
     pub fn dijkstra(sources: &'a [u64]) -> Self {
-        SearchSpec { sources, goal: None, stop_at_goal: false, max_cost: f64::INFINITY }
+        SearchSpec { sources, goal: None, stop_at_goal: false, max_cost: f64::INFINITY, goal_states: None, source_costs: None }
     }
 
     pub fn astar(sources: &'a [u64], goal: (i32, i32)) -> Self {
-        SearchSpec { sources, goal: Some(goal), stop_at_goal: true, max_cost: f64::INFINITY }
+        SearchSpec { sources, goal: Some(goal), stop_at_goal: true, max_cost: f64::INFINITY, goal_states: None, source_costs: None }
     }
 }
 
@@ -155,14 +161,18 @@ where
     let mut closed = vec![0u8; n];
     let mut heap = MinHeap::with_capacity(1 << 16);
     let (goal_r, goal_c) = spec.goal.unwrap_or((-1, -1));
-    for &s in spec.sources {
+    for (i, &s) in spec.sources.iter().enumerate() {
         assert!((s as usize) < n, "source state {s} is not in the index");
-        g[s as usize] = 0.0;
+        let g0 = spec.source_costs.map_or(0.0, |c| c[i]);
+        if g0 >= g[s as usize] {
+            continue;
+        }
+        g[s as usize] = g0;
         let key = if spec.stop_at_goal {
             let (r, c) = index.cell((s / nh as u64) as u32);
-            heur.estimate(r, c)
+            g0 + heur.estimate(r, c)
         } else {
-            0.0
+            g0
         };
         heap.push(key, s);
     }
@@ -201,7 +211,14 @@ where
         }
         let h = (u % nh as u64) as usize;
         let (r, c) = index.cell(cell);
-        if r == goal_r && c == goal_c && goal_state.map_or(true, |gs| g[ui] < g[gs as usize]) {
+        if let Some(gs) = spec.goal_states {
+            if gs.contains(&u) {
+                goal_state = Some(u);
+                if spec.stop_at_goal {
+                    break;
+                }
+            }
+        } else if r == goal_r && c == goal_c && goal_state.map_or(true, |gs| g[ui] < g[gs as usize]) {
             goal_state = Some(u);
             if spec.stop_at_goal {
                 break;

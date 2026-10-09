@@ -228,6 +228,19 @@ try {
       const most = Number(rowsOut.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
       if (!(most <= 2)) throw new Error(`a pad has ${most} pads beyond it`);
       await shot(`${name}-network`);
+      // The fine network: the same pads on the lattice at 5 m, within the buffer (default 300 m) of the coarse roads.
+      if (process.env.FINE_NETWORK !== "0") {
+        const tFine = Date.now();
+        await evaluate(`document.querySelector("#refine").click()`);
+        const fn = await until(`(${hasError}) || (!document.querySelector("#refine").disabled &&
+          [...document.querySelectorAll("#fine td")].some((td) => td.textContent === "done") && "done")`, "the fine network", 3600000);
+        if (fn !== "done") throw new Error(fn);
+        const fineRows: string[] = await evaluate(`[...document.querySelectorAll("#fine tr")].map((r) => [...r.cells].map((c) => c.textContent).join(": "))`);
+        console.log(`  fine network in ${((Date.now() - tFine) / 1000).toFixed(0)} s: ${fineRows.slice(1).join("; ")}`);
+        const mostFine = Number(fineRows.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
+        if (!(mostFine <= 2)) throw new Error(`a pad has ${mostFine} pads beyond it`);
+        await shot(`${name}-fine-network`);
+      }
       await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "route"; s.dispatchEvent(new Event("change")); })()`);
     }
     // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.

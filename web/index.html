@@ -78,6 +78,7 @@
     <section id="fine-section">
       <h2>4. Fine search</h2>
       <div class="grid2">
+        <label id="fine-buffer-row" title="The fine network may use the ground within this distance of the coarse network's roads." hidden>Buffer around the network (m) <input id="fine-buffer" type="number" min="20" step="10" value="300"></label>
         <label title="The fine search's cell size. Hairpins and bends need fine cells: on Red Mountain (6%, R_min 10 m) 10 m cells give a route six times dearer than 5 m.">Cell size (m) <input id="fine-res" type="number" min="1" step="1" value="5"></label>
         <label>Corridors
           <select id="fine-which"><option value="best">the best</option><option value="all">all</option></select>

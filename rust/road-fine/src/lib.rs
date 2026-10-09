@@ -10,6 +10,7 @@
 
 pub mod lattice;
 pub mod masshaul;
+pub mod network;
 pub mod params;
 pub mod pipeline;
 pub mod problem;

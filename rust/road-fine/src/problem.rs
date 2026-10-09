@@ -56,15 +56,15 @@ pub fn corridor_mask(nr: usize, nc: usize, res: f64, line: &[(f64, f64)], buffer
 /// corridor's fine search stays its own and they cannot converge on one route.
 pub fn corridor_region(nr: usize, nc: usize, res: f64, own: &[(f64, f64)], others: &[Vec<(f64, f64)>], buffer: f64,
                        slack: f64) -> Vec<u8> {
-    let (d_own, nearer) = own_ground(nr, nc, res, own, others, slack);
+    let (d_own, nearer) = own_ground(nr, nc, res, std::slice::from_ref(&own.to_vec()), others, slack);
     d_own.iter().zip(&nearer).map(|(&a, &n)| u8::from(a <= buffer && n)).collect()
 }
 
-/// Each cell's distance (m) from the own line, and whether it is no farther from it than from
+/// Each cell's distance (m) from the own lines, and whether it is no farther from them than from
 /// every other line, give or take `slack` m.
-pub fn own_ground(nr: usize, nc: usize, res: f64, own: &[(f64, f64)], others: &[Vec<(f64, f64)>], slack: f64)
+pub fn own_ground(nr: usize, nc: usize, res: f64, own: &[Vec<(f64, f64)>], others: &[Vec<(f64, f64)>], slack: f64)
                   -> (Vec<f64>, Vec<bool>) {
-    let d_own = line_distance(nr, nc, res, own);
+    let d_own = lines_distance(nr, nc, res, own);
     if others.is_empty() {
         let n = d_own.len();
         return (d_own, vec![true; n]);

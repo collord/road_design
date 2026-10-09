@@ -13,7 +13,9 @@ const ready = init();
 let source: Source | null = null;
 let area: { grid: Grid; session: wasm.Session; start: [number, number]; goal: [number, number];
              startXY: [number, number]; goalXY: [number, number]; zScale: number;
-             pads: ([number, number] | null)[];
+             pads: ([number, number] | null)[]; padsXY: [number, number][];
+             /** The coarse pad network: its edges (UTM) and the order pads joined it (page pads). */
+             network?: { lines: [number, number][][]; order: number[] };
              acc?: Float32Array; routes?: RouteOut[] } | null = null;
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
@@ -130,7 +132,7 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
   const pads = m.pads.map(([x, y]) => cellOf(grid, x, y));
   area?.session.free();
   area = { grid, session: new wasm.Session(z, grid.w, grid.h, res), start: s, goal: g, startXY: m.start,
-           goalXY: m.goal ?? m.start, zScale, pads };
+           goalXY: m.goal ?? m.start, zScale, pads, padsXY: m.pads };
   const rgba = grayRgba(wasm.hillshade(z, grid.w, grid.h, res));
   post({ type: "raster", layer: "hillshade", grid, rgba }, [rgba.buffer]);
   post({ type: "area", grid, cells });
@@ -414,7 +416,120 @@ async function network(p: Params, b: number, refine: number) {
     send(`pass ${pass}: ${moved.length} pads rerouted`, false);
     if (!moved.length) break;
   }
+  // Kept for the fine stage: the edges in UTM, and the order the pads joined.
+  const st = session.network_state() as { pairs: number[]; order: number[] };
+  const nr = session.node_rows(), nc = session.node_cols();
+  const xy = (v: number): [number, number] => [grid.x0 + (nc[v] + 0.5) * grid.res, grid.y1 - (nr[v] + 0.5) * grid.res];
+  const lines: [number, number][][] = [];
+  for (let i = 0; i < st.pairs.length; i += 2) lines.push([xy(st.pairs[i]), xy(st.pairs[i + 1])]);
+  const order = st.order.map((t) => padTerm.indexOf(t + 1)).filter((i) => i >= 0);
+  area.network = { lines, order: [...order, ...pads.map((_, i) => i).filter((i) => !order.includes(i))] };
   send("done", true);
+}
+
+/**
+ * The pad network on the fine lattice: the DEM read at `res` over the coarse network's edges
+ * plus `buffer` m, the pads as level footprints along the contour (the road arriving along their
+ * long axis), each pad's branch searched from the network so far in the coarse network's order,
+ * then improvement passes. The network is posted after every pad; the searches show as the
+ * wavefront.
+ */
+async function refineNetwork(p: Params, res: number, buffer: number, b: number, length: number, width: number) {
+  if (!area?.network || !source) throw new Error("find the network first");
+  const { network: net, startXY, zScale, padsXY } = area;
+  const [bx0, by0, bx1, by1] = source.info.bbox;
+  const pts = [startXY, ...padsXY, ...net.lines.flat()];
+  const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+  let len = 0;
+  for (const [a, c] of net.lines) len += Math.hypot(c[0] - a[0], c[1] - a[1]);
+  const bufferCells = (2 * buffer * len + Math.PI * buffer * buffer * (padsXY.length + 1)) / (res * res);
+  const boxCells = (Math.max(...xs) - Math.min(...xs) + 2 * buffer) * (Math.max(...ys) - Math.min(...ys) + 2 * buffer) / (res * res);
+  const need = Math.min(bufferCells, boxCells) * FINE_BYTES_PER_CELL + boxCells * FINE_BYTES_PER_GRID_CELL;
+  if (need > FINE_BUDGET) {
+    throw new Error(`the network at ${res} m needs about ${(need / 1e9).toFixed(1)} GB, over the ${FINE_BUDGET / 1e9} GB ` +
+      `the browser search allows: use cells of ${Math.ceil(res * Math.sqrt(need / FINE_BUDGET))} m or more, or a smaller buffer`);
+  }
+  const x0 = Math.floor(Math.max(Math.min(...xs) - buffer, bx0) / res) * res;
+  const y1 = Math.ceil(Math.min(Math.max(...ys) + buffer, by1) / res) * res;
+  const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(Math.max(...xs) + buffer, bx1) - x0) / res),
+                     h: Math.ceil((y1 - Math.max(Math.min(...ys) - buffer, by0)) / res) };
+  const z = await timedAsync(`network: read the DEM at ${res} m`, () =>
+    source!.resampleBands(fg, wasm.resample, zScale, -1, async (done, total) => {
+      progress(`network: read the DEM at ${res} m`, done, total);
+      await checkpoint();
+    }));
+  const toR = (y: number) => (fg.y1 - y) / res - 0.5, toC = (x: number) => (x - fg.x0) / res - 0.5;
+  const lrA: number[] = [], lcA: number[] = [];
+  for (const line of net.lines) {
+    for (const [x, y] of line) { lrA.push(toR(y)); lcA.push(toC(x)); }
+    lrA.push(NaN); lcA.push(NaN);
+  }
+  const lr = new Float64Array(lrA), lc = new Float64Array(lcA), none = new Float64Array(0);
+  const paramsJson = JSON.stringify(p);
+  const fs = timed(`network: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
+    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, none, none, 1, false));
+  try {
+    await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer, or: none,
+                                 oc: none, apart: 1 }, "network", 0, fg);
+    const cell = (q: [number, number]) => [Math.floor((fg.y1 - q[1]) / res), Math.floor((q[0] - fg.x0) / res)];
+    const [ar, ac] = cell(startXY);
+    const axes = fs.network_begin(ar, ac, new Float64Array(padsXY.map((q) => toR(q[1]))),
+                                  new Float64Array(padsXY.map((q) => toC(q[0]))), length, width, b);
+    post({ type: "padAxes", angles: Array.from(axes) });
+    const n = padsXY.length;
+    let stage = "", tStage = 0;
+    const onProgress = (o: { stage: string; settled: number; key: number; cells: Uint32Array; g: Float32Array;
+                             rows: Float64Array; cols: Float64Array }) => {
+      try {
+        const x = o.cols.map((c) => fg.x0 + (c + 0.5) * res), y = o.rows.map((row) => fg.y1 - (row + 0.5) * res);
+        post({ type: "explore", index: 0, grid: fg, stage: o.stage, settled: o.settled, key: o.key, cells: o.cells,
+               g: o.g, x, y }, [o.cells.buffer, o.g.buffer, x.buffer, y.buffer]);
+      } catch (err) {
+        post({ type: "error", message: `progress report: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      if (o.stage !== stage) {
+        if (stage) post({ type: "stage", name: `network: ${stage}`, state: "end", ms: performance.now() - tStage });
+        stage = o.stage;
+        tStage = performance.now();
+        post({ type: "stage", name: `network: ${o.stage}`, state: "start" });
+      }
+      progress(`network: ${o.stage}, states settled`, o.settled, 0);
+    };
+    const closeStage = () => {
+      if (stage) post({ type: "stage", name: `network: ${stage}`, state: "end", ms: performance.now() - tStage });
+      stage = "";
+    };
+    const sendState = (phase: string, final: boolean) => {
+      const st = fs.network_state() as { runs: { pad: number; uses: number; rows: number[]; cols: number[]; z: number[] }[];
+        connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends: number[]; construction: number;
+        operating: number };
+      post({ type: "fineNetwork", res, phase, final, connected: st.connected, unreachable: st.unreachable, beyond: st.beyond,
+             ends: st.ends,
+             construction: st.construction, operating: st.operating,
+             runs: st.runs.map((r) => ({ pad: r.pad, uses: r.uses, z: r.z, x: r.cols.map((c) => fg.x0 + (c + 0.5) * res),
+                                         y: r.rows.map((row) => fg.y1 - (row + 0.5) * res) })) });
+    };
+    let k = 0;
+    for (const pad of net.order) {
+      progress("network: connect the pads", k, n);
+      await checkpoint();
+      fs.network_connect(pad, onProgress);
+      closeStage();
+      k++;
+      sendState(`${k} of ${n} pads searched`, false);
+    }
+    for (let pass = 1; pass <= 3; pass++) {
+      await checkpoint();
+      const moved = fs.network_improve(onProgress);
+      closeStage();
+      sendState(`improvement pass ${pass}: ${moved.length} pads rerouted`, false);
+      if (!moved.length) break;
+    }
+    sendState("done", true);
+  } finally {
+    fs.free();
+    stopPool();
+  }
 }
 
 /**
@@ -547,6 +662,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       else if (m.type === "load") await load(m);
       else if (m.type === "run") await run(m.params);
       else if (m.type === "network") await network(m.params, m.b, m.refine);
+      else if (m.type === "refineNetwork") await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width);
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);

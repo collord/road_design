@@ -250,7 +250,7 @@ fn search<'py>(
             .iter()
             .map(|&s| index.get((s / nh) as i64 / nc as i64, (s / nh) % nc as i64).unwrap() as u64 * nh as u64 + (s % nh) as u64)
             .collect();
-        let spec = SearchSpec { sources: &src, goal, stop_at_goal: astar, max_cost };
+        let spec = SearchSpec { sources: &src, goal, stop_at_goal: astar, max_cost, goal_states: None, source_costs: None };
         let out = if astar {
             let (gr, gc) = goal.unwrap();
             let heur = ClimbHeuristic {

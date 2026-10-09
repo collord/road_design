@@ -10,6 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use road_fine::params::Params;
 use road_fine::masshaul::TrueCost;
+use road_fine::network::FineNetwork;
 use road_fine::pipeline::{find_route, FineProgress};
 use road_fine::problem::{own_ground, preprocess, Macros, Problem};
 use road_fine::route::Segment;
@@ -117,6 +118,42 @@ fn fine_route(segs: &[Segment], c: &TrueCost, lam_fill: f64) -> FineRoute {
 pub struct FineSession {
     prob: Problem,
     excluded: Vec<bool>,
+    network: Option<FineNetwork>,
+}
+
+/// Polylines from points with NaN between lines.
+fn polylines(rows: &[f64], cols: &[f64]) -> Vec<Vec<(f64, f64)>> {
+    let mut out: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
+    for (&r, &c) in rows.iter().zip(cols) {
+        if r.is_nan() || c.is_nan() {
+            out.push(Vec::new());
+        } else {
+            out.last_mut().unwrap().push((r, c));
+        }
+    }
+    out.retain(|l| !l.is_empty());
+    out
+}
+
+/// A progress callback for the page: {stage, settled, key, cells, g, rows, cols} (see search).
+fn js_report(progress: &js_sys::Function) -> impl FnMut(&str, &FineProgress) -> bool + '_ {
+    move |stage: &str, pr: &FineProgress| -> bool {
+        let o = js_sys::Object::new();
+        let set = |k: &str, v: &JsValue| {
+            let _ = js_sys::Reflect::set(&o, &k.into(), v);
+        };
+        set("stage", &JsValue::from_str(stage));
+        set("settled", &JsValue::from_f64(pr.settled as f64));
+        set("key", &JsValue::from_f64(pr.key));
+        set("cells", &js_sys::Uint32Array::from(&pr.cells[..]));
+        set("g", &js_sys::Float32Array::from(pr.g));
+        let rows: Vec<f64> = pr.path.iter().map(|p| p.0).collect();
+        let cols: Vec<f64> = pr.path.iter().map(|p| p.1).collect();
+        set("rows", &js_sys::Float64Array::from(&rows[..]));
+        set("cols", &js_sys::Float64Array::from(&cols[..]));
+        let _ = progress.call1(&JsValue::NULL, &o);
+        true
+    }
 }
 
 #[wasm_bindgen]
@@ -135,7 +172,8 @@ impl FineSession {
             return Err(js_err("the grid needs w x h values, at least 2 x 2"));
         }
         let p = Params::from_json(params_json).map_err(js_err)?;
-        let line: Vec<(f64, f64)> = line_rows.iter().zip(line_cols).map(|(&r, &c)| (r, c)).collect();
+        // The corridor's line, or a network's edges (NaN between them).
+        let lines = polylines(line_rows, line_cols);
         let mut others: Vec<Vec<(f64, f64)>> = vec![Vec::new()];
         let apart = if apart.is_nan() { 1.0 } else { apart.max(1.0) };
         if apart > 1.0 {
@@ -148,7 +186,7 @@ impl FineSession {
             }
         }
         others.retain(|l| !l.is_empty());
-        let (d_own, nearer) = own_ground(h, w, res, &line, &others, 2.0 * res);
+        let (d_own, nearer) = own_ground(h, w, res, &lines, &others, 2.0 * res);
         let closed = apart.is_infinite();
         let clip: Vec<u8> = d_own.iter().zip(&nearer).map(|(&d, &n)| u8::from(d <= buffer && (n || !closed))).collect();
         let z: Vec<f64> = z.iter().map(|&v| v as f64).collect();
@@ -157,7 +195,7 @@ impl FineSession {
         if apart > 1.0 && !closed && !others.is_empty() {
             prob.penalty = nearer.iter().map(|&n| if n { 1.0 } else { apart as f32 }).collect();
         }
-        Ok(FineSession { prob, excluded })
+        Ok(FineSession { prob, excluded, network: None })
     }
 
     /// Cells the search may use.
@@ -188,6 +226,96 @@ impl FineSession {
     /// 1 where the search may go (the corridor's buffer, minus ground too steep for a road).
     pub fn open_mask(&self) -> Vec<u8> {
         self.prob.open.clone()
+    }
+
+    /// Start a pad network on this grid: the access point (row, col) and the pads' centers (row,
+    /// col, cell coordinates), `length` x `width` m each with the long axis along the contour, at
+    /// most `b` pads beyond any pad. Returns each pad's long axis (radians, east = 0).
+    #[allow(clippy::too_many_arguments)]
+    pub fn network_begin(&mut self, ar: i32, ac: i32, pad_rows: &[f64], pad_cols: &[f64], length: f64, width: f64,
+                         b: usize) -> Result<Vec<f64>, JsValue> {
+        let (nr, nc) = (self.prob.nr as i32, self.prob.nc as i32);
+        if ar < 0 || ac < 0 || ar >= nr || ac >= nc {
+            return Err(js_err("the access point is outside the network's grid"));
+        }
+        let centers: Vec<(f64, f64)> = pad_rows.iter().zip(pad_cols).map(|(&r, &c)| (r, c)).collect();
+        let net = FineNetwork::new(&mut self.prob, (ar as i64, ac as i64), &centers, length, width, b);
+        let axes = net.pads.iter().map(|p| p.axis).collect();
+        self.network = Some(net);
+        Ok(axes)
+    }
+
+    /// Connect pad `p` to the network so far; false if no branch reaches it. Progress as for search.
+    pub fn network_connect(&mut self, p: usize, progress: &js_sys::Function) -> Result<bool, JsValue> {
+        let net = self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?;
+        if p >= net.pads.len() {
+            return Err(js_err("no such pad"));
+        }
+        let mut report = js_report(progress);
+        Ok(net.connect(&self.prob, p, &mut report))
+    }
+
+    /// One improvement pass; returns the pads whose branch moved.
+    pub fn network_improve(&mut self, progress: &js_sys::Function) -> Result<Vec<u32>, JsValue> {
+        let net = self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?;
+        let mut report = js_report(progress);
+        Ok(net.improve(&self.prob, &mut report).into_iter().map(|p| p as u32).collect())
+    }
+
+    /// The network: {runs: [{pad, uses, rows, cols, z}] (stretches of a branch used by the same
+    /// number of pads; grid coordinates and design elevations), connected, unreachable, beyond,
+    /// construction, operating}.
+    pub fn network_state(&self) -> Result<JsValue, JsValue> {
+        let net = self.network.as_ref().ok_or_else(|| js_err("network_begin() first"))?;
+        #[derive(Serialize)]
+        struct Run {
+            pad: usize,
+            uses: u32,
+            rows: Vec<f64>,
+            cols: Vec<f64>,
+            z: Vec<f64>,
+        }
+        #[derive(Serialize)]
+        struct State {
+            runs: Vec<Run>,
+            connected: Vec<bool>,
+            unreachable: Vec<bool>,
+            beyond: Vec<usize>,
+            /// Per pad, its ends on open ground (0: no road can arrive).
+            ends: Vec<usize>,
+            construction: f64,
+            operating: f64,
+        }
+        let uses = net.segment_uses();
+        let mut runs: Vec<Run> = Vec::new();
+        for (p, b) in net.branches.iter().enumerate() {
+            let Some(b) = b else { continue };
+            for (i, s) in b.segments.iter().enumerate() {
+                let u = uses[p][i];
+                let same = runs.last().is_some_and(|r| r.pad == p && r.uses == u) && i > 0;
+                if !same {
+                    runs.push(Run { pad: p, uses: u, rows: Vec::new(), cols: Vec::new(), z: Vec::new() });
+                }
+                let run = runs.last_mut().unwrap();
+                let skip = usize::from(!run.rows.is_empty());
+                for (&(r, c), &z) in s.pts.iter().zip(&s.z).skip(skip) {
+                    run.rows.push(r);
+                    run.cols.push(c);
+                    run.z.push(z);
+                }
+            }
+        }
+        let (construction, operating) = net.cost();
+        let st = State {
+            runs,
+            connected: net.branches.iter().map(|b| b.is_some()).collect(),
+            unreachable: net.unreachable.clone(),
+            beyond: net.beyond(),
+            ends: net.pads.iter().map(|p| p.ends.iter().flatten().count()).collect(),
+            construction,
+            operating,
+        };
+        serde_wasm_bindgen::to_value(&st).map_err(js_err)
     }
 
     fn check_endpoints(&self, sr: i64, sc: i64, gr: i64, gc: i64) -> Result<(), JsValue> {

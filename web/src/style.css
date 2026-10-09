@@ -60,6 +60,7 @@ button.working::before { content: ""; margin-right: 6px; vertical-align: -2px; }
 @media (prefers-reduced-motion: reduce) { .spinner, button.working::before { animation-duration: 2.4s; } }
 .log { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .log .err { color: var(--goal); }
+.log .warn { color: var(--accent); }
 .table-wrap { overflow-x: auto; }
 table.pick tr[data-index] { cursor: pointer; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 2px; vertical-align: -1px; }

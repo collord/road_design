@@ -34,12 +34,14 @@ let mode: "route" | "network" = "route";
 /** Pad centers (UTM). */
 const pads: [number, number][] = [];
 const padLayer = L.layerGroup();
-let padStatus: { connected: boolean[]; unreachable: boolean[]; beyond: number[] } | null = null;
+let padStatus: { connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends?: number[] } | null = null;
 /** Each pad's long axis (radians, east = 0), along the contour, once an area is prepared. */
 let padAxes: number[] | null = null;
 let lastGraph: { grid: Grid; rows: Uint32Array; cols: Uint32Array } | null = null;
 let areaGrid: Grid | null = null;
 let haveCorridors = false;
+let haveNetwork = false;
+let fineNet: Extract<FromWorker, { type: "fineNetwork" }> | null = null;
 const fineRoutes: FineOut[] = [];
 let profileIndex: number | null = null;   // corridor whose fine route the profile shows
 // The running fine search: its wavefront (one per corridor), leading candidate and key chart.
@@ -94,7 +96,7 @@ function log(text: string, cls = "") {
 // ---------------------------------------------------------------- status: what the worker is doing
 
 const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors", refine: "Refining corridors",
-                    network: "Building the pad network" } as const;
+                    network: "Building the pad network", refineNetwork: "Refining the pad network" } as const;
 let busy: keyof typeof TASK_TEXT | null = null;
 let busySince = 0;
 let ticker: ReturnType<typeof setInterval> | undefined;
@@ -116,7 +118,8 @@ function setBusy(task: keyof typeof TASK_TEXT | null) {
   busy = task;
   const buttons = { load: $<HTMLButtonElement>("load"), run: $<HTMLButtonElement>("run"),
                     refine: $<HTMLButtonElement>("refine") };
-  for (const [k, b] of Object.entries(buttons)) b.classList.toggle("working", k === task);
+  const clicked = task === "refineNetwork" ? "refine" : task === "network" ? "run" : task;
+  for (const [k, b] of Object.entries(buttons)) b.classList.toggle("working", k === clicked);
   clearInterval(ticker);
   if (task) {
     busySince = performance.now();
@@ -133,7 +136,7 @@ function setBusy(task: keyof typeof TASK_TEXT | null) {
     statusEl("status-plot").innerHTML = "";
     estimate();
     buttons.run.disabled = !areaGrid;
-    buttons.refine.disabled = !haveCorridors;
+    buttons.refine.disabled = mode === "network" ? !haveNetwork : !haveCorridors;
   }
 }
 
@@ -243,7 +246,8 @@ function drawPads() {
     const corner = (s: number, t: number) => [y + s * uy * pw / 2 + t * vy * ph / 2, x + s * ux * pw / 2 + t * vx * ph / 2] as [number, number];
     L.polygon([corner(1, 1), corner(1, -1), corner(-1, -1), corner(-1, 1)], { color: "#111", weight: 1, fillColor: color,
       fillOpacity: 0.8, interactive: false }).addTo(padLayer);
-    const note = !st ? "" : st.unreachable[i] ? ": unreachable" : st.connected[i]
+    const why = st?.ends ? (st.ends[i] === 0 ? " (both ends on ground too steep for a road)" : " (no road within the buffer)") : "";
+    const note = !st ? "" : st.unreachable[i] ? `: unreachable${why}` : st.connected[i]
       ? `: connected, ${st.beyond[i]} pad${st.beyond[i] === 1 ? "" : "s"} beyond` : ": waiting";
     L.circleMarker([y, x], { radius: 5, color: "#111", weight: 1, fillColor: color, fillOpacity: 1 })
       .bindTooltip(`pad ${i + 1}${note}`)
@@ -301,13 +305,20 @@ function parsePads(text: string, name: string): [number, number][] {
   return out;
 }
 
+function buttonsRefineState() {
+  if (!busy) $<HTMLButtonElement>("refine").disabled = mode === "network" ? !haveNetwork : !haveCorridors;
+}
+
 function setMode(m: "route" | "network") {
   mode = m;
   const net = m === "network";
   $("pads-box").hidden = !net;
   $("goal-row").hidden = net;
   $("pick-goal").hidden = net;
-  $("fine-section").hidden = net;
+  // The fine section serves both: the corridor choices only for routes, the buffer only for networks.
+  for (const id of ["fine-which", "fine-apart"]) ($(id).closest("label") as HTMLElement).hidden = net;
+  $("fine-buffer-row").hidden = !net;
+  buttonsRefineState();
   $("start-label").textContent = net ? "Access point" : "Start";
   $("pick-start").textContent = net ? "Click to set the access point" : "Click to set start";
   $("run").textContent = net ? "Find network" : "Find corridors";
@@ -375,9 +386,45 @@ function showNetwork(m: Extract<FromWorker, { type: "network" }>) {
     `<tr><td>total</td><td>${fmt(m.construction + m.operating)}</td></tr>` +
     `<tr><td>most pads beyond a pad</td><td>${maxBeyond}</td></tr>`;
   if (m.final) {
+    haveNetwork = m.connected.some(Boolean);
     if (start) map.fitBounds(L.latLngBounds([start, ...pads].map(([x, y]) => [y, x] as [number, number])).pad(0.15));
     log(`network: ${nConn} of ${pads.length} pads, construction ${fmt(m.construction)}, operating ${fmt(m.operating)}` +
         (nUnr ? `; unreachable: ${nUnr}` : ""), nUnr ? "err" : "");
+  }
+}
+
+/** The fine pad network: roads weighted by the pads they serve, the pads, a summary. */
+function showFineNetwork(m: Extract<FromWorker, { type: "fineNetwork" }>) {
+  fineNet = m;
+  padStatus = { connected: m.connected, unreachable: m.unreachable, beyond: m.beyond, ends: m.ends };
+  drawPads();
+  const group = L.layerGroup();
+  const color = getComputedStyle(document.documentElement).getPropertyValue("--fine").trim();
+  for (const r of m.runs) {
+    const pts = r.x.map((x, i) => [r.y[i], x] as [number, number]);
+    const wgt = 2.5 + 1.5 * Math.log2(1 + r.uses);
+    L.polyline(pts, { color: "#111", weight: wgt + 3, opacity: 0.6, interactive: false }).addTo(group);
+    L.polyline(pts, { color, weight: wgt }).bindTooltip(`pad ${r.pad + 1}'s branch: serves ${r.uses} pad${r.uses === 1 ? "" : "s"}`).addTo(group);
+  }
+  setLayer("Fine network", group);
+  const fmt = (v: number) => Math.round(v).toLocaleString();
+  const nConn = m.connected.filter(Boolean).length, nUnr = m.unreachable.filter(Boolean).length;
+  let km = 0;
+  for (const r of m.runs) for (let i = 1; i < r.x.length; i++) km += Math.hypot(r.x[i] - r.x[i - 1], r.y[i] - r.y[i - 1]) / 1000;
+  $("fine").innerHTML = `<tr><th>fine network, ${m.res} m</th><th></th></tr>` +
+    `<tr><td>${m.phase}</td><td></td></tr>` +
+    `<tr><td>pads connected</td><td>${nConn} of ${pads.length}</td></tr>` +
+    (nUnr ? `<tr><td>unreachable</td><td>${m.unreachable.map((u, i) => (u ? `${i + 1}` +
+      (m.ends[i] === 0 ? " (ends on steep ground)" : " (none within the buffer)") : "")).filter(Boolean).join(", ")}</td></tr>` : "") +
+    `<tr><td>road length</td><td>${km.toFixed(2)} km</td></tr>` +
+    `<tr><td>construction</td><td>${fmt(m.construction)}</td></tr>` +
+    `<tr><td>operating (all pads' traffic)</td><td>${fmt(m.operating)}</td></tr>` +
+    `<tr><td>total</td><td>${fmt(m.construction + m.operating)}</td></tr>` +
+    `<tr><td>most pads beyond a pad</td><td>${Math.max(0, ...m.beyond)}</td></tr>`;
+  $<HTMLButtonElement>("download").disabled = !m.final;
+  if (m.final) {
+    log(`fine network: ${nConn} of ${pads.length} pads, ${km.toFixed(2)} km, construction ${fmt(m.construction)}, ` +
+        `operating ${fmt(m.operating)}` + (nUnr ? `; unreachable: ${nUnr} (see the table)` : ""), nUnr ? "warn" : "");
   }
 }
 
@@ -521,12 +568,29 @@ $("load").addEventListener("click", () => {
          margin: Number($<HTMLInputElement>("margin").value) * 1000,
          res: Number($<HTMLInputElement>("res").value), maxCells: MAX_CELLS, zUnits: zUnits() });
 });
+/** The run's parameters, with the pads' traffic scaling the operating costs in network mode. */
+function runParams(): Params {
+  const p = params();
+  if (mode === "network") {
+    const tau = Math.max(0, Number($<HTMLInputElement>("pad-traffic").value) || 0);
+    for (const k of ["C_travel", "C_vertical", "C_turn"]) p[k] = (p[k] as number) * tau;
+  }
+  return p;
+}
+
 $("refine").addEventListener("click", () => {
   const res = Number($<HTMLInputElement>("fine-res").value);
   if (!(res > 0)) return;
   for (const b of ["load", "run", "refine"]) $<HTMLButtonElement>(b).disabled = true;
   keyChart.reset();
   exploreStage = "";
+  if (mode === "network") {
+    clearFine();
+    const [length, width] = padSize();
+    send({ type: "refineNetwork", params: runParams(), res, buffer: Number($<HTMLInputElement>("fine-buffer").value) || 300,
+           b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))), length, width });
+    return;
+  }
   send({ type: "refine", params: params(), res, which: $<HTMLSelectElement>("fine-which").value as "best" | "all",
          apart: Number($<HTMLSelectElement>("fine-apart").value) });
 });
@@ -545,10 +609,8 @@ $("run").addEventListener("click", () => {
   padStatus = null;
   drawPads();
   if (mode === "network") {
-    // Pads' traffic is a share of a haul road's: the operating costs scale with it.
-    const p = params(), tau = Math.max(0, Number($<HTMLInputElement>("pad-traffic").value) || 0);
-    for (const k of ["C_travel", "C_vertical", "C_turn"]) p[k] = (p[k] as number) * tau;
-    send({ type: "network", params: p, b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))),
+    haveNetwork = false;
+    send({ type: "network", params: runParams(), b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))),
            refine: Math.max(1, Number($<HTMLInputElement>("pad-refine").value) || 1) });
   }
   else send({ type: "run", params: params() });
@@ -602,6 +664,8 @@ function segmentsLayer(g: Grid, rows: ArrayLike<number>, cols: ArrayLike<number>
 }
 
 function clearFine() {
+  fineNet = null;
+  setLayer("Fine network", null);
   fineRoutes.length = 0;
   profileIndex = null;
   wavefronts.clear();
@@ -637,6 +701,22 @@ function fineGeoJson(): string {
     const [lon, lat] = proj4(utmDef(), "WGS84", [x, y]);
     return [+lon.toFixed(7), +lat.toFixed(7), +z.toFixed(2)];
   };
+  if (mode === "network" && fineNet) {
+    const net = fineNet;
+    const features: object[] = net.runs.map((r) => ({
+      type: "Feature", geometry: { type: "LineString", coordinates: r.x.map((x, i) => toLonLat(x, r.y[i], r.z[i])) },
+      properties: { feature: "road", branch_of_pad: r.pad + 1, pads_served: r.uses },
+    }));
+    pads.forEach(([x, y], i) => {
+      const [lon, lat] = proj4(utmDef(), "WGS84", [x, y]);
+      features.push({ type: "Feature", geometry: { type: "Point", coordinates: [+lon.toFixed(7), +lat.toFixed(7)] },
+        properties: { feature: "pad", pad: i + 1, connected: net.connected[i], pads_beyond: net.beyond[i],
+                      long_axis_deg: padAxes ? +(90 - (padAxes[i] * 180) / Math.PI).toFixed(1) : null } });
+    });
+    features.push({ type: "Feature", geometry: null, properties: { feature: "network", cell_m: net.res,
+      construction: Math.round(net.construction), operating: Math.round(net.operating) } });
+    return JSON.stringify({ type: "FeatureCollection", features });
+  }
   const done = fineRoutes.filter((f) => f.final).sort((a, b) => a.cost.total - b.cost.total);
   const features: object[] = [];
   done.forEach((f, rank) => {
@@ -859,6 +939,9 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
     }
     case "network":
       showNetwork(m);
+      break;
+    case "fineNetwork":
+      showFineNetwork(m);
       break;
     case "padAxes":
       padAxes = m.angles;
