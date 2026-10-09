@@ -165,6 +165,12 @@ impl FineSession {
         self.prob.table_cells.len()
     }
 
+    /// The grid cell (row * w + col) of each of the search's cells, in table order (the order of
+    /// macro_rows).
+    pub fn table_cells(&self) -> Vec<u32> {
+        self.prob.table_cells.iter().map(|&k| k as u32).collect()
+    }
+
     /// Hairpin and bend costs of cells a..b: {hp, bend} Float32Arrays for set_macro_rows.
     pub fn macro_rows(&self, a: usize, b: usize) -> js_sys::Object {
         let (hp, bend) = self.prob.macro_rows(a, b);

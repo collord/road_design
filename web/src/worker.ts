@@ -162,11 +162,13 @@ function reply(w: Worker): Promise<FromMacro> {
  * and stored in the session's cache (the values it would compute itself as the search reaches
  * them). Stops at a checkpoint if asked to, terminating the helpers.
  */
-async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { type: "setup" }>, name: string) {
+async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { type: "setup" }>, name: string,
+                                index: number, grid: Grid) {
   const size = Math.min(MAX_HELPERS, Math.floor(HELPER_BUDGET / (setup.w * setup.h * HELPER_BYTES_PER_CELL)));
   if (size < 2) return;
   while (pool.length < size) pool.push(new Worker(new URL("./macroWorker.ts", import.meta.url), { type: "module" }));
   const n = fs.cells();
+  const tableCells = fs.table_cells();
   const stage = `${name}: hairpin and bend designs on ${pool.length} workers`;
   post({ type: "stage", name: stage, state: "start" });
   const t0 = performance.now();
@@ -186,6 +188,16 @@ async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { 
         if (r.type === "error") throw new Error(r.message);
         if (r.type !== "rows") continue;
         fs.set_macro_rows(r.a, r.hp, r.bend);
+        // Where switchbacks come cheap: the cheapest feasible hairpin per cell, for the page.
+        const m = Math.min(MACRO_CHUNK, n - r.a), per = r.hp.length / m;
+        const cheapest = new Float32Array(m);
+        for (let i = 0; i < m; i++) {
+          let c = Infinity;
+          for (let j = i * per; j < (i + 1) * per; j++) if (r.hp[j] < c) c = r.hp[j];
+          cheapest[i] = c;
+        }
+        const cells = tableCells.slice(r.a, r.a + m);
+        post({ type: "sites", index, grid, cells, cheapest }, [cells.buffer, cheapest.buffer]);
         done += Math.min(MACRO_CHUNK, n - r.a);
         progress(stage + ", cells", Math.min(done, n), n);
         await checkpoint();
@@ -351,7 +363,7 @@ async function refineOne(k: number, p: Params, res: number, buffer: number, apar
   await checkpoint();
   try {
     await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer,
-                                 or: otherRows, oc: otherCols, apart: own }, name);
+                                 or: otherRows, oc: otherCols, apart: own }, name, k, fg);
     const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
     const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
     let stage = "", tStage = 0;

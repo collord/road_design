@@ -59,6 +59,9 @@ export type FromWorker =
   | { type: "progress"; name: string; done: number; total: number }
   | { type: "busy"; task: "open" | "load" | "run" | "refine" | null }
   | { type: "fine"; route: FineOut }
+  /** Hairpin designs computed for some cells (row * w + col of `grid`): the cheapest feasible left
+   *  hairpin at each (any heading and leg spacing), Infinity where none fits. */
+  | { type: "sites"; index: number; grid: Grid; cells: Uint32Array; cheapest: Float32Array }
   /** A running fine search: cells (row * w + col of `grid`) settled first since the last report and
    *  their cost to come, the search's key, and the route to the state just settled (UTM). */
   | { type: "explore"; index: number; grid: Grid; stage: string; settled: number; key: number;

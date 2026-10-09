@@ -49,6 +49,7 @@ input[type="range"] { padding: 0; border: none; background: none; accent-color: 
 .status-stop { padding: 1px 8px; font-size: 12px; }
 .status-bar { width: 100%; height: 6px; accent-color: var(--accent); }
 .status-chart { width: 100%; height: auto; display: block; font-size: 10px; }
+.status-note { margin: 0; font-size: 11px; color: var(--muted); }
 .status-chart text { fill: var(--muted); font-variant-numeric: tabular-nums; }
 .spinner, button.working::before {
   display: inline-block; width: 12px; height: 12px; border-radius: 50%; flex: none;

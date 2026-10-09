@@ -138,13 +138,21 @@ try {
         document.querySelector("#fine-apart").value = ${JSON.stringify(process.env.FINE_APART ?? "2")}; })()`);
       await evaluate(`document.querySelector("#refine").click()`);
       // A picture of the search while it runs: a few seconds into the first A* search.
-      let searching = 0, mid = false;
+      let searching = 0, mid = false, designing = 0, sitesShot = false;
       const doneExpr = `(${hasError}) || (!document.querySelector("#refine").disabled &&
         document.querySelectorAll("#fine tr").length > 1 && "done")`;
       let fine = "";
       for (const t0 = Date.now(); Date.now() - t0 < 3600000;) {
         fine = await evaluate(doneExpr);
         if (fine) break;
+        // And of the hairpin sites, about halfway through the helpers' designs.
+        const note: string = await evaluate(`/hairpin and bend designs/.test(document.querySelector(".status-step").textContent)
+          ? document.querySelector(".status-note")?.textContent ?? "" : ""`);
+        if (note && !sitesShot && ++designing >= 60) {
+          sitesShot = true;
+          await shot(`${name}-sites`);
+          console.log(`  while designing: ${note}`);
+        }
         const plot = await evaluate(`!!document.querySelector(".status-plot svg") && /A\* search 1/.test(document.querySelector(".status-step").textContent)`);
         if (plot && !mid && ++searching >= 30) {
           mid = true;

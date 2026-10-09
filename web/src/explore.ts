@@ -59,6 +59,75 @@ export class Wavefront {
   }
 }
 
+/** Where switchbacks come cheap, as the helpers compute the designs: each cell colored by its
+ *  cheapest feasible hairpin, deep red for the cheapest and pale for the dearest of those seen so
+ *  far (5th to 95th percentile, so the colors keep their meaning as cells arrive); none: clear. */
+export class HairpinSites {
+  readonly layer: CanvasLayer;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private pixels: ImageData;
+  private cells: number[] = [];
+  private cost: number[] = [];
+  private dirty = false;
+  designed = 0;
+  /** The color scale's ends, after the last repaint. */
+  low = NaN;
+  high = NaN;
+
+  constructor(readonly grid: Grid) {
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = grid.w;
+    this.canvas.height = grid.h;
+    this.ctx = this.canvas.getContext("2d")!;
+    this.pixels = this.ctx.createImageData(grid.w, grid.h);
+    const g = grid;
+    this.layer = new CanvasLayer((ctx, px) => {
+      if (this.dirty) {
+        this.repaint();
+        this.dirty = false;
+      }
+      const [x0, y0] = px(g.x0, g.y1), [x1, y1] = px(g.x0 + g.w * g.res, g.y1 - g.h * g.res);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(this.canvas, x0, y0, x1 - x0, y1 - y0);
+    });
+  }
+
+  add(cells: Uint32Array, cheapest: Float32Array) {
+    this.designed += cells.length;
+    for (let i = 0; i < cells.length; i++) {
+      if (cheapest[i] < Infinity) {
+        this.cells.push(cells[i]);
+        this.cost.push(cheapest[i]);
+      }
+    }
+    this.dirty = true;
+  }
+
+  /** Share of the designed cells where some hairpin fits. */
+  get fits(): number {
+    return this.designed ? this.cost.length / this.designed : 0;
+  }
+
+  private repaint() {
+    const n = this.cost.length;
+    if (!n) return;
+    const sample: number[] = [];
+    for (let i = 0; i < n; i += Math.max(1, Math.floor(n / 4000))) sample.push(this.cost[i]);
+    sample.sort((a, b) => a - b);
+    this.low = sample[Math.floor(0.05 * (sample.length - 1))];
+    this.high = sample[Math.floor(0.95 * (sample.length - 1))];
+    const span = Math.max(this.high - this.low, 1e-9);
+    const d = this.pixels.data;
+    for (let i = 0; i < n; i++) {
+      const t = 1 - Math.max(0, Math.min(1, (this.cost[i] - this.low) / span));   // 1: cheapest
+      const k = 4 * this.cells[i];
+      d[k] = 253 - 70 * t; d[k + 1] = 219 - 199 * t; d[k + 2] = 199 - 170 * t; d[k + 3] = 60 + 170 * t;
+    }
+    this.ctx.putImageData(this.pixels, 0, 0);
+  }
+}
+
 /** The leading candidate: a thin line with a dark casing, moved with every report. */
 export class Candidate {
   readonly layer = L.layerGroup();

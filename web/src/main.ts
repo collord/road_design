@@ -4,7 +4,7 @@ import "leaflet/dist/leaflet.css";
 import proj4 from "proj4";
 import "./style.css";
 import { BASEMAPS, ExportLayer, utmEpsg } from "./basemap";
-import { Candidate, KeyChart, Wavefront } from "./explore";
+import { Candidate, HairpinSites, KeyChart, Wavefront } from "./explore";
 import { profileSummary, profileSvg } from "./profile";
 import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
 import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
@@ -36,6 +36,8 @@ const fineRoutes: FineOut[] = [];
 let profileIndex: number | null = null;   // corridor whose fine route the profile shows
 // The running fine search: its wavefront (one per corridor), leading candidate and key chart.
 const wavefronts = new Map<number, Wavefront>();
+const sites = new Map<number, HairpinSites>();
+let sitesPending = false;
 const candidate = new Candidate();
 const keyChart = new KeyChart();
 let exploreStage = "";
@@ -410,6 +412,8 @@ function clearFine() {
   fineRoutes.length = 0;
   profileIndex = null;
   wavefronts.clear();
+  sites.clear();
+  setLayer("Hairpin sites", null);
   setLayer("Search wavefront", null);
   setLayer("Leading candidate", null);
   keyChart.reset();
@@ -671,6 +675,28 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       }, 3));
       setLayer("Graph edges", segmentsLayer(g, m.rows, m.cols, m.pairs, "rgba(80,80,160,0.25)", 0.5, 300_000), false);
       setLayer("Triangulation", layers.get("Triangulation") ?? null, false);
+      break;
+    }
+    case "sites": {
+      let st = sites.get(m.index);
+      if (!st || st.grid.x0 !== m.grid.x0 || st.grid.y1 !== m.grid.y1 || st.grid.res !== m.grid.res) {
+        st = new HairpinSites(m.grid);
+        sites.set(m.index, st);
+        setLayer("Hairpin sites", st.layer);
+        setLayer("Graph nodes (corridor field)", layers.get("Graph nodes (corridor field)") ?? null, false);
+      }
+      st.add(m.cells, m.cheapest);
+      if (!sitesPending) {
+        sitesPending = true;
+        requestAnimationFrame(() => {
+          sitesPending = false;
+          st!.layer.redraw();
+          const fmt = (v: number) => Math.round(v).toLocaleString();
+          statusEl("status-plot").innerHTML = `<p class="status-note">Cheapest hairpin per cell: deep red ` +
+            `${fmt(st!.low)} to pale ${fmt(st!.high)}; a hairpin fits at ${(100 * st!.fits).toFixed(0)}% of the ` +
+            `${st!.designed.toLocaleString()} cells designed so far.</p>`;
+        });
+      }
       break;
     }
     case "explore": {
