@@ -1,0 +1,112 @@
+// The fine search as it runs: the cells it settles (its wavefront) painted on a canvas over the
+// map, the route to the state it just settled (the leading candidate), and its key over time.
+import L from "leaflet";
+import { CanvasLayer } from "./layers";
+import type { Grid } from "./source";
+
+/** Viridis-like ramp: 0 (cheap, near the start) violet, 1 (at the frontier) yellow. */
+function ramp(t: number): [number, number, number] {
+  const u = Math.max(0, Math.min(1, t));
+  const stops: [number, number, number][] = [[68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37]];
+  const x = u * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(x)), f = x - i;
+  const [a, b] = [stops[i], stops[i + 1]];
+  return [a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2])];
+}
+
+/** One corridor's search wavefront: settled cells colored by their cost to come relative to the
+ *  search's key when they were settled (the share of the route's cost already spent there). */
+export class Wavefront {
+  readonly layer: CanvasLayer;
+  private canvas: HTMLCanvasElement;
+  private ctx: CanvasRenderingContext2D;
+  private pixels: ImageData;
+  private dirty = false;
+
+  constructor(readonly grid: Grid) {
+    this.canvas = document.createElement("canvas");
+    this.canvas.width = grid.w;
+    this.canvas.height = grid.h;
+    this.ctx = this.canvas.getContext("2d")!;
+    this.pixels = this.ctx.createImageData(grid.w, grid.h);
+    const g = grid;
+    this.layer = new CanvasLayer((ctx, px) => {
+      if (this.dirty) {
+        this.ctx.putImageData(this.pixels, 0, 0);
+        this.dirty = false;
+      }
+      const [x0, y0] = px(g.x0, g.y1), [x1, y1] = px(g.x0 + g.w * g.res, g.y1 - g.h * g.res);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(this.canvas, x0, y0, x1 - x0, y1 - y0);
+    });
+  }
+
+  /** A new search: start the picture again. */
+  clear() {
+    this.pixels.data.fill(0);
+    this.dirty = true;
+    this.layer.redraw();
+  }
+
+  /** Cells (row * w + col) settled since the last batch, their cost to come, the search's key. */
+  add(cells: Uint32Array, g: Float32Array, key: number) {
+    const d = this.pixels.data;
+    for (let i = 0; i < cells.length; i++) {
+      const [r, gr, b] = ramp(key > 0 ? g[i] / key : 0);
+      const k = 4 * cells[i];
+      d[k] = r; d[k + 1] = gr; d[k + 2] = b; d[k + 3] = 150;
+    }
+    this.dirty = true;
+  }
+}
+
+/** The leading candidate: a thin line with a dark casing, moved with every report. */
+export class Candidate {
+  readonly layer = L.layerGroup();
+  private casing = L.polyline([], { color: "#111", weight: 4, opacity: 0.6, interactive: false });
+  private line = L.polyline([], { color: "#fff", weight: 2, opacity: 0.95, interactive: false });
+
+  constructor() {
+    this.casing.addTo(this.layer);
+    this.line.addTo(this.layer);
+  }
+
+  set(x: Float64Array, y: Float64Array) {
+    const pts = Array.from(x, (xx, i) => [y[i], xx] as [number, number]);
+    this.casing.setLatLngs(pts);
+    this.line.setLatLngs(pts);
+  }
+}
+
+/** The searches' keys over time, one series per search, as an SVG sparkline. */
+export class KeyChart {
+  private series: { name: string; pts: [number, number][] }[] = [];
+
+  reset() {
+    this.series = [];
+  }
+
+  add(name: string, t: number, key: number) {
+    let s = this.series[this.series.length - 1];
+    if (!s || s.name !== name) this.series.push((s = { name, pts: [] }));
+    s.pts.push([t, key]);
+  }
+
+  svg(width = 260, height = 70): string {
+    const all = this.series.flatMap((s) => s.pts);
+    if (all.length < 2) return "";
+    let [t0, t1, k0, k1] = [Infinity, -Infinity, Infinity, -Infinity];
+    for (const [t, k] of all) { t0 = Math.min(t0, t); t1 = Math.max(t1, t); k0 = Math.min(k0, k); k1 = Math.max(k1, k); }
+    if (t1 <= t0) t1 = t0 + 1;
+    if (k1 <= k0) k1 = k0 + 1;
+    const px = (t: number) => 2 + ((t - t0) / (t1 - t0)) * (width - 4);
+    const py = (k: number) => height - 12 - ((k - k0) / (k1 - k0)) * (height - 16);
+    const colors = ["var(--accent)", "var(--alt)", "var(--start)", "var(--goal)"];
+    const lines = this.series.map((s, i) =>
+      `<polyline fill="none" stroke="${colors[i % colors.length]}" stroke-width="1.5" points="` +
+      s.pts.map(([t, k]) => `${px(t).toFixed(1)},${py(k).toFixed(1)}`).join(" ") + `"><title>${s.name}</title></polyline>`);
+    const last = all[all.length - 1][1];
+    return `<svg viewBox="0 0 ${width} ${height}" class="status-chart" role="img" aria-label="search key over time">` +
+      `<text x="2" y="${height - 1}">search key ${Math.round(last).toLocaleString()}</text>` +
+      lines.join("") + `</svg>`;
+  }
+}

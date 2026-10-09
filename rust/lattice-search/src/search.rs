@@ -63,40 +63,59 @@ pub struct SearchResult {
 impl SearchResult {
     /// The state an action arrived from, if any.
     pub fn predecessor(&self, lat: &Lattice, index: &CellIndex, state: u64) -> Option<u64> {
-        let a = self.parent[state as usize];
-        if a < 0 {
-            return None;
-        }
-        let nh = lat.n_theta() as u64;
-        let (r, c) = index.cell((state / nh) as u32);
-        let act = lat.action(a as usize);
-        index.state((r - act.dr) as i64, (c - act.dc) as i64, act.h0, nh as usize)
+        predecessor(lat, index, &self.parent, state)
     }
 
     /// Edges (row, col, action) from a source to `state`, in travel order.
     pub fn edges_to(&self, lat: &Lattice, index: &CellIndex, state: u64) -> Vec<(i32, i32, usize)> {
-        let nh = lat.n_theta() as u64;
-        let mut out = Vec::new();
-        let mut s = state;
-        while let Some(prev) = self.predecessor(lat, index, s) {
-            let (r, c) = index.cell((prev / nh) as u32);
-            out.push((r, c, self.parent[s as usize] as usize));
-            s = prev;
-        }
-        out.reverse();
-        out
+        edges_to(lat, index, &self.parent, state)
     }
+}
+
+/// The state an action arrived from, given the parent actions, if any.
+pub fn predecessor(lat: &Lattice, index: &CellIndex, parent: &[i16], state: u64) -> Option<u64> {
+    let a = parent[state as usize];
+    if a < 0 {
+        return None;
+    }
+    let nh = lat.n_theta() as u64;
+    let (r, c) = index.cell((state / nh) as u32);
+    let act = lat.action(a as usize);
+    index.state((r - act.dr) as i64, (c - act.dc) as i64, act.h0, nh as usize)
+}
+
+/// Edges (row, col, action) from a source to `state`, in travel order, given the parent actions
+/// (a finished search's, or a running one's in a progress report).
+pub fn edges_to(lat: &Lattice, index: &CellIndex, parent: &[i16], state: u64) -> Vec<(i32, i32, usize)> {
+    let nh = lat.n_theta() as u64;
+    let mut out = Vec::new();
+    let mut s = state;
+    while let Some(prev) = predecessor(lat, index, parent, s) {
+        let (r, c) = index.cell((prev / nh) as u32);
+        out.push((r, c, parent[s as usize] as usize));
+        s = prev;
+    }
+    out.reverse();
+    out
 }
 
 /// How far a search has got, passed to a progress callback.
 #[derive(Clone, Copy, Debug)]
-pub struct Progress {
+pub struct Progress<'a> {
     /// States settled so far.
     pub n_expanded: u64,
     /// The key (cost to come, plus the estimate for A*) of the state just settled: the frontier.
     pub key: f64,
     /// Entries in the priority queue.
     pub queue_len: usize,
+    /// The state just settled; `edges_to(.., parent, state)` is the route to it.
+    pub state: u64,
+    /// Index cells whose first state was settled since the last report, and that state's cost
+    /// to come: the search's wavefront.
+    pub new_cells: &'a [u32],
+    pub new_g: &'a [f32],
+    /// The parent actions so far (settled states' are final).
+    pub parent: &'a [i16],
 }
 
 /// Dijkstra or A* over the states of `index`.
@@ -149,6 +168,10 @@ where
     }
     let mut n_exp = 0u64;
     let mut goal_state: Option<u64> = None;
+    // Cells settled for the first time since the last report (tracked only if anyone listens).
+    let reporting = every != u64::MAX;
+    let mut seen = vec![false; if reporting { index.len() } else { 0 }];
+    let (mut new_cells, mut new_g): (Vec<u32>, Vec<f32>) = (Vec::new(), Vec::new());
     while let Some((key, u)) = heap.pop() {
         let ui = u as usize;
         if closed[ui] != 0 {
@@ -159,10 +182,23 @@ where
         }
         closed[ui] = 1;
         n_exp += 1;
-        if n_exp % every == 0 && !progress(&Progress { n_expanded: n_exp, key, queue_len: heap.len() }) {
-            return (SearchResult { g, parent, closed, n_expanded: n_exp, goal_state }, false);
-        }
         let cell = (u / nh as u64) as u32;
+        if reporting && !seen[cell as usize] {
+            seen[cell as usize] = true;
+            new_cells.push(cell);
+            new_g.push(g[ui] as f32);
+        }
+        if n_exp % every == 0 {
+            let p = Progress {
+                n_expanded: n_exp, key, queue_len: heap.len(), state: u, new_cells: &new_cells, new_g: &new_g,
+                parent: &parent,
+            };
+            if !progress(&p) {
+                return (SearchResult { g, parent, closed, n_expanded: n_exp, goal_state }, false);
+            }
+            new_cells.clear();
+            new_g.clear();
+        }
         let h = (u % nh as u64) as usize;
         let (r, c) = index.cell(cell);
         if r == goal_r && c == goal_c && goal_state.map_or(true, |gs| g[ui] < g[gs as usize]) {

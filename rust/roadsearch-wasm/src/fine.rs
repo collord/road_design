@@ -10,7 +10,7 @@ use wasm_bindgen::prelude::*;
 
 use road_fine::params::Params;
 use road_fine::masshaul::TrueCost;
-use road_fine::pipeline::find_route;
+use road_fine::pipeline::{find_route, FineProgress};
 use road_fine::problem::{own_ground, preprocess, Macros, Problem};
 use road_fine::route::Segment;
 
@@ -201,17 +201,31 @@ impl FineSession {
         Ok(())
     }
 
-    /// The route from (sr, sc) to (gr, gc). `progress(stage, settled, key)` is called every
-    /// 65,536 settled states, and `on_route(route)` with each route a search finds (the same
-    /// fields as the result, without the history).
+    /// The route from (sr, sc) to (gr, gc). `progress({stage, settled, key, cells, g, rows, cols})`
+    /// is called every 65,536 settled states: the grid cells first settled since the last call
+    /// and their cost to come (the wavefront), and the centerline of the route to the state just
+    /// settled (the leading candidate). `on_route(route)` is called with each route a search
+    /// finds (the same fields as the result, without the history).
     pub fn search(&mut self, sr: i32, sc: i32, gr: i32, gc: i32, progress: &js_sys::Function,
                   on_route: &js_sys::Function) -> Result<JsValue, JsValue> {
         let (sr, sc, gr, gc) = (sr as i64, sc as i64, gr as i64, gc as i64);
         self.check_endpoints(sr, sc, gr, gc)?;
         let this = JsValue::NULL;
-        let mut report = |stage: &str, pr: &lattice_search::Progress| -> bool {
-            let _ = progress.call3(&this, &JsValue::from_str(stage), &JsValue::from_f64(pr.n_expanded as f64),
-                                   &JsValue::from_f64(pr.key));
+        let mut report = |stage: &str, pr: &FineProgress| -> bool {
+            let o = js_sys::Object::new();
+            let set = |k: &str, v: &JsValue| {
+                let _ = js_sys::Reflect::set(&o, &k.into(), v);
+            };
+            set("stage", &JsValue::from_str(stage));
+            set("settled", &JsValue::from_f64(pr.settled as f64));
+            set("key", &JsValue::from_f64(pr.key));
+            set("cells", &js_sys::Uint32Array::from(&pr.cells[..]));
+            set("g", &js_sys::Float32Array::from(pr.g));
+            let rows: Vec<f64> = pr.path.iter().map(|p| p.0).collect();
+            let cols: Vec<f64> = pr.path.iter().map(|p| p.1).collect();
+            set("rows", &js_sys::Float64Array::from(&rows[..]));
+            set("cols", &js_sys::Float64Array::from(&cols[..]));
+            let _ = progress.call1(&this, &o);
             true
         };
         let mut found = |segs: &[Segment], tc: &TrueCost| {

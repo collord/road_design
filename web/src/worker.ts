@@ -362,7 +362,17 @@ async function refineOne(k: number, p: Params, res: number, buffer: number, apar
       hairpins: o.hairpins, bends: o.bends, fill_crossings: o.fill_crossings, segments: o.segments, history: o.history,
       seconds: (performance.now() - t0) / 1000, cells, macros_computed: o.macros_computed,
     });
-    const out = fs.search(sr, sc, gr, gc, (st: string, settled: number) => {
+    const out = fs.search(sr, sc, gr, gc, (o: { stage: string; settled: number; key: number; cells: Uint32Array;
+                                                 g: Float32Array; rows: Float64Array; cols: Float64Array }) => {
+      const { stage: st, settled } = o;
+      // The search ignores what this callback throws, so report it here.
+      try {
+        const x = o.cols.map((c) => fg.x0 + (c + 0.5) * res), y = o.rows.map((row) => fg.y1 - (row + 0.5) * res);
+        post({ type: "explore", index: k, grid: fg, stage: st, settled, key: o.key, cells: o.cells, g: o.g, x, y },
+             [o.cells.buffer, o.g.buffer, x.buffer, y.buffer]);
+      } catch (err) {
+        post({ type: "error", message: `progress report: ${err instanceof Error ? err.message : String(err)}` });
+      }
       if (st !== stage) {
         if (stage) post({ type: "stage", name: `${name}: ${stage}`, state: "end", ms: performance.now() - tStage });
         stage = st;

@@ -11,8 +11,19 @@ use crate::route::{self_overlaps, Edge, Segment, FILL_CROSSING};
 /// Settled states between progress reports.
 pub const PROGRESS_EVERY: u64 = 1 << 16;
 
+/// What a running search reports: its counts, the grid cells (row * nc + col) it settled first
+/// since the last report with their cost to come (the wavefront), and the centerline (row, col)
+/// of the route to the state it just settled (the leading candidate).
+pub struct FineProgress<'a> {
+    pub settled: u64,
+    pub key: f64,
+    pub cells: Vec<u32>,
+    pub g: &'a [f32],
+    pub path: Vec<(f64, f64)>,
+}
+
 /// Called with the stage and the search's progress; returning false stops the search.
-pub type Report<'a> = dyn FnMut(&str, &Progress) -> bool + 'a;
+pub type Report<'a> = dyn FnMut(&str, &FineProgress) -> bool + 'a;
 
 /// Called with each route a search finds (evaluated) and its true cost, before the next search.
 pub type OnRoute<'a> = dyn FnMut(&[Segment], &TrueCost) + 'a;
@@ -45,7 +56,15 @@ pub fn astar(prob: &Problem, start: (i64, i64), goal: (i64, i64), stage: &str, r
         c_vertical: p.c_vertical,
     };
     let spec = SearchSpec::astar(&sources, (goal.0 as i32, goal.1 as i32));
-    let mut rep = |pr: &Progress| report(stage, pr);
+    let mut rep = |pr: &Progress| {
+        let cells = pr.new_cells.iter().map(|&k| index.cells()[k as usize]).collect();
+        let edges: Vec<Edge> = lattice_search::edges_to(&prob.lattice, &index, pr.parent, pr.state)
+            .into_iter()
+            .map(|(r, c, a)| (r as i64, c as i64, a))
+            .collect();
+        let path = prob.path_points(&edges, start).unwrap_or_default();
+        report(stage, &FineProgress { settled: pr.n_expanded, key: pr.key, cells, g: pr.new_g, path })
+    };
     let (res, completed) =
         prob.with_model(|model| search_with_progress(&prob.lattice, &index, model, &heur, &spec, PROGRESS_EVERY, &mut rep));
     let edges = res.goal_state.map(|s| {

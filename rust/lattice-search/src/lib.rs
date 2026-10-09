@@ -39,5 +39,6 @@ pub use heap::MinHeap;
 pub use index::CellIndex;
 pub use lattice::{Action, Lattice};
 pub use search::{
-    search, search_with_progress, EdgeCost, Heuristic, Progress, SearchResult, SearchSpec, ZeroHeuristic, NO_PARENT,
+    edges_to, predecessor, search, search_with_progress, EdgeCost, Heuristic, Progress, SearchResult, SearchSpec,
+    ZeroHeuristic, NO_PARENT,
 };

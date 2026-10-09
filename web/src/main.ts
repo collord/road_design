@@ -4,6 +4,7 @@ import "leaflet/dist/leaflet.css";
 import proj4 from "proj4";
 import "./style.css";
 import { BASEMAPS, ExportLayer, utmEpsg } from "./basemap";
+import { Candidate, KeyChart, Wavefront } from "./explore";
 import { profileSummary, profileSvg } from "./profile";
 import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
 import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
@@ -33,6 +34,13 @@ let areaGrid: Grid | null = null;
 let haveCorridors = false;
 const fineRoutes: FineOut[] = [];
 let profileIndex: number | null = null;   // corridor whose fine route the profile shows
+// The running fine search: its wavefront (one per corridor), leading candidate and key chart.
+const wavefronts = new Map<number, Wavefront>();
+const candidate = new Candidate();
+const keyChart = new KeyChart();
+let exploreStage = "";
+let exploreT0 = 0;
+let explorePending = false;
 const layers = new Map<string, L.Layer>();
 const markers: { start?: L.CircleMarker; goal?: L.CircleMarker } = {};
 
@@ -84,7 +92,7 @@ const statusBox = L.DomUtil.create("div", "status");
 statusBox.hidden = true;
 statusBox.innerHTML = '<div class="status-head"><span class="spinner"></span><strong class="status-task"></strong>' +
   '<span class="status-time"></span><button type="button" class="status-stop">Stop</button></div>' +
-  '<div class="status-step"></div><progress class="status-bar"></progress>';
+  '<div class="status-step"></div><progress class="status-bar"></progress><div class="status-plot"></div>';
 L.DomEvent.disableClickPropagation(statusBox);
 const statusEl = <T extends Element>(cls: string) => statusBox.querySelector(`.${cls}`) as T;
 new (L.Control.extend({ onAdd: () => statusBox }))({ position: "topright" }).addTo(map);
@@ -111,6 +119,7 @@ function setBusy(task: keyof typeof TASK_TEXT | null) {
     ticker = setInterval(tick, 200);
   } else {
     statusBox.hidden = true;
+    statusEl("status-plot").innerHTML = "";
     estimate();
     buttons.run.disabled = !areaGrid;
     buttons.refine.disabled = !haveCorridors;
@@ -331,6 +340,8 @@ $("refine").addEventListener("click", () => {
   const res = Number($<HTMLInputElement>("fine-res").value);
   if (!(res > 0)) return;
   for (const b of ["load", "run", "refine"]) $<HTMLButtonElement>(b).disabled = true;
+  keyChart.reset();
+  exploreStage = "";
   send({ type: "refine", params: params(), res, which: $<HTMLSelectElement>("fine-which").value as "best" | "all",
          apart: Number($<HTMLSelectElement>("fine-apart").value) });
 });
@@ -398,6 +409,11 @@ function segmentsLayer(g: Grid, rows: ArrayLike<number>, cols: ArrayLike<number>
 function clearFine() {
   fineRoutes.length = 0;
   profileIndex = null;
+  wavefronts.clear();
+  setLayer("Search wavefront", null);
+  setLayer("Leading candidate", null);
+  keyChart.reset();
+  statusEl("status-plot").innerHTML = "";
   setLayer("Fine routes", null);
   $("fine").innerHTML = "";
   $("profile").innerHTML = "";
@@ -655,6 +671,36 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       }, 3));
       setLayer("Graph edges", segmentsLayer(g, m.rows, m.cols, m.pairs, "rgba(80,80,160,0.25)", 0.5, 300_000), false);
       setLayer("Triangulation", layers.get("Triangulation") ?? null, false);
+      break;
+    }
+    case "explore": {
+      let wf = wavefronts.get(m.index);
+      if (!wf || wf.grid.x0 !== m.grid.x0 || wf.grid.y1 !== m.grid.y1 || wf.grid.res !== m.grid.res) {
+        wf = new Wavefront(m.grid);
+        wavefronts.set(m.index, wf);
+        setLayer("Search wavefront", wf.layer);
+        setLayer("Leading candidate", candidate.layer);
+        // The graph's nodes would hide the wavefront; they stay a click away.
+        setLayer("Graph nodes (corridor field)", layers.get("Graph nodes (corridor field)") ?? null, false);
+        exploreT0 = performance.now();
+      }
+      const stage = `corridor ${m.index + 1}: ${m.stage}`;
+      if (stage !== exploreStage) {
+        wf.clear();                       // a new search: watch it from the start
+        exploreStage = stage;
+      }
+      wf.add(m.cells, m.g, m.key);
+      candidate.set(m.x, m.y);
+      keyChart.add(stage, (performance.now() - exploreT0) / 1000, m.key);
+      // Draw at most once a frame, however fast the reports come.
+      if (!explorePending) {
+        explorePending = true;
+        requestAnimationFrame(() => {
+          explorePending = false;
+          wf!.layer.redraw();
+          statusEl("status-plot").innerHTML = keyChart.svg();
+        });
+      }
       break;
     }
     case "fine": {

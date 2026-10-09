@@ -137,8 +137,25 @@ try {
       await evaluate(`(() => { document.querySelector("#fine-which").value = ${JSON.stringify(process.env.FINE_WHICH ?? "best")};
         document.querySelector("#fine-apart").value = ${JSON.stringify(process.env.FINE_APART ?? "2")}; })()`);
       await evaluate(`document.querySelector("#refine").click()`);
-      const fine = await until(`(${hasError}) || (!document.querySelector("#refine").disabled &&
-        document.querySelectorAll("#fine tr").length > 1 && "done")`, "the fine route", 3600000);
+      // A picture of the search while it runs: a few seconds into the first A* search.
+      let searching = 0, mid = false;
+      const doneExpr = `(${hasError}) || (!document.querySelector("#refine").disabled &&
+        document.querySelectorAll("#fine tr").length > 1 && "done")`;
+      let fine = "";
+      for (const t0 = Date.now(); Date.now() - t0 < 3600000;) {
+        fine = await evaluate(doneExpr);
+        if (fine) break;
+        const plot = await evaluate(`!!document.querySelector(".status-plot svg") && /A\* search 1/.test(document.querySelector(".status-step").textContent)`);
+        if (plot && !mid && ++searching >= 30) {
+          mid = true;
+          await shot(`${name}-searching`);
+          const ok = await evaluate(`({ layers: [...document.querySelectorAll("#layers label")].map((l) => l.textContent.trim()),
+            lines: document.querySelectorAll(".status-plot polyline").length })`);
+          console.log(`  while searching: layers ${ok.layers.filter((l: string) => /wavefront|candidate/i.test(l)).join(", ")}; ` +
+                      `chart lines ${ok.lines}`);
+        }
+        await sleep(250);
+      }
       const table: string[] = await evaluate(`[...document.querySelectorAll("#fine tr")].map((r) => [...r.cells].map((c) => c.textContent.trim()).join(" | "))`);
       for (const t of table) console.log(`    ${t}`);
       if (fine !== "done") throw new Error(fine);

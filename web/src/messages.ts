@@ -59,6 +59,10 @@ export type FromWorker =
   | { type: "progress"; name: string; done: number; total: number }
   | { type: "busy"; task: "open" | "load" | "run" | "refine" | null }
   | { type: "fine"; route: FineOut }
+  /** A running fine search: cells (row * w + col of `grid`) settled first since the last report and
+   *  their cost to come, the search's key, and the route to the state just settled (UTM). */
+  | { type: "explore"; index: number; grid: Grid; stage: string; settled: number; key: number;
+      cells: Uint32Array; g: Float32Array; x: Float64Array; y: Float64Array }
   | { type: "stopped"; task: string }
   | { type: "area"; grid: Grid; cells: number }
   | { type: "error"; message: string };
