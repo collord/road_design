@@ -47,9 +47,11 @@
         <p id="pads-info" class="muted">No pads yet. While adding, click a pad again to remove it. A CSV needs x and y (or lon and lat) columns; GeoJSON, points.</p>
         <div class="grid2">
           <label title="A rig working on a pad, or stuck there, blocks the road through it: a pad may lie on the way to at most this many other pads (0: every pad ends its own spur).">Pads a pad may block <input id="pad-b" type="number" min="0" step="1" value="2"></label>
-          <label>Pad size (m)
+          <label title="Length along the contour (the long axis, which the road arrives along) by width.">Pad size (m)
             <span class="row nowrap"><input id="pad-w" type="number" min="1" step="1" value="15"> x <input id="pad-h" type="number" min="1" step="1" value="10"></span>
           </label>
+          <label title="The coarse graph's background nodes this many times closer together over the pads (their convex hull and 300 m around), so the coarse network can follow the ground between pads.">Mesh near pads, times finer <input id="pad-refine" type="number" min="1" max="20" step="1" value="5"></label>
+          <label title="Each pad's lifetime traffic as a share of a haul road's (the operating costs C_travel, C_vertical and C_turn are scaled by it). A placeholder: set it from the rigs' and service trucks' trips.">Traffic per pad (haul roads) <input id="pad-traffic" type="number" min="0" step="0.05" value="0.1"></label>
         </div>
       </div>
     </section>

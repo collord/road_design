@@ -227,7 +227,7 @@ const SLICE_MS = 150;
 
 /** Preprocess the area and build the coarse graph with these terminals (row, col): the first is
  *  the start or access point. */
-async function buildGraph(p: Params, terminals: [number, number][]) {
+async function buildGraph(p: Params, terminals: [number, number][], extra: [number, number][] = []) {
   const { grid, session } = area!;
   const res = grid.res;
   timed("smooth, gradients, slope mask, flow", () =>
@@ -255,8 +255,9 @@ async function buildGraph(p: Params, terminals: [number, number][]) {
   const costs = new Float64Array(p.culvert_costs as number[]);
   await checkpoint();
   const tr = new Uint32Array(terminals.map((t) => t[0])), tc = new Uint32Array(terminals.map((t) => t[1]));
+  const er = new Uint32Array(extra.map((t) => t[0])), ec = new Uint32Array(extra.map((t) => t[1]));
   const nPairs = timed("graph nodes and candidate edges", () =>
-    session.graph_begin_terminals(tr, tc, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
+    session.graph_begin_terminals(tr, tc, er, ec, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
   // Cost the edges in slices sized to take about SLICE_MS each.
   const name = "cost the edges on the DEM";
   post({ type: "stage", name, state: "start" });
@@ -314,7 +315,42 @@ async function run(p: Params) {
  * reconnected at least cost) until a pass changes nothing. A pad may lie on the way to at most
  * `b` others. The network is posted after every step.
  */
-async function network(p: Params, b: number) {
+/** Cells (row, col) every `step` cells within `buffer` cells of the convex hull of the points:
+ *  a denser mesh for the coarse graph where the pads are. */
+function meshNear(points: [number, number][], step: number, buffer: number, h: number, w: number): [number, number][] {
+  // Convex hull (monotone chain) of the points as (col, row).
+  const pts = [...new Set(points.map(([r, c]) => `${c},${r}`))].map((s) => s.split(",").map(Number) as [number, number])
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: number[], a: number[], b: number[]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (list: [number, number][]) => {
+    const out: [number, number][] = [];
+    for (const p of list) {
+      while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop();
+      out.push(p);
+    }
+    return out;
+  };
+  const lower = half(pts), upper = half([...pts].reverse());
+  const hull = pts.length < 3 ? pts : [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  const segDist = (x: number, y: number, a: number[], b: number[]) => {
+    const [dx, dy] = [b[0] - a[0], b[1] - a[1]], l2 = dx * dx + dy * dy;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l2)) : 0;
+    return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy);
+  };
+  const inside = (x: number, y: number) => hull.length >= 3 && hull.every((a, i) => cross(a, hull[(i + 1) % hull.length], [x, y]) >= 0);
+  const near = (x: number, y: number) => inside(x, y) ||
+    hull.some((a, i) => segDist(x, y, a, hull[(i + 1) % hull.length]) <= buffer) || hull.some((a) => Math.hypot(x - a[0], y - a[1]) <= buffer);
+  const xs = hull.map((q) => q[0]), ys = hull.map((q) => q[1]);
+  const out: [number, number][] = [];
+  for (let y = Math.max(0, Math.min(...ys) - buffer); y <= Math.min(h - 1, Math.max(...ys) + buffer); y += step) {
+    for (let x = Math.max(0, Math.min(...xs) - buffer); x <= Math.min(w - 1, Math.max(...xs) + buffer); x += step) {
+      if (near(x, y)) out.push([Math.round(y), Math.round(x)]);
+    }
+  }
+  return out;
+}
+
+async function network(p: Params, b: number, refine: number) {
   if (!area) throw new Error("load an area first");
   const { grid, session } = area;
   const pads = area.pads;
@@ -334,17 +370,27 @@ async function network(p: Params, b: number) {
     }
     return termOf.get(k)!;
   });
-  await buildGraph(p, terminals);
+  // A denser mesh over the pads: background nodes `refine` times closer than tin_block, over the
+  // pads' convex hull and 300 m around it.
+  const extra = refine > 1
+    ? meshNear(terminals, Math.max(1, get(p, "tin_block") / refine / grid.res), 300 / grid.res, grid.h, grid.w) : [];
+  await buildGraph(p, terminals, extra);
+  if (extra.length) post({ type: "stage", name: `mesh near the pads: ${extra.length.toLocaleString()} extra nodes`, state: "end", ms: 0 });
+  // Pads lie along the contour.
+  const axes = session.contour_angle(new Uint32Array(pads.map((q) => q![0])), new Uint32Array(pads.map((q) => q![1])));
+  post({ type: "padAxes", angles: Array.from(axes) });
   postGraph();
   session.network_begin(b);
   const n = terminals.length - 1;
   const send = (phase: string, final: boolean) => {
     const st = session.network_state() as { pairs: number[]; uses: number[]; connected: boolean[];
-      unreachable: boolean[]; beyond: number[]; construction: number; operating: number };
+      unreachable: boolean[]; beyond: number[]; order: number[]; construction: number; operating: number };
     // Per pad in the page's order (terminal t >= 1 is pad t - 1 of the graph's).
     const per = <T>(a: T[], atAccess: T) => padTerm.map((t) => (t === 0 ? atAccess : a[t - 1]));
     post({ type: "network", grid, pairs: st.pairs, uses: st.uses, connected: per(st.connected, true),
-           unreachable: per(st.unreachable, false), beyond: per(st.beyond, 0), construction: st.construction,
+           unreachable: per(st.unreachable, false), beyond: per(st.beyond, 0),
+           // The graph's pad order as page pads (the first page pad of each terminal).
+           order: st.order.map((t) => padTerm.indexOf(t + 1)), construction: st.construction,
            operating: st.operating, phase, final });
   };
   const grow = "connect the pads, cheapest first";
@@ -500,7 +546,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (m.type === "open") await open(m);
       else if (m.type === "load") await load(m);
       else if (m.type === "run") await run(m.params);
-      else if (m.type === "network") await network(m.params, m.b);
+      else if (m.type === "network") await network(m.params, m.b, m.refine);
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);

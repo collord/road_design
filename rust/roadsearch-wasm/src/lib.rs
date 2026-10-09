@@ -195,6 +195,20 @@ impl Session {
         self.area = terrain::contributing_area(&self.z, nr, nc, res, res, res * res / 1e4);
     }
 
+    /// The contour direction (radians, east = 0, counterclockwise) at each (row, col) of the
+    /// smoothed DEM, after prepare(): where a pad's long axis lies, across the slope. 0 where
+    /// the ground is flat or unknown.
+    pub fn contour_angle(&self, rows: &[u32], cols: &[u32]) -> Vec<f32> {
+        rows.iter()
+            .zip(cols)
+            .map(|(&r, &c)| {
+                let k = r as usize * self.nc + c as usize;
+                let (gx, gy) = (self.gx.get(k).copied().unwrap_or(0.0), self.gy.get(k).copied().unwrap_or(0.0));
+                if !(gx.hypot(gy) > 1e-6) { 0.0 } else { (-gx).atan2(gy) as f32 }
+            })
+            .collect()
+    }
+
     /// Exclude cells (1 = keep out), e.g. avoid zones drawn on the map.
     pub fn exclude(&mut self, mask: &[u8]) {
         for (o, &m) in self.open.iter_mut().zip(mask) {
@@ -271,15 +285,16 @@ impl Session {
         &mut self, start_r: usize, start_c: usize, goal_r: usize, goal_c: usize, edge: &[f64], breaks: &[f64],
         costs: &[f64], tin: &[f64], section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
     ) -> Result<usize, JsValue> {
-        self.graph_begin_terminals(&[start_r as u32, goal_r as u32], &[start_c as u32, goal_c as u32], edge, breaks,
-                                   costs, tin, section, ns, ng, ds, dg)
+        self.graph_begin_terminals(&[start_r as u32, goal_r as u32], &[start_c as u32, goal_c as u32], &[], &[], edge,
+                                   breaks, costs, tin, section, ns, ng, ds, dg)
     }
 
-    /// graph_begin with any number of terminals (rows, cols): the access point, then the pads.
+    /// graph_begin with any number of terminals (rows, cols): the access point, then the pads; and
+    /// extra node cells (a denser mesh near the pads, say).
     #[allow(clippy::too_many_arguments)]
     pub fn graph_begin_terminals(
-        &mut self, rows: &[u32], cols: &[u32], edge: &[f64], breaks: &[f64], costs: &[f64], tin: &[f64],
-        section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
+        &mut self, rows: &[u32], cols: &[u32], extra_rows: &[u32], extra_cols: &[u32], edge: &[f64], breaks: &[f64],
+        costs: &[f64], tin: &[f64], section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
     ) -> Result<usize, JsValue> {
         if self.zs.is_empty() {
             return Err(JsValue::from_str("prepare() first"));
@@ -315,7 +330,9 @@ impl Session {
             tin_graph::tin_vertices(&self.rasters(), p.tolerance)
         };
         let terminals: Vec<(usize, usize)> = rows.iter().zip(cols).map(|(&r, &c)| (r as usize, c as usize)).collect();
-        let (nodes, term_node) = tin_graph::build_nodes_terminals(&self.rasters(), &p, &terminals, &tin);
+        let extra: Vec<(usize, usize)> =
+            extra_rows.iter().zip(extra_cols).map(|(&r, &c)| (r as usize, c as usize)).collect();
+        let (nodes, term_node) = tin_graph::build_nodes_terminals(&self.rasters(), &p, &terminals, &tin, &extra);
         self.nodes = nodes;
         self.term_node = term_node;
         self.pairs = tin_graph::candidate_pairs(&self.nodes, &p);
@@ -433,6 +450,7 @@ impl Session {
             connected: Vec<bool>,
             unreachable: Vec<bool>,
             beyond: Vec<usize>,
+            order: Vec<usize>,
             construction: f64,
             operating: f64,
         }
@@ -444,6 +462,7 @@ impl Session {
             connected: net.connected.clone(),
             unreachable: net.unreachable.clone(),
             beyond: net.beyond(),
+            order: net.order.clone(),
             construction,
             operating,
         };

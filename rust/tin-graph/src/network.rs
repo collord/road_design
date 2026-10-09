@@ -55,6 +55,8 @@ pub struct Network {
     children: Vec<u32>,
     /// Per node: the pad there, or -1.
     pad_of: Vec<i32>,
+    /// Pads in the order they were connected.
+    pub order: Vec<usize>,
 }
 
 /// A pad connected: which, the directed edges of its new branch from the network to it, and
@@ -92,6 +94,7 @@ impl Network {
             parent_edge: vec![NONE; n],
             children: vec![0; n],
             pad_of,
+            order: Vec::new(),
         }
     }
 
@@ -221,6 +224,7 @@ impl Network {
         match self.search(g, &target) {
             Some(step) => {
                 self.attach(g, &step.path, step.pad);
+                self.order.push(step.pad);
                 Some(step)
             }
             None => {

@@ -178,14 +178,15 @@ pub fn tin_vertices(t: &Rasters, tolerance: f64) -> Vec<(usize, usize)> {
 pub fn build_nodes_from(
     t: &Rasters, p: &TinParams, start: (usize, usize), goal: (usize, usize), tin: &[(usize, usize)],
 ) -> Vec<Node> {
-    build_nodes_terminals(t, p, &[start, goal], tin).0
+    build_nodes_terminals(t, p, &[start, goal], tin, &[]).0
 }
 
 /// The graph's nodes with any number of terminals (an access point and pads, say) first, in
-/// their order; terminals in the same cell share a node. Returns the nodes and each terminal's
+/// their order; terminals in the same cell share a node. `extra` cells (open ones) are added as
+/// background nodes, e.g. a denser mesh where pads are. Returns the nodes and each terminal's
 /// node.
 pub fn build_nodes_terminals(
-    t: &Rasters, p: &TinParams, terminals: &[(usize, usize)], tin: &[(usize, usize)],
+    t: &Rasters, p: &TinParams, terminals: &[(usize, usize)], tin: &[(usize, usize)], extra: &[(usize, usize)],
 ) -> (Vec<Node>, Vec<usize>) {
     let (nr, nc) = (t.nr(), t.nc());
     let mut nodes: Vec<Node> = Vec::new();
@@ -250,6 +251,11 @@ pub fn build_nodes_terminals(
     for i in 0..br {
         for j in 0..bc {
             let (r, c) = ((i * b + b / 2).min(nr - 1), (j * b + b / 2).min(nc - 1));
+            add(&mut nodes, r, c, KIND_BACKGROUND);
+        }
+    }
+    for &(r, c) in extra {
+        if r < nr && c < nc {
             add(&mut nodes, r, c, KIND_BACKGROUND);
         }
     }

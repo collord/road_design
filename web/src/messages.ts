@@ -6,7 +6,7 @@ export type ToWorker =
   | { type: "open"; file?: Blob; url?: string; name: string; zUnits: string; endpointsDem?: [number, number][] }
   | { type: "load"; start: [number, number]; goal: [number, number] | null; pads: [number, number][]; margin: number;
       res: number; maxCells: number; zUnits: string }
-  | { type: "network"; params: Params; b: number }
+  | { type: "network"; params: Params; b: number; refine: number }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
@@ -62,8 +62,10 @@ export type FromWorker =
   | { type: "fine"; route: FineOut }
   /** The pad network on the graph: its edges (graph node pairs) with the pads each serves, and per
    *  pad (in the page's order) whether it is connected or unreachable and how many pads lie beyond. */
+  /** Each pad's long axis (radians, east = 0, counterclockwise): along the contour at its center. */
+  | { type: "padAxes"; angles: number[] }
   | { type: "network"; grid: Grid; pairs: number[]; uses: number[]; connected: boolean[]; unreachable: boolean[];
-      beyond: number[]; construction: number; operating: number; phase: string; final: boolean }
+      beyond: number[]; order: number[]; construction: number; operating: number; phase: string; final: boolean }
   /** Hairpin designs computed for some cells (row * w + col of `grid`): the cheapest feasible left
    *  hairpin at each (any heading and leg spacing), Infinity where none fits. */
   | { type: "sites"; index: number; grid: Grid; cells: Uint32Array; cheapest: Float32Array }

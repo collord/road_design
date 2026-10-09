@@ -35,6 +35,8 @@ let mode: "route" | "network" = "route";
 const pads: [number, number][] = [];
 const padLayer = L.layerGroup();
 let padStatus: { connected: boolean[]; unreachable: boolean[]; beyond: number[] } | null = null;
+/** Each pad's long axis (radians, east = 0), along the contour, once an area is prepared. */
+let padAxes: number[] | null = null;
 let lastGraph: { grid: Grid; rows: Uint32Array; cols: Uint32Array } | null = null;
 let areaGrid: Grid | null = null;
 let haveCorridors = false;
@@ -236,7 +238,10 @@ function drawPads() {
     const st = padStatus;
     const color = !st ? "#9ca3af" : st.unreachable[i] ? css.getPropertyValue("--goal").trim()
       : st.connected[i] ? css.getPropertyValue("--start").trim() : "#9ca3af";
-    L.rectangle([[y - ph / 2, x - pw / 2], [y + ph / 2, x + pw / 2]], { color: "#111", weight: 1, fillColor: color,
+    // Long axis along the contour (once known), width across it.
+    const a = padAxes?.[i] ?? 0, [ux, uy] = [Math.cos(a), Math.sin(a)], [vx, vy] = [-uy, ux];
+    const corner = (s: number, t: number) => [y + s * uy * pw / 2 + t * vy * ph / 2, x + s * ux * pw / 2 + t * vx * ph / 2] as [number, number];
+    L.polygon([corner(1, 1), corner(1, -1), corner(-1, -1), corner(-1, 1)], { color: "#111", weight: 1, fillColor: color,
       fillOpacity: 0.8, interactive: false }).addTo(padLayer);
     const note = !st ? "" : st.unreachable[i] ? ": unreachable" : st.connected[i]
       ? `: connected, ${st.beyond[i]} pad${st.beyond[i] === 1 ? "" : "s"} beyond` : ": waiting";
@@ -320,6 +325,7 @@ $("pick-pads").addEventListener("click", () => {
 });
 $("clear-pads").addEventListener("click", () => {
   pads.length = 0;
+  padAxes = null;
   padStatus = null;
   drawPads();
 });
@@ -538,7 +544,13 @@ $("run").addEventListener("click", () => {
   setLayer("Pad network", null);
   padStatus = null;
   drawPads();
-  if (mode === "network") send({ type: "network", params: params(), b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))) });
+  if (mode === "network") {
+    // Pads' traffic is a share of a haul road's: the operating costs scale with it.
+    const p = params(), tau = Math.max(0, Number($<HTMLInputElement>("pad-traffic").value) || 0);
+    for (const k of ["C_travel", "C_vertical", "C_turn"]) p[k] = (p[k] as number) * tau;
+    send({ type: "network", params: p, b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))),
+           refine: Math.max(1, Number($<HTMLInputElement>("pad-refine").value) || 1) });
+  }
   else send({ type: "run", params: params() });
 });
 
@@ -847,6 +859,10 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
     }
     case "network":
       showNetwork(m);
+      break;
+    case "padAxes":
+      padAxes = m.angles;
+      drawPads();
       break;
     case "graph": {
       const g = m.grid;
