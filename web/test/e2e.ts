@@ -195,6 +195,41 @@ try {
       await evaluate(`document.querySelector("#profile").scrollIntoView()`);
       await shot(`${name}-fine`);
     }
+    // A pad network (one example): 16 pads scattered over the start-finish box, the start as the
+    // access point, loaded from a CSV through the file input; at most B = 2 pads beyond any pad.
+    if (name === (process.env.NETWORK ?? "haul-road")) {
+      const box: number[][] = await evaluate(`[document.querySelector("#start-text").value, document.querySelector("#goal-text").value]
+        .map((t) => t.split(",").map(Number))`);
+      const [[sx, sy], [gx, gy]] = box;
+      let seed = 7;
+      const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+      const rows = ["x,y"];
+      for (let i = 0; i < 16; i++) {
+        rows.push(`${(Math.min(sx, gx) - 500 + rnd() * (Math.abs(gx - sx) + 1000)).toFixed(1)},` +
+                  `${(Math.min(sy, gy) - 500 + rnd() * (Math.abs(gy - sy) + 1000)).toFixed(1)}`);
+      }
+      const csv = join(profile, "pads.csv");
+      writeFileSync(csv, rows.join(String.fromCharCode(10)));
+      await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "network"; s.dispatchEvent(new Event("change")); })()`);
+      const doc = await send("DOM.getDocument", {});
+      const q = await send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: "#pads-file" });
+      await send("DOM.setFileInputFiles", { nodeId: q.result.nodeId, files: [csv] });
+      await until(`/16 pads/.test(document.querySelector("#pads-info").textContent)`, "the pads", 10000);
+      await until(`!document.querySelector("#load").disabled`, "load enabled", 10000);
+      await evaluate(`document.querySelector("#load").click()`);
+      await until(`(${hasError}) || (!document.querySelector("#run").disabled && "ready")`, "the network's area", 120000);
+      const tNet = Date.now();
+      await evaluate(`document.querySelector("#run").click()`);
+      const net = await until(`(${hasError}) || (!document.querySelector("#run").disabled &&
+        [...document.querySelectorAll("#corridors td")].some((td) => td.textContent === "done") && "done")`, "the network", 600000);
+      if (net !== "done") throw new Error(net);
+      const rowsOut: string[] = await evaluate(`[...document.querySelectorAll("#corridors tr")].map((r) => [...r.cells].map((c) => c.textContent).join(": "))`);
+      console.log(`  network in ${((Date.now() - tNet) / 1000).toFixed(0)} s: ${rowsOut.slice(1).join("; ")}`);
+      const most = Number(rowsOut.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
+      if (!(most <= 2)) throw new Error(`a pad has ${most} pads beyond it`);
+      await shot(`${name}-network`);
+      await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "route"; s.dispatchEvent(new Event("change")); })()`);
+    }
     // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.
     if (name === names[0]) {
       await evaluate(`document.querySelector("#run").click()`);

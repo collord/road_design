@@ -21,6 +21,12 @@
     </section>
     <section>
       <h2>2. Start and finish</h2>
+      <label>Mode
+        <select id="mode">
+          <option value="route">a route: start to finish</option>
+          <option value="network">a pad network: access point to pads</option>
+        </select>
+      </label>
       <div class="row">
         <button id="pick-start" type="button">Click to set start</button>
         <button id="pick-goal" type="button">Click to set finish</button>
@@ -30,8 +36,22 @@
           <select id="coord-crs"><option value="utm">UTM (m)</option><option value="lonlat">longitude, latitude</option></select>
         </label>
       </div>
-      <label>Start <input id="start-text" placeholder="x, y"></label>
-      <label>Finish <input id="goal-text" placeholder="x, y"></label>
+      <label><span id="start-label">Start</span> <input id="start-text" placeholder="x, y"></label>
+      <label id="goal-row">Finish <input id="goal-text" placeholder="x, y"></label>
+      <div id="pads-box" class="stack" hidden>
+        <div class="row">
+          <button id="pick-pads" type="button">Click to add pads</button>
+          <label class="filebtn">Load pads...<input id="pads-file" type="file" accept=".csv,.txt,.geojson,.json"></label>
+          <button id="clear-pads" type="button">Clear</button>
+        </div>
+        <p id="pads-info" class="muted">No pads yet. While adding, click a pad again to remove it. A CSV needs x and y (or lon and lat) columns; GeoJSON, points.</p>
+        <div class="grid2">
+          <label title="A rig working on a pad, or stuck there, blocks the road through it: a pad may lie on the way to at most this many other pads (0: every pad ends its own spur).">Pads a pad may block <input id="pad-b" type="number" min="0" step="1" value="2"></label>
+          <label>Pad size (m)
+            <span class="row nowrap"><input id="pad-w" type="number" min="1" step="1" value="15"> x <input id="pad-h" type="number" min="1" step="1" value="10"></span>
+          </label>
+        </div>
+      </div>
     </section>
     <section>
       <h2>3. Area and settings</h2>
@@ -53,7 +73,7 @@
         <button id="run" type="button" disabled>Find corridors</button>
       </div>
     </section>
-    <section>
+    <section id="fine-section">
       <h2>4. Fine search</h2>
       <div class="grid2">
         <label title="The fine search's cell size. Hairpins and bends need fine cells: on Red Mountain (6%, R_min 10 m) 10 m cells give a route six times dearer than 5 m.">Cell size (m) <input id="fine-res" type="number" min="1" step="1" value="5"></label>

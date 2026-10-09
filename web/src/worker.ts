@@ -13,6 +13,7 @@ const ready = init();
 let source: Source | null = null;
 let area: { grid: Grid; session: wasm.Session; start: [number, number]; goal: [number, number];
              startXY: [number, number]; goalXY: [number, number]; zScale: number;
+             pads: ([number, number] | null)[];
              acc?: Float32Array; routes?: RouteOut[] } | null = null;
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
@@ -102,12 +103,14 @@ async function open(m: Extract<ToWorker, { type: "open" }>) {
 
 async function load(m: Extract<ToWorker, { type: "load" }>) {
   if (!source) throw new Error("open a DEM first");
-  const [sx, sy] = m.start, [gx, gy] = m.goal;
+  // The area covers the start, the finish (a route) or the pads (a network), plus the margin.
+  const pts = [m.start, ...(m.goal ? [m.goal] : []), ...m.pads];
+  const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
   const [bx0, by0, bx1, by1] = source.info.bbox;
   const res = m.res;
-  const x0 = Math.floor(Math.max(Math.min(sx, gx) - m.margin, bx0) / res) * res;
-  const y1 = Math.ceil(Math.min(Math.max(sy, gy) + m.margin, by1) / res) * res;
-  const xe = Math.min(Math.max(sx, gx) + m.margin, bx1), ye = Math.max(Math.min(sy, gy) - m.margin, by0);
+  const x0 = Math.floor(Math.max(Math.min(...xs) - m.margin, bx0) / res) * res;
+  const y1 = Math.ceil(Math.min(Math.max(...ys) + m.margin, by1) / res) * res;
+  const xe = Math.min(Math.max(...xs) + m.margin, bx1), ye = Math.max(Math.min(...ys) - m.margin, by0);
   const grid: Grid = { x0, y1, res, w: Math.ceil((xe - x0) / res), h: Math.ceil((y1 - ye) / res) };
   const cells = grid.w * grid.h;
   if (cells > m.maxCells) {
@@ -121,11 +124,13 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
       progress("read and reproject the area", done, total);
       await checkpoint();
     }));
-  const s = cellOf(grid, sx, sy), g = cellOf(grid, gx, gy);
-  if (!s || !g) throw new Error("start or finish is outside the DEM");
+  const s = cellOf(grid, m.start[0], m.start[1]);
+  const g = m.goal ? cellOf(grid, m.goal[0], m.goal[1]) : s;
+  if (!s || !g) throw new Error(`the ${m.goal ? "start or finish" : "access point"} is outside the DEM`);
+  const pads = m.pads.map(([x, y]) => cellOf(grid, x, y));
   area?.session.free();
-  area = { grid, session: new wasm.Session(z, grid.w, grid.h, res), start: s, goal: g, startXY: m.start, goalXY: m.goal,
-           zScale };
+  area = { grid, session: new wasm.Session(z, grid.w, grid.h, res), start: s, goal: g, startXY: m.start,
+           goalXY: m.goal ?? m.start, zScale, pads };
   const rgba = grayRgba(wasm.hillshade(z, grid.w, grid.h, res));
   post({ type: "raster", layer: "hillshade", grid, rgba }, [rgba.buffer]);
   post({ type: "area", grid, cells });
@@ -220,9 +225,10 @@ const FINE_BUDGET = 1.5e9;
 /** Edges are costed in slices of about this long, between checkpoints. */
 const SLICE_MS = 150;
 
-async function run(p: Params) {
-  if (!area) throw new Error("load an area first");
-  const { grid, session } = area;
+/** Preprocess the area and build the coarse graph with these terminals (row, col): the first is
+ *  the start or access point. */
+async function buildGraph(p: Params, terminals: [number, number][]) {
+  const { grid, session } = area!;
   const res = grid.res;
   timed("smooth, gradients, slope mask, flow", () =>
     session.prepare(sigmaM(p) / res, get(p, "g_max"), sMask(p), maxCatchAtMask(p)));
@@ -230,8 +236,8 @@ async function run(p: Params) {
   const slope = new Uint8ClampedArray(open.length * 4);
   for (let i = 0; i < open.length; i++) if (!open[i]) { slope[4 * i] = 215; slope[4 * i + 1] = 48; slope[4 * i + 2] = 31; slope[4 * i + 3] = 110; }
   post({ type: "raster", layer: "slope", grid, rgba: slope }, [slope.buffer]);
-  area.acc = session.contributing_area();
-  const ch = channelRgba(area.acc, get(p, "A_min"));
+  const acc = (area!.acc = session.contributing_area());
+  const ch = channelRgba(acc, get(p, "A_min"));
   post({ type: "raster", layer: "channels", grid, rgba: ch }, [ch.buffer]);
   const sad = session.saddles();
   post({ type: "points", layer: "saddles", grid, cells: sad }, [sad.buffer]);
@@ -247,10 +253,10 @@ async function run(p: Params) {
                                 get(p, "tin_separation") / res]);
   const breaks = new Float64Array(p.culvert_area_breaks as number[]);
   const costs = new Float64Array(p.culvert_costs as number[]);
-  const [sr, sc] = area.start, [gr, gc] = area.goal;
   await checkpoint();
+  const tr = new Uint32Array(terminals.map((t) => t[0])), tc = new Uint32Array(terminals.map((t) => t[1]));
   const nPairs = timed("graph nodes and candidate edges", () =>
-    session.graph_begin(sr, sc, gr, gc, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
+    session.graph_begin_terminals(tr, tc, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
   // Cost the edges in slices sized to take about SLICE_MS each.
   const name = "cost the edges on the DEM";
   post({ type: "stage", name, state: "start" });
@@ -268,11 +274,23 @@ async function run(p: Params) {
   post({ type: "stage", name, state: "end", ms: performance.now() - t0 });
   timed("assemble the graph", () => session.graph_finish());
   await checkpoint();
-  const best = timed("search from both ends: best route", () => session.search_begin()) as RouteOut | null;
+}
+
+/** The graph's nodes and edges to the page (with the corridor field, if a search made one). */
+function postGraph() {
+  const { grid, session } = area!;
   const rows = session.node_rows(), cols = session.node_cols(), kinds = session.node_kinds();
   const field = session.field(), pairs = session.edge_pairs(), cpm = session.edge_cost_per_m();
   post({ type: "graph", grid, rows, cols, kinds, field, pairs, costPerM: cpm },
        [rows.buffer, cols.buffer, kinds.buffer, field.buffer, pairs.buffer, cpm.buffer]);
+}
+
+async function run(p: Params) {
+  if (!area) throw new Error("load an area first");
+  const { grid, session } = area;
+  await buildGraph(p, [area.start, area.goal]);
+  const best = timed("search from both ends: best route", () => session.search_begin()) as RouteOut | null;
+  postGraph();
   if (!best) throw new Error("no route: the finish cannot be reached from the start on this graph");
   const routes: RouteOut[] = [best];
   const nAlt = get(p, "tin_alternatives");
@@ -288,6 +306,69 @@ async function run(p: Params) {
   }
   post({ type: "corridors", grid, routes, final: true });
   area.routes = routes;
+}
+
+/**
+ * A road network from the access point (the start) to the pads, on the coarse graph: grown pad by
+ * pad (the pad cheapest to reach from the network so far), then improved (each pad's end branch
+ * reconnected at least cost) until a pass changes nothing. A pad may lie on the way to at most
+ * `b` others. The network is posted after every step.
+ */
+async function network(p: Params, b: number) {
+  if (!area) throw new Error("load an area first");
+  const { grid, session } = area;
+  const pads = area.pads;
+  if (!pads.length) throw new Error("add pads first");
+  const outside = pads.map((q, i) => (q ? -1 : i + 1)).filter((i) => i > 0);
+  if (outside.length) throw new Error(`pads ${outside.join(", ")} are outside the area`);
+  // One terminal per cell: pads in the access point's cell are connected with it, pads sharing a
+  // cell share a terminal.
+  const key = (q: [number, number]) => q[0] * grid.w + q[1];
+  const terminals: [number, number][] = [area.start];
+  const termOf = new Map<number, number>([[key(area.start), 0]]);
+  const padTerm = pads.map((q) => {
+    const k = key(q!);
+    if (!termOf.has(k)) {
+      termOf.set(k, terminals.length);
+      terminals.push(q!);
+    }
+    return termOf.get(k)!;
+  });
+  await buildGraph(p, terminals);
+  postGraph();
+  session.network_begin(b);
+  const n = terminals.length - 1;
+  const send = (phase: string, final: boolean) => {
+    const st = session.network_state() as { pairs: number[]; uses: number[]; connected: boolean[];
+      unreachable: boolean[]; beyond: number[]; construction: number; operating: number };
+    // Per pad in the page's order (terminal t >= 1 is pad t - 1 of the graph's).
+    const per = <T>(a: T[], atAccess: T) => padTerm.map((t) => (t === 0 ? atAccess : a[t - 1]));
+    post({ type: "network", grid, pairs: st.pairs, uses: st.uses, connected: per(st.connected, true),
+           unreachable: per(st.unreachable, false), beyond: per(st.beyond, 0), construction: st.construction,
+           operating: st.operating, phase, final });
+  };
+  const grow = "connect the pads, cheapest first";
+  post({ type: "stage", name: grow, state: "start" });
+  let t0 = performance.now();
+  for (let k = 0; ; k++) {
+    progress(grow, k, n);
+    await checkpoint();
+    if (session.network_grow() < 0) break;
+    send(`${k + 1} of ${n} pads connected`, false);
+  }
+  post({ type: "stage", name: grow, state: "end", ms: performance.now() - t0 });
+  send("connected", false);
+  for (let pass = 1; pass <= 5; pass++) {
+    const name = `improve the network, pass ${pass}`;
+    post({ type: "stage", name, state: "start" });
+    t0 = performance.now();
+    await checkpoint();
+    const moved = session.network_improve();
+    post({ type: "stage", name, state: "end", ms: performance.now() - t0 });
+    send(`pass ${pass}: ${moved.length} pads rerouted`, false);
+    if (!moved.length) break;
+  }
+  send("done", true);
 }
 
 /**
@@ -419,6 +500,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (m.type === "open") await open(m);
       else if (m.type === "load") await load(m);
       else if (m.type === "run") await run(m.params);
+      else if (m.type === "network") await network(m.params, m.b);
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);

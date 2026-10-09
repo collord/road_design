@@ -29,7 +29,13 @@ let base: Params = {};             // the parameter set before the controls (an 
 let info: SourceInfo | null = null;
 let start: [number, number] | null = null;
 let goal: [number, number] | null = null;
-let picking: "start" | "goal" | null = null;
+let picking: "start" | "goal" | "pads" | null = null;
+let mode: "route" | "network" = "route";
+/** Pad centers (UTM). */
+const pads: [number, number][] = [];
+const padLayer = L.layerGroup();
+let padStatus: { connected: boolean[]; unreachable: boolean[]; beyond: number[] } | null = null;
+let lastGraph: { grid: Grid; rows: Uint32Array; cols: Uint32Array } | null = null;
 let areaGrid: Grid | null = null;
 let haveCorridors = false;
 const fineRoutes: FineOut[] = [];
@@ -85,7 +91,8 @@ function log(text: string, cls = "") {
 
 // ---------------------------------------------------------------- status: what the worker is doing
 
-const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors", refine: "Refining corridors" } as const;
+const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors", refine: "Refining corridors",
+                    network: "Building the pad network" } as const;
 let busy: keyof typeof TASK_TEXT | null = null;
 let busySince = 0;
 let ticker: ReturnType<typeof setInterval> | undefined;
@@ -214,17 +221,180 @@ function setEnd(which: "start" | "goal", p: [number, number]) {
   estimate();
 }
 
+// ---------------------------------------------------------------- pads
+
+function padSize(): [number, number] {
+  return [Math.max(1, Number($<HTMLInputElement>("pad-w").value) || 15), Math.max(1, Number($<HTMLInputElement>("pad-h").value) || 10)];
+}
+
+/** The pads: each a rectangle of the pad size and a marker colored by its state in the network. */
+function drawPads() {
+  padLayer.clearLayers();
+  const [pw, ph] = padSize();
+  const css = getComputedStyle(document.documentElement);
+  pads.forEach(([x, y], i) => {
+    const st = padStatus;
+    const color = !st ? "#9ca3af" : st.unreachable[i] ? css.getPropertyValue("--goal").trim()
+      : st.connected[i] ? css.getPropertyValue("--start").trim() : "#9ca3af";
+    L.rectangle([[y - ph / 2, x - pw / 2], [y + ph / 2, x + pw / 2]], { color: "#111", weight: 1, fillColor: color,
+      fillOpacity: 0.8, interactive: false }).addTo(padLayer);
+    const note = !st ? "" : st.unreachable[i] ? ": unreachable" : st.connected[i]
+      ? `: connected, ${st.beyond[i]} pad${st.beyond[i] === 1 ? "" : "s"} beyond` : ": waiting";
+    L.circleMarker([y, x], { radius: 5, color: "#111", weight: 1, fillColor: color, fillOpacity: 1 })
+      .bindTooltip(`pad ${i + 1}${note}`)
+      .on("click", () => {
+        if (picking !== "pads") return;
+        pads.splice(i, 1);
+        padStatus = null;
+        drawPads();
+      })
+      .addTo(padLayer);
+  });
+  if (pads.length && !map.hasLayer(padLayer)) padLayer.addTo(map);
+  $("pads-info").textContent = pads.length
+    ? `${pads.length} pad${pads.length === 1 ? "" : "s"}` + (picking === "pads" ? " (click the map to add, a pad to remove)" : "")
+    : "No pads yet. While adding, click a pad again to remove it. A CSV needs x and y (or lon and lat) columns; GeoJSON, points.";
+  estimate();
+}
+
+/** Points from a CSV (x/y, easting/northing or lon/lat columns; or two numbers per line, in the
+ *  coordinate system chosen above) or GeoJSON (points, longitude and latitude). In UTM. */
+function parsePads(text: string, name: string): [number, number][] {
+  if (!info) throw new Error("open a DEM first");
+  const toUtm = (lon: number, lat: number): [number, number] => proj4("WGS84", utmDef(), [lon, lat]) as [number, number];
+  if (/\.(geo)?json$/i.test(name) || text.trimStart().startsWith("{")) {
+    const gj = JSON.parse(text);
+    const out: [number, number][] = [];
+    const visit = (geom: any) => {
+      if (!geom) return;
+      if (geom.type === "Point") out.push(toUtm(geom.coordinates[0], geom.coordinates[1]));
+      else if (geom.type === "MultiPoint") for (const c of geom.coordinates) out.push(toUtm(c[0], c[1]));
+      else if (geom.type === "GeometryCollection") geom.geometries.forEach(visit);
+    };
+    for (const f of gj.type === "FeatureCollection" ? gj.features : [gj]) visit(f.type === "Feature" ? f.geometry : f);
+    return out;
+  }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const cells = (l: string) => l.split(/[,;\t]/).map((c) => c.trim());
+  const head = cells(lines[0]).map((h) => h.toLowerCase());
+  const col = (names: string[]) => head.findIndex((h) => names.includes(h));
+  const [ix, iy] = [col(["x", "easting", "east", "e"]), col(["y", "northing", "north", "n"])];
+  const [ilon, ilat] = [col(["lon", "long", "longitude", "lng"]), col(["lat", "latitude"])];
+  const out: [number, number][] = [];
+  if ((ix >= 0 && iy >= 0) || (ilon >= 0 && ilat >= 0)) {
+    for (const l of lines.slice(1)) {
+      const c = cells(l).map(Number);
+      if (ix >= 0 && iy >= 0 && Number.isFinite(c[ix]) && Number.isFinite(c[iy])) out.push([c[ix], c[iy]]);
+      else if (Number.isFinite(c[ilon]) && Number.isFinite(c[ilat])) out.push(toUtm(c[ilon], c[ilat]));
+    }
+    return out;
+  }
+  for (const l of lines) {
+    const p = parsePoint(cells(l).slice(0, 2).join(","));
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+function setMode(m: "route" | "network") {
+  mode = m;
+  const net = m === "network";
+  $("pads-box").hidden = !net;
+  $("goal-row").hidden = net;
+  $("pick-goal").hidden = net;
+  $("fine-section").hidden = net;
+  $("start-label").textContent = net ? "Access point" : "Start";
+  $("pick-start").textContent = net ? "Click to set the access point" : "Click to set start";
+  $("run").textContent = net ? "Find network" : "Find corridors";
+  markers.goal?.setStyle({ opacity: net ? 0 : 1, fillOpacity: net ? 0 : 1 });
+  estimate();
+}
+
+$<HTMLSelectElement>("mode").addEventListener("change", (e) => setMode((e.target as HTMLSelectElement).value as "route" | "network"));
+$("pick-pads").addEventListener("click", () => {
+  picking = picking === "pads" ? null : "pads";
+  $("pick-pads").classList.toggle("active", picking === "pads");
+  $("pick-start").classList.remove("active");
+  $("pick-goal").classList.remove("active");
+  drawPads();
+});
+$("clear-pads").addEventListener("click", () => {
+  pads.length = 0;
+  padStatus = null;
+  drawPads();
+});
+$<HTMLInputElement>("pads-file").addEventListener("change", async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  try {
+    const got = parsePads(await f.text(), f.name);
+    if (!got.length) throw new Error("no points found");
+    pads.push(...got);
+    padStatus = null;
+    drawPads();
+    log(`${f.name}: ${got.length} pads`);
+  } catch (err) {
+    log(`${f.name}: ${err instanceof Error ? err.message : String(err)}`, "err");
+  }
+  (e.target as HTMLInputElement).value = "";
+});
+for (const id of ["pad-w", "pad-h"]) $(id).addEventListener("input", drawPads);
+
+/** The pad network: roads weighted by the pads they serve, the pads colored by state, and a summary. */
+function showNetwork(m: Extract<FromWorker, { type: "network" }>) {
+  padStatus = { connected: m.connected, unreachable: m.unreachable, beyond: m.beyond };
+  drawPads();
+  if (!lastGraph) return;
+  const { grid: g, rows, cols } = lastGraph;
+  const xy = (v: number) => [g.y1 - (rows[v] + 0.5) * g.res, g.x0 + (cols[v] + 0.5) * g.res] as [number, number];
+  const group = L.layerGroup();
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+  for (let i = 0; i < m.uses.length; i++) {
+    const pts = [xy(m.pairs[2 * i]), xy(m.pairs[2 * i + 1])];
+    const wgt = 2 + 1.5 * Math.log2(1 + m.uses[i]);
+    L.polyline(pts, { color: "#111", weight: wgt + 3, opacity: 0.5, interactive: false }).addTo(group);
+    L.polyline(pts, { color: accent, weight: wgt, opacity: 0.95 })
+      .bindTooltip(`serves ${m.uses[i]} pad${m.uses[i] === 1 ? "" : "s"}`).addTo(group);
+  }
+  setLayer("Pad network", group);
+  const nConn = m.connected.filter(Boolean).length, nUnr = m.unreachable.filter(Boolean).length;
+  const maxBeyond = Math.max(0, ...m.beyond);
+  const fmt = (v: number) => Math.round(v).toLocaleString();
+  $("corridors").innerHTML = `<tr><th>pad network</th><th></th></tr>` +
+    `<tr><td>${m.phase}</td><td></td></tr>` +
+    `<tr><td>pads connected</td><td>${nConn} of ${pads.length}</td></tr>` +
+    (nUnr ? `<tr><td>unreachable</td><td>${m.unreachable.map((u, i) => (u ? i + 1 : 0)).filter(Boolean).join(", ")}</td></tr>` : "") +
+    `<tr><td>construction</td><td>${fmt(m.construction)}</td></tr>` +
+    `<tr><td>operating (all pads' traffic)</td><td>${fmt(m.operating)}</td></tr>` +
+    `<tr><td>total</td><td>${fmt(m.construction + m.operating)}</td></tr>` +
+    `<tr><td>most pads beyond a pad</td><td>${maxBeyond}</td></tr>`;
+  if (m.final) {
+    if (start) map.fitBounds(L.latLngBounds([start, ...pads].map(([x, y]) => [y, x] as [number, number])).pad(0.15));
+    log(`network: ${nConn} of ${pads.length} pads, construction ${fmt(m.construction)}, operating ${fmt(m.operating)}` +
+        (nUnr ? `; unreachable: ${nUnr}` : ""), nUnr ? "err" : "");
+  }
+}
+
 // ---------------------------------------------------------------- controls
 
 function zUnits(): string { return $<HTMLSelectElement>("z_units").value; }
 
+/** The points the area must cover: start and finish, or the access point and the pads. */
+function areaPoints(): [number, number][] | null {
+  if (!start) return null;
+  if (mode === "network") return pads.length ? [start, ...pads] : null;
+  return goal ? [start, goal] : null;
+}
+
 function estimate() {
   const loadBtn = $<HTMLButtonElement>("load");
-  if (!info || !start || !goal || busy) { loadBtn.disabled = true; return; }
+  const pts = areaPoints();
+  if (!info || !pts || busy) { loadBtn.disabled = true; return; }
   const m = Number($<HTMLInputElement>("margin").value) * 1000, res = Number($<HTMLInputElement>("res").value);
   const [bx0, by0, bx1, by1] = info.bbox;
-  const w = (Math.min(Math.max(start[0], goal[0]) + m, bx1) - Math.max(Math.min(start[0], goal[0]) - m, bx0)) / res;
-  const h = (Math.min(Math.max(start[1], goal[1]) + m, by1) - Math.max(Math.min(start[1], goal[1]) - m, by0)) / res;
+  const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
+  const w = (Math.min(Math.max(...xs) + m, bx1) - Math.max(Math.min(...xs) - m, bx0)) / res;
+  const h = (Math.min(Math.max(...ys) + m, by1) - Math.max(Math.min(...ys) - m, by0)) / res;
   const cells = Math.max(0, w) * Math.max(0, h);
   const over = cells > MAX_CELLS;
   $("estimate").textContent = `${(cells / 1e6).toFixed(1)} million cells at ${res} m, about ` +
@@ -314,6 +484,12 @@ $<HTMLSelectElement>("coord-crs").addEventListener("change", () => {
   if (goal) $<HTMLInputElement>("goal-text").value = formatPoint(goal);
 });
 map.on("click", (e: L.LeafletMouseEvent) => {
+  if (picking === "pads") {
+    pads.push([e.latlng.lng, e.latlng.lat]);
+    padStatus = null;
+    drawPads();
+    return;
+  }
   if (!picking) return;
   setEnd(picking, [e.latlng.lng, e.latlng.lat]);
   picking = null;
@@ -329,13 +505,14 @@ $("A_min").addEventListener("change", () => {
 });
 
 $("load").addEventListener("click", () => {
-  if (!start || !goal) return;
+  if (!start || !areaPoints()) return;
   areaGrid = null;
   haveCorridors = false;
   clearFine();
   $<HTMLButtonElement>("load").disabled = true;
   $<HTMLButtonElement>("run").disabled = true;
-  send({ type: "load", start, goal, margin: Number($<HTMLInputElement>("margin").value) * 1000,
+  send({ type: "load", start, goal: mode === "route" ? goal : null, pads: mode === "network" ? [...pads] : [],
+         margin: Number($<HTMLInputElement>("margin").value) * 1000,
          res: Number($<HTMLInputElement>("res").value), maxCells: MAX_CELLS, zUnits: zUnits() });
 });
 $("refine").addEventListener("click", () => {
@@ -358,7 +535,11 @@ $("run").addEventListener("click", () => {
   for (const name of ["Slope mask", "Channels", "Saddles", "Triangulation", "Graph nodes (corridor field)",
                       "Graph edges", "Corridors"]) setLayer(name, null);
   $("corridors").innerHTML = "";
-  send({ type: "run", params: params() });
+  setLayer("Pad network", null);
+  padStatus = null;
+  drawPads();
+  if (mode === "network") send({ type: "network", params: params(), b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))) });
+  else send({ type: "run", params: params() });
 });
 
 // ---------------------------------------------------------------- results
@@ -664,15 +845,19 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       setLayer("Triangulation", segmentsLayer(g, rows, cols, pairs, "rgba(30,30,30,0.35)", 0.6));
       break;
     }
+    case "network":
+      showNetwork(m);
+      break;
     case "graph": {
       const g = m.grid;
+      lastGraph = { grid: g, rows: m.rows, cols: m.cols };
       let fmin = Infinity;
       for (const v of m.field) if (v < fmin) fmin = v;
       log(`graph: ${m.rows.length.toLocaleString()} nodes, ${(m.pairs.length / 2).toLocaleString()} edges`);
       setLayer("Graph nodes (corridor field)", pointsLayer(g, m.rows, m.cols, (i) => {
         const f = m.field[i];
         return Number.isFinite(f) ? rampColor((Math.round((f / fmin - 1) * 20) / 20)) : "rgba(120,120,120,0.4)";
-      }, 3));
+      }, 3), mode === "route");
       setLayer("Graph edges", segmentsLayer(g, m.rows, m.cols, m.pairs, "rgba(80,80,160,0.25)", 0.5, 300_000), false);
       setLayer("Triangulation", layers.get("Triangulation") ?? null, false);
       break;

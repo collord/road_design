@@ -4,8 +4,9 @@ import type { Params } from "./params";
 
 export type ToWorker =
   | { type: "open"; file?: Blob; url?: string; name: string; zUnits: string; endpointsDem?: [number, number][] }
-  | { type: "load"; start: [number, number]; goal: [number, number]; margin: number; res: number; maxCells: number;
-      zUnits: string }
+  | { type: "load"; start: [number, number]; goal: [number, number] | null; pads: [number, number][]; margin: number;
+      res: number; maxCells: number; zUnits: string }
+  | { type: "network"; params: Params; b: number }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
@@ -57,8 +58,12 @@ export type FromWorker =
       pairs: Uint32Array; costPerM: Float32Array }
   | { type: "corridors"; grid: Grid; routes: RouteOut[]; final: boolean }
   | { type: "progress"; name: string; done: number; total: number }
-  | { type: "busy"; task: "open" | "load" | "run" | "refine" | null }
+  | { type: "busy"; task: "open" | "load" | "run" | "refine" | "network" | null }
   | { type: "fine"; route: FineOut }
+  /** The pad network on the graph: its edges (graph node pairs) with the pads each serves, and per
+   *  pad (in the page's order) whether it is connected or unreachable and how many pads lie beyond. */
+  | { type: "network"; grid: Grid; pairs: number[]; uses: number[]; connected: boolean[]; unreachable: boolean[];
+      beyond: number[]; construction: number; operating: number; phase: string; final: boolean }
   /** Hairpin designs computed for some cells (row * w + col of `grid`): the cheapest feasible left
    *  hairpin at each (any heading and leg spacing), Infinity where none fits. */
   | { type: "sites"; index: number; grid: Grid; cells: Uint32Array; cheapest: Float32Array }

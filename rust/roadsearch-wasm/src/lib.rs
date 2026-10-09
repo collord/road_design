@@ -102,6 +102,9 @@ pub struct Session {
     costed: Vec<Option<tin_graph::EdgeCost>>,
     graph: Option<tin_graph::Graph>,
     search: Option<tin_graph::CorridorSearch>,
+    /// Each terminal's graph node (graph_begin_terminals), and the pad network on the graph.
+    term_node: Vec<usize>,
+    network: Option<tin_graph::network::Network>,
 }
 
 fn route_out(r: &tin_graph::Route) -> RouteOut {
@@ -157,6 +160,8 @@ impl Session {
             costed: Vec::new(),
             graph: None,
             search: None,
+            term_node: Vec::new(),
+            network: None,
         }
     }
 
@@ -266,10 +271,23 @@ impl Session {
         &mut self, start_r: usize, start_c: usize, goal_r: usize, goal_c: usize, edge: &[f64], breaks: &[f64],
         costs: &[f64], tin: &[f64], section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
     ) -> Result<usize, JsValue> {
+        self.graph_begin_terminals(&[start_r as u32, goal_r as u32], &[start_c as u32, goal_c as u32], edge, breaks,
+                                   costs, tin, section, ns, ng, ds, dg)
+    }
+
+    /// graph_begin with any number of terminals (rows, cols): the access point, then the pads.
+    #[allow(clippy::too_many_arguments)]
+    pub fn graph_begin_terminals(
+        &mut self, rows: &[u32], cols: &[u32], edge: &[f64], breaks: &[f64], costs: &[f64], tin: &[f64],
+        section: &[f64], ns: usize, ng: usize, ds: f64, dg: f64,
+    ) -> Result<usize, JsValue> {
         if self.zs.is_empty() {
             return Err(JsValue::from_str("prepare() first"));
         }
-        if start_r >= self.nr || start_c >= self.nc || goal_r >= self.nr || goal_c >= self.nc {
+        if rows.len() != cols.len() || rows.len() < 2 {
+            return Err(JsValue::from_str("need at least two terminals"));
+        }
+        if rows.iter().zip(cols).any(|(&r, &c)| r as usize >= self.nr || c as usize >= self.nc) {
             return Err(JsValue::from_str("start or goal outside the area"));
         }
         if edge.len() < 6 || tin.len() < 10 || section.len() != ns * ng {
@@ -288,6 +306,7 @@ impl Session {
         self.section_shape = (ns, ng, ds, dg);
         self.graph = None;
         self.search = None;
+        self.network = None;
         self.routes.clear();
         // The triangulation's vertices, from triangulate() when it used the same tolerance.
         let tin: Vec<(usize, usize)> = if self.tri_tolerance == p.tolerance {
@@ -295,7 +314,10 @@ impl Session {
         } else {
             tin_graph::tin_vertices(&self.rasters(), p.tolerance)
         };
-        self.nodes = tin_graph::build_nodes_from(&self.rasters(), &p, (start_r, start_c), (goal_r, goal_c), &tin);
+        let terminals: Vec<(usize, usize)> = rows.iter().zip(cols).map(|(&r, &c)| (r as usize, c as usize)).collect();
+        let (nodes, term_node) = tin_graph::build_nodes_terminals(&self.rasters(), &p, &terminals, &tin);
+        self.nodes = nodes;
+        self.term_node = term_node;
         self.pairs = tin_graph::candidate_pairs(&self.nodes, &p);
         self.costed = Vec::with_capacity(self.pairs.len());
         self.tin_params = Some(p);
@@ -364,6 +386,68 @@ impl Session {
             }
             None => Ok(JsValue::NULL),
         }
+    }
+
+    /// Start a pad network on the graph (graph_begin_terminals, graph_cost, graph_finish first):
+    /// the first terminal is the access point, the others pads; a pad may lie on the way to at
+    /// most `b` others.
+    pub fn network_begin(&mut self, b: usize) -> Result<(), JsValue> {
+        let g = self.graph.as_ref().ok_or_else(|| JsValue::from_str("graph_finish() first"))?;
+        if self.term_node.len() < 2 {
+            return Err(JsValue::from_str("graph_begin_terminals() with the access point and pads first"));
+        }
+        self.network = Some(tin_graph::network::Network::new(g, self.term_node[0], &self.term_node[1..], b, self.c_turn));
+        Ok(())
+    }
+
+    /// Connect the pad cheapest to reach; returns its index (among the pads), or -1 when every
+    /// pad is connected or unreachable.
+    pub fn network_grow(&mut self) -> Result<i32, JsValue> {
+        let (g, net) = match (&self.graph, &mut self.network) {
+            (Some(g), Some(n)) => (g, n),
+            _ => return Err(JsValue::from_str("network_begin() first")),
+        };
+        Ok(net.grow(g).map_or(-1, |s| s.pad as i32))
+    }
+
+    /// One improvement pass; returns the pads whose branch moved.
+    pub fn network_improve(&mut self) -> Result<Vec<u32>, JsValue> {
+        let (g, net) = match (&self.graph, &mut self.network) {
+            (Some(g), Some(n)) => (g, n),
+            _ => return Err(JsValue::from_str("network_begin() first")),
+        };
+        Ok(net.improve(g).into_iter().map(|p| p as u32).collect())
+    }
+
+    /// The network: {pairs (node u, v per edge), uses (pads whose way uses each edge), connected,
+    /// unreachable, beyond (per pad), construction, operating}. Node cells from node_rows/cols.
+    pub fn network_state(&self) -> Result<JsValue, JsValue> {
+        let (g, net) = match (&self.graph, &self.network) {
+            (Some(g), Some(n)) => (g, n),
+            _ => return Err(JsValue::from_str("network_begin() first")),
+        };
+        #[derive(Serialize)]
+        struct State {
+            pairs: Vec<u32>,
+            uses: Vec<u32>,
+            connected: Vec<bool>,
+            unreachable: Vec<bool>,
+            beyond: Vec<usize>,
+            construction: f64,
+            operating: f64,
+        }
+        let edges = net.edges(g);
+        let (construction, operating) = net.cost(g);
+        let st = State {
+            pairs: edges.iter().flat_map(|&(k, _)| [g.edges[k as usize].0, g.edges[k as usize].1]).collect(),
+            uses: edges.iter().map(|&(_, u)| u).collect(),
+            connected: net.connected.clone(),
+            unreachable: net.unreachable.clone(),
+            beyond: net.beyond(),
+            construction,
+            operating,
+        };
+        serde_wasm_bindgen::to_value(&st).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     pub fn node_rows(&self) -> Vec<u32> {

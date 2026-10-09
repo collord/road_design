@@ -65,6 +65,12 @@ table.pick tr[data-index] { cursor: pointer; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 2px; vertical-align: -1px; }
 td input[type="checkbox"] { margin: 0 2px 0 0; vertical-align: -2px; }
 label.check { display: flex; gap: 6px; align-items: center; }
+.stack { display: grid; gap: 6px; }
+.row.nowrap { flex-wrap: nowrap; align-items: center; }
+.row.nowrap input { width: 4.5em; }
+label.filebtn { display: inline-block; cursor: pointer; border: 1px solid var(--rule); border-radius: 4px; padding: 4px 6px;
+  background: var(--bg); font-size: 14px; }
+label.filebtn input { display: none; }
 table.pick tr.selected td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .profile { width: 100%; height: auto; display: block; margin-top: 8px; font-size: 11px; fill: var(--muted); }
 .profile text { fill: var(--muted); font-variant-numeric: tabular-nums; }

@@ -22,6 +22,8 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use road_cost::{culvert_cost, Grid, SectionTable};
 
+pub mod network;
+
 /// Why a node is in the graph.
 pub const KIND_TIN: u8 = 0;
 pub const KIND_CHANNEL: u8 = 1;
@@ -176,12 +178,29 @@ pub fn tin_vertices(t: &Rasters, tolerance: f64) -> Vec<(usize, usize)> {
 pub fn build_nodes_from(
     t: &Rasters, p: &TinParams, start: (usize, usize), goal: (usize, usize), tin: &[(usize, usize)],
 ) -> Vec<Node> {
+    build_nodes_terminals(t, p, &[start, goal], tin).0
+}
+
+/// The graph's nodes with any number of terminals (an access point and pads, say) first, in
+/// their order; terminals in the same cell share a node. Returns the nodes and each terminal's
+/// node.
+pub fn build_nodes_terminals(
+    t: &Rasters, p: &TinParams, terminals: &[(usize, usize)], tin: &[(usize, usize)],
+) -> (Vec<Node>, Vec<usize>) {
     let (nr, nc) = (t.nr(), t.nc());
-    let mut nodes = vec![
-        Node { r: start.0, c: start.1, kind: KIND_ENDPOINT },
-        Node { r: goal.0, c: goal.1, kind: KIND_ENDPOINT },
-    ];
-    let mut seen: HashSet<usize> = [start.0 * nc + start.1, goal.0 * nc + goal.1].into_iter().collect();
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut where_: HashMap<usize, usize> = HashMap::new();
+    let mut term_node = Vec::with_capacity(terminals.len());
+    for &(r, c) in terminals {
+        let k = r * nc + c;
+        let i = *where_.entry(k).or_insert_with(|| {
+            nodes.push(Node { r, c, kind: KIND_ENDPOINT });
+            nodes.len() - 1
+        });
+        seen.insert(k);
+        term_node.push(i);
+    }
     let mut add = |nodes: &mut Vec<Node>, r: usize, c: usize, kind: u8| {
         if t.is_open(r as i64, c as i64) && seen.insert(r * nc + c) {
             nodes.push(Node { r, c, kind });
@@ -234,7 +253,7 @@ pub fn build_nodes_from(
             add(&mut nodes, r, c, KIND_BACKGROUND);
         }
     }
-    nodes
+    (nodes, term_node)
 }
 
 /// What an edge costs, split up.
@@ -496,20 +515,20 @@ pub fn dijkstra(g: &Graph, w: &[f64], source: usize) -> (Vec<f64>, Vec<u32>) {
 // Undirected edge k = (u, v), u < v, gives directed edges 2k (u -> v) and 2k + 1 (v -> u).
 
 #[inline(always)]
-fn tail(g: &Graph, d: u32) -> usize {
+pub(crate) fn tail(g: &Graph, d: u32) -> usize {
     let (a, b) = g.edges[(d / 2) as usize];
     (if d % 2 == 0 { a } else { b }) as usize
 }
 
 #[inline(always)]
-fn head(g: &Graph, d: u32) -> usize {
+pub(crate) fn head(g: &Graph, d: u32) -> usize {
     let (a, b) = g.edges[(d / 2) as usize];
     (if d % 2 == 0 { b } else { a }) as usize
 }
 
 /// The directed edge leaving u along undirected edge k.
 #[inline(always)]
-fn out_of(g: &Graph, u: usize, k: u32) -> u32 {
+pub(crate) fn out_of(g: &Graph, u: usize, k: u32) -> u32 {
     if g.edges[k as usize].0 as usize == u { 2 * k } else { 2 * k + 1 }
 }
 
@@ -517,7 +536,7 @@ fn out_of(g: &Graph, u: usize, k: u32) -> u32 {
 /// from the headings precomputed with the graph: no transcendental functions in the searches'
 /// inner loops (they are slow software routines in WebAssembly).
 #[inline(always)]
-fn turn_angle(g: &Graph, a: u32, b: u32) -> f64 {
+pub(crate) fn turn_angle(g: &Graph, a: u32, b: u32) -> f64 {
     let t = (g.heading[b as usize] - g.heading[a as usize]).abs();
     if t > std::f64::consts::PI { 2.0 * std::f64::consts::PI - t } else { t }
 }
