@@ -50,7 +50,7 @@ _LATER_PARAMS = {"C_turn": 0.0, "tin_res": 15.0, "tin_margin": 10000.0, "tin_max
                  "cost_samples": 0.0, "cost_sigma": 0.3, "cost_sigma_edge": 0.2,
                  "tin_node_samples": 0.0, "tin_node_density": 20.0,
                  # Runs before roughness ignored it: their ids stay, and runs with it get new ones.
-                 "rough_r0": 0.0}
+                 "rough_r0": 0.0, "rough_max_res": 3.0}
 
 
 def _id_params(p: Params) -> dict:

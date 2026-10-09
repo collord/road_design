@@ -47,6 +47,9 @@ export const TABLE_NG = 21;
 /** Roughness (m) over which soil thins by e (roughness.py); 0, or absent from a parameter set: off. */
 export const roughR0 = (p: Params) => (typeof p.rough_r0 === "number" ? p.rough_r0 : 0);
 
+/** Coarsest DEM pixels (m) roughness is read from; 3 when a parameter set lacks it. */
+export const roughMaxRes = (p: Params) => (typeof p.rough_max_res === "number" ? p.rough_max_res : 3);
+
 /** Soil slope added per meter of roughness (roughness.py rough_k); 0: off. */
 export const roughK = (p: Params) => (roughR0(p) > 0 ? num(p, "S0") / roughR0(p) : 0);
 

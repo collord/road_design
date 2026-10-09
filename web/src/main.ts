@@ -8,7 +8,7 @@ import { Candidate, HairpinSites, KeyChart, Wavefront } from "./explore";
 import { profileSummary, profileSvg } from "./profile";
 import { boundsOf, CanvasLayer, rampColor, rasterLayer } from "./layers";
 import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
-import type { Params } from "./params";
+import { roughMaxRes, type Params } from "./params";
 import type { Grid, SourceInfo } from "./source";
 
 const MAX_CELLS = 12_000_000;
@@ -594,7 +594,7 @@ $("load").addEventListener("click", () => {
   $<HTMLButtonElement>("run").disabled = true;
   send({ type: "load", start, goal: mode === "route" ? goal : null, pads: mode === "network" ? [...pads] : [],
          margin: Number($<HTMLInputElement>("margin").value) * 1000,
-         res: coarseRes(), maxCells: MAX_CELLS, zUnits: zUnits() });
+         res: coarseRes(), maxCells: MAX_CELLS, zUnits: zUnits(), roughMaxRes: roughMaxRes(runParams()) });
 });
 /** The run's parameters, with the pads' traffic scaling the operating costs in network mode. */
 function runParams(): Params {

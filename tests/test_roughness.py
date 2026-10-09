@@ -83,6 +83,8 @@ def test_coarse_dems_have_none(tmp_path):
     path = write_dem(tmp_path / "dem.tif", z, from_origin(500_000.0, 5_001_000.0, 10.0, 10.0), UTM)
     grid, info = load_grid(path, load_params(), resolution=10.0)
     assert grid.rough is None and "landform" in info["roughness"]["skipped"]
+    grid, info = load_grid(path, load_params(overrides={"rough_max_res": 10.0}), resolution=10.0)
+    assert grid.rough is not None and info["roughness"]["pixel_size"] == pytest.approx(10.0)
 
 
 def test_bands_match_one_read(tmp_path, monkeypatch):

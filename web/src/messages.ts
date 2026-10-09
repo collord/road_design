@@ -5,7 +5,7 @@ import type { Params } from "./params";
 export type ToWorker =
   | { type: "open"; file?: Blob; url?: string; name: string; zUnits: string; endpointsDem?: [number, number][] }
   | { type: "load"; start: [number, number]; goal: [number, number] | null; pads: [number, number][]; margin: number;
-      res: number; maxCells: number; zUnits: string }
+      res: number; maxCells: number; zUnits: string; roughMaxRes: number }
   | { type: "network"; params: Params; b: number; refine: number }
   | { type: "refineNetwork"; params: Params; res: number; buffer: number; b: number; length: number; width: number }
   | { type: "run"; params: Params }

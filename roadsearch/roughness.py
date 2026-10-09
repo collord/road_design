@@ -9,8 +9,9 @@ Soil depth then thins with roughness as if it were extra slope: d0 exp(-(S + (S0
 = d0 exp(-S/S0) exp(-rho/rough_r0), none once that effective slope reaches c_soil; so rough ground
 is excavated at the rock price.
 
-Roughness means rock only at lidar-like resolution: DEMs with pixels coarser than ROUGH_MAX_RES_M
-are left without it (their few-pixel relief is the landform's curvature).
+Roughness means rock most clearly at lidar-like resolution: DEMs with pixels coarser than
+rough_max_res (default 3 m) are left without it, since their few-pixel relief is largely the
+landform's curvature (meters of it on mountain DEMs of 10 m).
 """
 
 from __future__ import annotations
@@ -27,9 +28,6 @@ from .params import Params
 ROUGH_SIGMA_PX = 2.0
 # Native pixels read at once for roughness (about 1 GB of intermediates): larger areas go in bands.
 ROUGH_MAX_PX = 20_000_000
-# Coarsest native pixels (m) roughness is read from: at coarser pixels a few pixels' detrended
-# relief measures the landform's curvature (meters of it on mountain DEMs of 10 m), not rock.
-ROUGH_MAX_RES_M = 3.0
 
 
 def rough_k(p: Params) -> float:
@@ -57,22 +55,22 @@ def roughness(z: np.ndarray, sigma_px: float = ROUGH_SIGMA_PX, engine: str | Non
     return out
 
 
-def native_roughness(ds, z_scale: float, transform, shape: tuple[int, int], dst_crs, native_m: float
-                     ) -> tuple[np.ndarray | None, dict]:
+def native_roughness(ds, z_scale: float, transform, shape: tuple[int, int], dst_crs, native_m: float,
+                     max_res: float = 3.0) -> tuple[np.ndarray | None, dict]:
     """Roughness on the working grid (transform, shape, dst_crs) from the open DEM dataset `ds` at
     its native pixels (native_m m), averaged onto the working cells: read in bands of the working
     grid of at most ROUGH_MAX_PX native pixels each, so memory stays bounded at any resolution.
-    None (with the reason) when the pixels are coarser than ROUGH_MAX_RES_M: the detrended relief
-    would then be landform, not rock. Returns the raster and a record of what was read."""
+    None (with the reason) when the pixels are coarser than max_res: the detrended relief would
+    then be mostly landform, not rock. Returns the raster and a record of what was read."""
     from rasterio.enums import Resampling
     from rasterio.warp import reproject, transform_bounds
     from rasterio.windows import Window, from_bounds
 
     from . import memguard
 
-    if native_m > ROUGH_MAX_RES_M:
-        return None, {"skipped": f"the DEM's {native_m:.1f} m pixels are coarser than {ROUGH_MAX_RES_M:g} m: "
-                                 f"their detrended relief is landform, not rock; roughness is ignored",
+    if native_m > max_res:
+        return None, {"skipped": f"the DEM's {native_m:.1f} m pixels are coarser than rough_max_res {max_res:g} m: "
+                                 f"their detrended relief is mostly landform, not rock; roughness is ignored",
                       "pixel_size": native_m}
     h, w = shape
     res = abs(transform.a)

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import init, * as wasm from "../src/wasm/roadsearch_wasm.js";
 import { writeArrayBuffer } from "geotiff";
-import { ROUGH_MAX_RES_M, Source, Z_UNIT_SCALE } from "../src/source.ts";
+import { Source, Z_UNIT_SCALE } from "../src/source.ts";
 import { get, hairpinAllowance, maxCatchAtMask, roughK, sectionTable, sigmaM, sMask, TABLE_NS } from "../src/params.ts";
 
 await init({ module_or_path: readFileSync(new URL("../src/wasm/roadsearch_wasm_bg.wasm", import.meta.url)) });
@@ -75,7 +75,7 @@ for (const ex of examples) {
     GTModelTypeGeoKey: 1, GTRasterTypeGeoKey: 1, ProjectedCSTypeGeoKey: 32611, GeogAngularUnitsGeoKey: 9102,
   } as never);
   const src = await Source.open(tif, "rubble");
-  check(src.info.resM <= ROUGH_MAX_RES_M, `native pixels ${src.info.resM.toFixed(2)} m`);
+  check(src.info.resM <= 3, `native pixels ${src.info.resM.toFixed(2)} m`);
   const res = 5, w = 70, h = 70;
   const grid = { x0: 500_025, y1: 5_000_375, res, w, h };
   const { z: zg, rough } = await src.resampleWithRoughness(grid, wasm.resample,

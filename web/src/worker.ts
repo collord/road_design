@@ -3,7 +3,7 @@
 // progress within the long ones, and "busy" when a task starts and ends. "stop" ends a task at
 // its next checkpoint (between bands of a read, slices of the edges, and corridors).
 import init, * as wasm from "./wasm/roadsearch_wasm.js";
-import { ROUGH_MAX_RES_M, Source, Z_UNIT_SCALE, type Grid } from "./source";
+import { Source, Z_UNIT_SCALE, type Grid } from "./source";
 import { get, hairpinAllowance, maxCatchAtMask, roughK, roughR0, sectionTable, sigmaM, sMask, TABLE_NS,
          type Params } from "./params";
 import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
@@ -122,6 +122,7 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
     throw new Error(`the area is ${(cells / 1e6).toFixed(1)} million cells at ${res} m, over the limit of ` +
       `${(m.maxCells / 1e6).toFixed(0)} million: use cells of ${Math.ceil(fit)} m or more, or a smaller margin`);
   }
+  roughLimit = m.roughMaxRes;
   const zScale = Z_UNIT_SCALE[m.zUnits] ?? 1;
   const { z, rough } = await timedAsync("read and reproject the area", () =>
     readDem(grid, true, zScale, async (done, total) => {
@@ -144,11 +145,14 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
 /** Roughness (m) of the DEM's native pixels (roughness.py ROUGH_SIGMA_PX = 2). */
 const roughness = (z: Float32Array, w: number, h: number) => wasm.roughness(z, w, h, 2);
 
+/** Coarsest DEM pixels (m) roughness is read from (rough_max_res), as of the last area loaded. */
+let roughLimit = 3;
+
 /** The DEM on a grid, with its roughness when asked for and the DEM's pixels are fine enough for
  *  it to mean rock (else empty). */
 async function readDem(g: Grid, withRough: boolean, zScale: number,
                        onBand: (done: number, total: number) => Promise<void>): Promise<{ z: Float32Array; rough: Float32Array }> {
-  if (withRough && source!.info.resM <= ROUGH_MAX_RES_M) {
+  if (withRough && source!.info.resM <= roughLimit) {
     return source!.resampleWithRoughness(g, wasm.resample, roughness, zScale, onBand);
   }
   return { z: await source!.resampleBands(g, wasm.resample, zScale, -1, onBand), rough: new Float32Array(0) };
@@ -158,8 +162,8 @@ async function readDem(g: Grid, withRough: boolean, zScale: number,
 function roughNote(rough: Float32Array): string {
   const px = source!.info.resM;
   if (!rough.length) {
-    return `roughness: the DEM's ${px.toFixed(1)} m pixels are coarser than ${ROUGH_MAX_RES_M} m: their detrended ` +
-      "relief is landform, not rock; roughness is ignored";
+    return `roughness: the DEM's ${px.toFixed(1)} m pixels are coarser than rough_max_res ${roughLimit} m: their ` +
+      "detrended relief is mostly landform, not rock; roughness is ignored";
   }
   const v = Array.from(rough).filter((x) => !Number.isNaN(x)).sort((a, b) => a - b);
   return `roughness from the DEM's ${px.toFixed(2)} m pixels: median ${v.length ? v[v.length >> 1].toFixed(2) : "-"} m ` +

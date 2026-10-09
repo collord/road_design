@@ -28,6 +28,7 @@ class Params:
     d0: float
     S0: float
     rough_r0: float
+    rough_max_res: float
     c_soil: float
     c_rock: float
     f_soil: float

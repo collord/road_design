@@ -48,9 +48,6 @@ type Roughness = (z: Float32Array, w: number, h: number) => Float32Array;
 /** Extra source pixels read around a window for roughness: its smoothing's reach (sigma 2 px). */
 const ROUGH_MARGIN = 10;
 
-/** Coarsest native pixels (m) roughness is read from (roughness.py ROUGH_MAX_RES_M): at coarser
- *  pixels a few pixels' detrended relief is the landform's curvature, not rock. */
-export const ROUGH_MAX_RES_M = 3;
 
 export class Source {
   info!: SourceInfo;

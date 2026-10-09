@@ -227,7 +227,8 @@ def load_grid(path: str | Path, p: Params, resolution: float | None = None,
         if p.rough_r0 > 0:
             from .roughness import native_roughness
             native_m = abs(ds.res[0]) if same_grid else src_res
-            rough, rough_info = native_roughness(ds, z_scale, transform, z.shape, dst_crs, native_m)
+            rough, rough_info = native_roughness(ds, z_scale, transform, z.shape, dst_crs, native_m,
+                                                 p.rough_max_res)
     z = z * z_scale
     grid = Grid(z=z, transform=transform, crs=dst_crs, rough=rough)
     return grid, {
