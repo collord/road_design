@@ -34,6 +34,11 @@ def fine_inputs(t):
             np.ascontiguousarray(t.area_ha, dtype=np.float64), ((t.code == 0) & t.clip).astype(np.uint8), t.grid.res)
 
 
+def rough_kw(t):
+    """The roughness, when the case has one, as road_fine takes it."""
+    return {} if t.rough is None else {"rough": np.ascontiguousarray(t.rough, dtype=np.float64)}
+
+
 def test_section_matches():
     p = load_params()
     rng = np.random.default_rng(3)
@@ -45,8 +50,9 @@ def test_section_matches():
     assert np.array_equal(got[np.isfinite(want)], want[np.isfinite(want)])      # bit for bit
 
 
-def test_cost_table_matches():
-    p = load_params(overrides={"g_max": 0.105})
+@pytest.mark.parametrize("rough_r0", [0.0, 0.5])
+def test_cost_table_matches(rough_r0):
+    p = load_params(overrides={"g_max": 0.105, "rough_r0": rough_r0})
     want = build_cost_table(p)
     table, ds, dg = roadsearch_core.fine_cost_table(params_json(p))
     assert (ds, dg) == (want.ds, want.dg)
@@ -89,7 +95,18 @@ def steep_case():
     return p, preprocess(g, g.xy(10, 10), g.xy(90, 85), p)
 
 
-CASES = {"random": random_case, "gully": gully_case, "steep": steep_case}
+def rough_case():
+    """The random case on ground with patches of roughness (rock): the soil thins there."""
+    p = load_params(overrides={"C_travel": 125.5, "C_vertical": 2576.0, "C_turn": 8000.0, "rough_r0": 0.5})
+    z = random_terrain(7, n=90, relief=15.0)
+    g = make_grid(z, 5.0)
+    rho = 0.8 * np.clip(random_terrain(11, n=90, relief=1.0) - 1000.0, 0.0, None)
+    rho[:3, :3] = np.nan
+    g.rough = rho
+    return p, preprocess(g, g.xy(5, 5), g.xy(84, 80), p)
+
+
+CASES = {"random": random_case, "gully": gully_case, "steep": steep_case, "rough": rough_case}
 
 
 @pytest.fixture(scope="module", params=sorted(CASES))
@@ -101,7 +118,7 @@ def case(request):
 
 def test_problem_matches(case):
     _, p, t, prob = case
-    got = roadsearch_core.fine_problem(*fine_inputs(t), params_json(p))
+    got = roadsearch_core.fine_problem(*fine_inputs(t), params_json(p), **rough_kw(t))
     assert np.array_equal(got["soil"], prob.soil)
     assert np.array_equal(got["channel"], prob.channel)
     assert np.array_equal(got["chdist"], prob.chdist)
@@ -119,7 +136,8 @@ def test_route_matches(case):
     name, p, t, prob = case
     it = fill_price_iteration(prob, t.start_rc, t.goal_rc)
     it, rounds, blocked = avoid_self_overlap(prob, t.start_rc, t.goal_rc, it)
-    got = roadsearch_core.fine_route(*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc))
+    got = roadsearch_core.fine_route(*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc),
+                                     **rough_kw(t))
     assert it.best is not None and got["best"] is not None, name
     b = got["best"]
     assert [tuple(e) for e in b["edges"]] == [tuple(int(v) for v in e) for e in it.best.edges]
@@ -149,13 +167,21 @@ def test_route_matches(case):
 def test_cases_exercise_the_model(case):
     """The cases between them cover hairpins or bends, fill crossings and spoil."""
     name, p, t, prob = case
-    got = roadsearch_core.fine_route(*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc))
+    got = roadsearch_core.fine_route(*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc),
+                                     **rough_kw(t))
     kinds = {s["section_type"] for s in got["best"]["segments"]}
     if name == "gully":
         assert "fill_crossing" in kinds
     if name == "steep":
         assert {"hairpin", "bend", "fill_crossing", "full_bench"} <= kinds
         assert len(got["history"]) > 1 and got["best"]["cost"]["haul_cost"] > 0
+    if name == "rough":
+        # The roughness thins the soil: more rock than on the same ground without it.
+        smooth = roadsearch_core.fine_route(*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc))
+        rock = lambda r: sum(s["cut_rock_m3"] for s in r["best"]["segments"])  # noqa: E731
+        assert t.soil[np.isfinite(t.soil)].mean() < CASES["random"]()[1].soil[np.isfinite(t.soil)].mean()
+        assert got["best"]["cost"]["total"] > smooth["best"]["cost"]["total"]
+        assert rock(got) > 0
 
 
 def test_lazy_macros_match_tables(case):
@@ -163,8 +189,8 @@ def test_lazy_macros_match_tables(case):
     same route and costs as whole tables."""
     name, p, t, _ = case
     args = (*fine_inputs(t), params_json(p), tuple(t.start_rc), tuple(t.goal_rc))
-    eager = roadsearch_core.fine_route(*args)
-    lazy = roadsearch_core.fine_route(*args, lazy=True)
+    eager = roadsearch_core.fine_route(*args, **rough_kw(t))
+    lazy = roadsearch_core.fine_route(*args, lazy=True, **rough_kw(t))
     assert lazy["best"]["edges"] == eager["best"]["edges"], name
     assert lazy["best"]["cost"] == eager["best"]["cost"]
     assert [h["true"] for h in lazy["history"]] == [h["true"] for h in eager["history"]]

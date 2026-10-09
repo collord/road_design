@@ -11,7 +11,7 @@ use road_cost::{Actions, CostParams, Grid, MacroTable, RoadCost, SectionTable, T
 
 use crate::lattice::{build_bends, heading_vectors, lattice_arrays, BendGeometry, LatticeArrays};
 use crate::params::Params;
-use crate::section::{cost_table, max_catch_at_mask, soil_depth, TABLE_NG, TABLE_NS};
+use crate::section::{cost_table, max_catch_at_mask, soil_depth, TABLE_NS};
 
 /// The rasters of a fine grid, as preprocessing leaves them (row-major nr x nc).
 pub struct FineInputs {
@@ -28,20 +28,23 @@ pub struct FineInputs {
     pub area: Vec<f64>,
     /// 1 where the search may go: not excluded (slope mask, zones) and inside the clip region.
     pub open: Vec<u8>,
+    /// Roughness (m) from the native DEM (roughness.py); empty: none.
+    pub rough: Vec<f64>,
 }
 
 /// Preprocessing of a fine grid (preprocess.py without exclusion zones): smoothing, gradients,
 /// the dilated slope mask, flow accumulation. `clip` (1 = the search may go there, e.g. a
 /// corridor's buffer) is combined into the open mask. Also returns the slope mask, for checking
 /// the endpoints.
-pub fn preprocess(z_raw: Vec<f64>, nr: usize, nc: usize, res: f64, p: &Params, clip: &[u8]) -> (FineInputs, Vec<bool>) {
+pub fn preprocess(z_raw: Vec<f64>, nr: usize, nc: usize, res: f64, p: &Params, clip: &[u8], rough: Vec<f64>)
+                  -> (FineInputs, Vec<bool>) {
     let zs = terrain::smooth(&z_raw, nr, nc, p.sigma_m() / res);
     let (gx, gy) = terrain::gradient(&zs, nr, nc, res, -res);
     let slope: Vec<f64> = gx.iter().zip(&gy).map(|(a, b)| a.hypot(*b)).collect();
     let (_raw, excluded) = terrain::slope_mask(&slope, nr, nc, p.g_max, p.s_mask(), max_catch_at_mask(p), res, res);
     let area = terrain::contributing_area(&z_raw, nr, nc, res, res, res * res / 1e4);
     let open = (0..nr * nc).map(|k| u8::from(!excluded[k] && clip[k] != 0)).collect();
-    (FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open }, excluded)
+    (FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open, rough }, excluded)
 }
 
 /// 1 within `buffer` meters of a polyline of (row, col) points (cell coordinates, centers at
@@ -134,11 +137,15 @@ pub struct Problem {
     pub area: Vec<f64>,
     /// Distance to the nearest channel cell, cells.
     pub chdist: Vec<f64>,
+    /// Roughness (m; zeros if none) and the soil slope it adds per meter (0: none).
+    pub rough: Vec<f64>,
+    pub k_rough: f64,
     pub lat: LatticeArrays,
     pub lattice: Lattice,
     pub actions: Actions,
-    /// Cost per meter over (sidehill, grade), TABLE_NS x TABLE_NG, and its steps.
+    /// Cost per meter over (sidehill, grade), TABLE_NS x table_ng, and its steps.
     pub table: Vec<f64>,
+    pub table_ng: usize,
     pub ds: f64,
     pub dg: f64,
     pub hp_slots: Vec<i64>,
@@ -207,7 +214,7 @@ impl Problem {
     pub fn new(inputs: FineInputs, params: Params, macros_mode: Macros) -> Result<Problem, String> {
         let lazy = macros_mode == Macros::Lazy;
         let tables = macros_mode == Macros::Tables;
-        let FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open } = inputs;
+        let FineInputs { nr, nc, res, z_raw, zs, gx, gy, area, open, rough } = inputs;
         let n = nr * nc;
         for (name, len) in [("z_raw", z_raw.len()), ("zs", zs.len()), ("gx", gx.len()), ("gy", gy.len()),
                             ("area", area.len()), ("open", open.len())] {
@@ -216,10 +223,14 @@ impl Problem {
             }
         }
         let p = &params;
+        let has_rough = rough.len() == n;
+        let k_rough = if has_rough { p.rough_k() } else { 0.0 };
+        let rough: Vec<f64> = if has_rough { rough.iter().map(|&v| if v.is_nan() { 0.0 } else { v }).collect() } else { vec![0.0; n] };
         let soil: Vec<f64> = (0..n)
             .map(|k| {
                 let s = gx[k].hypot(gy[k]);
-                if s.is_nan() { 0.0 } else { soil_depth(s, p) }
+                // Soil thins with roughness as with extra slope.
+                if s.is_nan() { 0.0 } else if k_rough > 0.0 { soil_depth(s + k_rough * rough[k], p) } else { soil_depth(s, p) }
             })
             .collect();
         let area: Vec<f64> = area.iter().map(|&a| if a.is_nan() { 0.0 } else { a }).collect();
@@ -231,7 +242,7 @@ impl Problem {
         let lat = lattice_arrays(p.n_theta, p.r_min / res, Some(&hp_slots), p.l_cross_max / res, Some(&bend_geo),
                                  p.move_max_cells, p.kink_max_deg)?;
         let (lattice, actions) = lat.to_search();
-        let (table, ds, dg) = cost_table(p);
+        let (table, table_ng, ds, dg) = cost_table(p);
         let table_cells: Vec<i64> = (0..n).filter(|&k| open[k] != 0).map(|k| k as i64).collect();
         let mut macro_lookup = vec![-1i32; n];
         for (i, &k) in table_cells.iter().enumerate() {
@@ -255,7 +266,8 @@ impl Problem {
             vx: vecs.iter().map(|v| v.0 as f64).collect(),
             vy: vecs.iter().map(|v| v.1 as f64).collect(),
             open_tables: open.clone(),
-            open, gx, gy, zs, soil, z_raw, channel, area, chdist, lat, lattice, actions, table, ds, dg, hp_slots,
+            open, gx, gy, zs, soil, z_raw, channel, area, chdist, rough, k_rough, lat, lattice, actions, table, table_ng, ds,
+            dg, hp_slots,
             bend_geo, table_cells, macro_lookup, n_bend_slots,
             penalty: Vec::new(),
             params,
@@ -349,7 +361,7 @@ impl Problem {
             res: self.res, g_max: p.g_max, c_base: p.c_base, culvert_breaks: p.culvert_area_breaks.clone(),
             culvert_costs: p.culvert_costs.clone(), lam_fill: self.lam_fill, w: p.w, f_rock: p.f_rock,
             h_fill_max: p.h_fill_max, fill_tol: p.fill_tol, c_travel: p.c_travel, c_vertical: p.c_vertical,
-            c_turn: p.c_turn,
+            c_turn: p.c_turn, k_rough: self.k_rough,
         }
     }
 
@@ -391,8 +403,9 @@ impl Problem {
                 channel: Grid::new(&self.channel, nr, nc),
                 area: Grid::new(&self.area, nr, nc),
                 chdist: Grid::new(&self.chdist, nr, nc),
+                rough: Grid::new(&self.rough, nr, nc),
             },
-            section: SectionTable { data: &self.table, ns: TABLE_NS, ng: TABLE_NG, ds: self.ds, dg: self.dg },
+            section: SectionTable { data: &self.table, ns: TABLE_NS, ng: self.table_ng, ds: self.ds, dg: self.dg },
             hairpins,
             bends,
             params: &cp,

@@ -163,13 +163,18 @@ impl FineSession {
     /// (row, col) points on this grid, and the buffer (m) the search may use around it. The
     /// other corridors' lines (points, NaN between lines) mark the ground nearer to them than to
     /// this corridor's line (within two cells): `apart` is the search's cost factor there (1: the
-    /// ground is shared freely; infinite: it is closed).
+    /// ground is shared freely; infinite: it is closed). The roughness (m, w x h, from the DEM's
+    /// native pixels) thins the soil when the parameters' rough_r0 is positive; empty: none.
     #[wasm_bindgen(constructor)]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(z: &[f32], w: usize, h: usize, res: f64, params_json: &str, line_rows: &[f64], line_cols: &[f64],
-               buffer: f64, other_rows: &[f64], other_cols: &[f64], apart: f64, for_rows: bool)
+               buffer: f64, other_rows: &[f64], other_cols: &[f64], apart: f64, for_rows: bool, rough: &[f32])
                -> Result<FineSession, JsValue> {
         if z.len() != w * h || w < 2 || h < 2 {
             return Err(js_err("the grid needs w x h values, at least 2 x 2"));
+        }
+        if !rough.is_empty() && rough.len() != w * h {
+            return Err(js_err("the roughness needs w x h values"));
         }
         let p = Params::from_json(params_json).map_err(js_err)?;
         // The corridor's line, or a network's edges (NaN between them).
@@ -190,7 +195,8 @@ impl FineSession {
         let closed = apart.is_infinite();
         let clip: Vec<u8> = d_own.iter().zip(&nearer).map(|(&d, &n)| u8::from(d <= buffer && (n || !closed))).collect();
         let z: Vec<f64> = z.iter().map(|&v| v as f64).collect();
-        let (inputs, excluded) = preprocess(z, h, w, res, &p, &clip);
+        let rough: Vec<f64> = rough.iter().map(|&v| v as f64).collect();
+        let (inputs, excluded) = preprocess(z, h, w, res, &p, &clip, rough);
         let mut prob = Problem::new(inputs, p, if for_rows { Macros::Rows } else { Macros::Lazy }).map_err(js_err)?;
         if apart > 1.0 && !closed && !others.is_empty() {
             prob.penalty = nearer.iter().map(|&n| if n { 1.0 } else { apart as f32 }).collect();

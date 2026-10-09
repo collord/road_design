@@ -243,7 +243,7 @@ def crop_problem(prob: SearchProblem, r0: int, r1: int, c0: int, c1: int) -> Sea
     return dataclasses.replace(
         prob, nr=r1 - r0, nc=c1 - c0, open_=cp(prob.open_), gx=cp(prob.gx), gy=cp(prob.gy), zs=cp(prob.zs),
         soil=cp(prob.soil), z_raw=cp(prob.z_raw), channel=cp(prob.channel), area=cp(prob.area),
-        chdist=cp(prob.chdist), macro_lookup=look,
+        chdist=cp(prob.chdist), macro_lookup=look, rough=cp(prob.rough) if prob.rough is not None else None,
         open_tables=cp(prob.open_tables) if prob.open_tables is not None else None)
 
 

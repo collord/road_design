@@ -48,6 +48,14 @@ pub fn resample(
     terrain::resample_lattice(src, sw, sh, lat_col, lat_row, lw, lh, step, w, h, k)
 }
 
+/// Detrended relief (m; roughness.py) of a DEM at its native pixels (sigma in pixels). NaN where
+/// z is.
+#[wasm_bindgen]
+pub fn roughness(z: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
+    let z: Vec<f64> = z.iter().map(|&v| v as f64).collect();
+    terrain::roughness(&z, h, w, sigma).into_iter().map(|v| v as f32).collect()
+}
+
 /// Shaded relief, 0..255 (0 where there is no data).
 #[wasm_bindgen]
 pub fn hillshade(z: &[f32], w: usize, h: usize, res: f64) -> Vec<u8> {
@@ -80,6 +88,8 @@ pub struct Session {
     gy: Vec<f64>,
     area: Vec<f64>,
     open: Vec<u8>,
+    /// Roughness (m; zeros if none), thinning the soil (set_rough).
+    rough: Vec<f64>,
     node_rows: Vec<u32>,
     node_cols: Vec<u32>,
     node_kinds: Vec<u8>,
@@ -140,6 +150,7 @@ impl Session {
             gy: Vec::new(),
             area: Vec::new(),
             open: Vec::new(),
+            rough: vec![0.0; w * h],
             node_rows: Vec::new(),
             node_cols: Vec::new(),
             node_kinds: Vec::new(),
@@ -175,9 +186,19 @@ impl Session {
             gy: Grid::new(&self.gy, nr, nc),
             open: Grid::new(&self.open, nr, nc),
             area: Grid::new(&self.area, nr, nc),
+            rough: Grid::new(&self.rough, nr, nc),
             section: SectionTable { data: &self.section, ns, ng, ds, dg },
             res: self.res,
         }
+    }
+
+    /// The roughness on this grid (m, row-major w x h; NaN: none), from the DEM's native pixels.
+    pub fn set_rough(&mut self, rough: &[f32]) -> Result<(), JsValue> {
+        if rough.len() != self.nr * self.nc {
+            return Err(JsValue::from_str("the roughness needs w x h values"));
+        }
+        self.rough = rough.iter().map(|&v| if v.is_nan() { 0.0 } else { v as f64 }).collect();
+        Ok(())
     }
 
     /// Smoothing (sigma in cells), gradients, the slope mask (ground too steep for any road at
@@ -332,6 +353,7 @@ impl Session {
         }
         self.edge_params = Some(tin_graph::EdgeParams {
             g_max: edge[0], c_travel: edge[1], c_vertical: edge[2], a_min: edge[3], hairpin_cost: edge[4],
+            k_rough: edge.get(6).copied().unwrap_or(0.0),
             culvert_breaks: breaks.to_vec(), culvert_costs: costs.to_vec(),
         });
         self.c_turn = edge[5];

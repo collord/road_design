@@ -195,6 +195,17 @@ try {
       await evaluate(`document.querySelector("#profile").scrollIntoView()`);
       await shot(`${name}-fine`);
     }
+    // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.
+    if (name === names[0]) {
+      await evaluate(`document.querySelector("#run").click()`);
+      await until(`(${hasError}) || /cost the edges/i.test(document.querySelector(".status-step").textContent)`, "edge costing", 60000);
+      await evaluate(`document.querySelector(".status-stop").click()`);
+      const stopped = await until(`(${hasError}) || (!document.querySelector("#run").disabled && getComputedStyle(document.querySelector(".status")).display === "none" &&
+        [...document.querySelectorAll("#log li")].some((li) => li.textContent.startsWith("stopped")) && "stopped")`, "the stop", 30000);
+      if (stopped !== "stopped" && !/^stopped/.test(stopped)) throw new Error(stopped);
+      await evaluate(`document.querySelectorAll("#log li.err").forEach((li) => li.remove())`);
+      console.log(`  stop: the run ended while costing edges; Find corridors is enabled again`);
+    }
     // A pad network (one example): 16 pads scattered over the start-finish box, the start as the
     // access point, loaded from a CSV through the file input; at most B = 2 pads beyond any pad.
     if (name === (process.env.NETWORK ?? "haul-road")) {
@@ -242,17 +253,6 @@ try {
         await shot(`${name}-fine-network`);
       }
       await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "route"; s.dispatchEvent(new Event("change")); })()`);
-    }
-    // Stop: a second run, stopped while it costs the edges, leaves the page ready to run again.
-    if (name === names[0]) {
-      await evaluate(`document.querySelector("#run").click()`);
-      await until(`(${hasError}) || /cost the edges/i.test(document.querySelector(".status-step").textContent)`, "edge costing", 60000);
-      await evaluate(`document.querySelector(".status-stop").click()`);
-      const stopped = await until(`(${hasError}) || (!document.querySelector("#run").disabled && getComputedStyle(document.querySelector(".status")).display === "none" &&
-        [...document.querySelectorAll("#log li")].some((li) => li.textContent.startsWith("stopped")) && "stopped")`, "the stop", 30000);
-      if (stopped !== "stopped" && !/^stopped/.test(stopped)) throw new Error(stopped);
-      await evaluate(`document.querySelectorAll("#log li.err").forEach((li) => li.remove())`);
-      console.log(`  stop: the run ended while costing edges; Find corridors is enabled again`);
     }
     console.log(`  ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   }

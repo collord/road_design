@@ -12,6 +12,7 @@ from .engine import use_rust
 from .exclusion import ZoneFile, check_endpoints, combine_codes, load_zone_file
 from .flow import contributing_area_ha
 from .params import Params
+from .roughness import rough_k
 from .section import max_catch_at_mask, soil_depth
 from .terrain import Grid, write_raster
 
@@ -47,6 +48,7 @@ class Terrain:
     zones: list[ZoneFile] = field(default_factory=list)
     info: dict = field(default_factory=dict)
     clip: np.ndarray | bool = True   # cells the search may use (clip region); True = all
+    rough: np.ndarray | None = None  # roughness (m) from the native DEM; None: unknown (none)
 
     @property
     def excluded(self) -> np.ndarray:
@@ -143,7 +145,10 @@ def preprocess(
     zs = smooth_dem(grid.z, sigma_cells, engine)
     dzdx, dzdy = gradient(zs, grid, engine)
     S = np.hypot(dzdx, dzdy)
-    soil = np.where(np.isnan(S), np.nan, soil_depth(np.nan_to_num(S, nan=np.inf), p))
+    # Soil thins with roughness as with extra slope (roughness.py).
+    k = rough_k(p) if grid.rough is not None else 0.0
+    S_soil = S + k * np.nan_to_num(grid.rough) if k > 0 else S
+    soil = np.where(np.isnan(S), np.nan, soil_depth(np.nan_to_num(S_soil, nan=np.inf), p))
     area = contributing_area_ha(grid, engine)
     channel = np.nan_to_num(area) >= p.A_min
 
@@ -180,8 +185,10 @@ def preprocess(
             )
 
     reachable = reachable_from(code == 0, rcs["start"], engine)
+    if grid.rough is not None:
+        info["roughness_median_m"] = float(np.nanmedian(grid.rough)) if np.isfinite(grid.rough).any() else None
     terrain = Terrain(grid, zs, dzdx, dzdy, S, soil, area, channel, slope_ex, manual, code,
-                      reachable, rcs["start"], rcs["goal"], zones, info)
+                      reachable, rcs["start"], rcs["goal"], zones, info, rough=grid.rough)
 
     if out is not None:
         write_rasters(terrain, out)
@@ -211,6 +218,8 @@ def write_rasters(t: Terrain, out: Path) -> None:
     write_raster(out / "dzdy.tif", t.dzdy, g)
     write_raster(out / "slope.tif", t.slope, g)
     write_raster(out / "soil_depth.tif", t.soil, g)
+    if t.rough is not None:
+        write_raster(out / "roughness.tif", t.rough, g)
     write_raster(out / "contributing_area_ha.tif", t.area_ha, g)
     write_raster(out / "exclusion_code.tif", t.code, g, nodata=255)
     write_raster(out / "reachable.tif", t.reachable, g, nodata=255)

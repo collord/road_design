@@ -25,6 +25,9 @@ pub struct Params {
     pub d0: f64,
     #[serde(rename = "S0")]
     pub s0: f64,
+    /// Roughness (m) over which soil thins by e (roughness.py); 0 or absent: ignored.
+    #[serde(default)]
+    pub rough_r0: f64,
     pub c_soil: f64,
     pub c_rock: f64,
     pub f_soil: f64,
@@ -84,6 +87,11 @@ impl Params {
     /// Sidehill slope at and above which ground is infeasible.
     pub fn s_mask(&self) -> f64 {
         self.mask_margin * self.c_rock
+    }
+
+    /// Slope added to the soil-thinning slope per meter of roughness (S0 / rough_r0); 0: off.
+    pub fn rough_k(&self) -> f64 {
+        if self.rough_r0 > 0.0 { self.s0 / self.rough_r0 } else { 0.0 }
     }
 
     pub fn culvert_cost(&self, area_ha: f64) -> f64 {

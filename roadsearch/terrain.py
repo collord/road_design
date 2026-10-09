@@ -27,6 +27,8 @@ class Grid:
     z: np.ndarray
     transform: Affine
     crs: CRS
+    # Roughness (m, roughness.py) on the same cells, from the DEM's native pixels; None: unknown.
+    rough: np.ndarray | None = None
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -221,9 +223,15 @@ def load_grid(path: str | Path, p: Params, resolution: float | None = None,
                 resampling=resampling,
             )
             method = resampling.name
+        rough, rough_info = None, None
+        if p.rough_r0 > 0:
+            from .roughness import native_roughness
+            native_m = abs(ds.res[0]) if same_grid else src_res
+            rough, rough_info = native_roughness(ds, z_scale, transform, z.shape, dst_crs, native_m)
     z = z * z_scale
-    grid = Grid(z=z, transform=transform, crs=dst_crs)
+    grid = Grid(z=z, transform=transform, crs=dst_crs, rough=rough)
     return grid, {
+        "roughness": rough_info,
         "working_crs": dst_crs.to_string(),
         "working_res_m": grid.res,
         "working_shape": list(grid.shape),

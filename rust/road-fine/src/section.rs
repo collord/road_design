@@ -255,9 +255,11 @@ pub fn max_catch_at_mask(p: &Params) -> f64 {
     worst
 }
 
-/// Cost per meter over (sidehill slope, |grade|), TABLE_NS x TABLE_NG row-major, with its steps
-/// (ds, dg): search.py's build_cost_table. The last row (s = s_mask) is infeasible.
-pub fn cost_table(p: &Params) -> (Vec<f64>, f64, f64) {
+/// Cost per meter over (sidehill slope, |grade|), TABLE_NS rows by the returned number of grade
+/// columns (TABLE_NG; with roughness on, on at the same step to c_soil, for the soil-effective
+/// grade), row-major, with its steps (ds, dg): search.py's build_cost_table. The last row
+/// (s = s_mask) is infeasible.
+pub fn cost_table(p: &Params) -> (Vec<f64>, usize, f64, f64) {
     let sp = SectionParams::new(p);
     let s_mask = p.s_mask();
     // np.linspace: i * step, the last value exactly the end.
@@ -267,13 +269,19 @@ pub fn cost_table(p: &Params) -> (Vec<f64>, f64, f64) {
         v[n - 1] = stop;
         v
     };
-    let (s, g) = (lin(s_mask, TABLE_NS), lin(p.g_max, TABLE_NG));
-    let mut table = vec![0.0; TABLE_NS * TABLE_NG];
+    let (s, mut g) = (lin(s_mask, TABLE_NS), lin(p.g_max, TABLE_NG));
+    let dg = g[1] - g[0];
+    if p.rough_r0 > 0.0 {
+        let end = (p.c_soil / dg).ceil() as usize + 2;
+        g.extend((TABLE_NG..end).map(|i| i as f64 * dg));
+    }
+    let ng = g.len();
+    let mut table = vec![0.0; TABLE_NS * ng];
     for i in 0..TABLE_NS {
-        for j in 0..TABLE_NG {
+        for j in 0..ng {
             let d = soil_depth(s[i].hypot(g[j]), p);
-            table[i * TABLE_NG + j] = if i == TABLE_NS - 1 { f64::INFINITY } else { section(s[i], d, &sp).cost };
+            table[i * ng + j] = if i == TABLE_NS - 1 { f64::INFINITY } else { section(s[i], d, &sp).cost };
         }
     }
-    (table, s[1] - s[0], g[1] - g[0])
+    (table, ng, s[1] - s[0], dg)
 }

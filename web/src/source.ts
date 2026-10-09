@@ -42,6 +42,16 @@ export interface Grid {
 type Resample = (src: Float32Array, sw: number, sh: number, lc: Float32Array, lr: Float32Array, lw: number,
                  lh: number, step: number, w: number, h: number, k: number) => Float32Array;
 
+/** Roughness (m) of the DEM's native pixels, w x h (roughness.py). */
+type Roughness = (z: Float32Array, w: number, h: number) => Float32Array;
+
+/** Extra source pixels read around a window for roughness: its smoothing's reach (sigma 2 px). */
+const ROUGH_MARGIN = 10;
+
+/** Coarsest native pixels (m) roughness is read from (roughness.py ROUGH_MAX_RES_M): at coarser
+ *  pixels a few pixels' detrended relief is the landform's curvature, not rock. */
+export const ROUGH_MAX_RES_M = 3;
+
 export class Source {
   info!: SourceInfo;
   private tiff!: GeoTIFF;
@@ -144,6 +154,12 @@ export class Source {
 
   /** Resample (part of) a level onto a UTM grid, reading only the pixels it needs. */
   async resampleTo(g: Grid, resample: Resample, zScale: number, level = -1): Promise<Float32Array> {
+    return (await this.sample(g, resample, zScale, level)).z;
+  }
+
+  /** As resampleTo, and with `roughness` the roughness of the pixels read, averaged onto the grid. */
+  private async sample(g: Grid, resample: Resample, zScale: number, level: number,
+                       roughness?: Roughness): Promise<{ z: Float32Array; rough: Float32Array | null }> {
     const image = level < 0 ? this.image : this.levels[level];
     const scale = this.image.getWidth() / image.getWidth();
     const origin = this.origin, res = [this.resolution[0] * scale, this.resolution[1] * scale];
@@ -161,17 +177,23 @@ export class Source {
       }
     }
     // The source window: the lattice's extent plus a margin, within the image.
+    const m = roughness ? ROUGH_MARGIN : 0;
     const W: [number, number, number, number] = [
-      Math.max(0, Math.floor(c0) - 2), Math.max(0, Math.floor(r0) - 2),
-      Math.min(iw, Math.ceil(c1) + 3), Math.min(ih, Math.ceil(r1) + 3),
+      Math.max(0, Math.floor(c0) - 2 - m), Math.max(0, Math.floor(r0) - 2 - m),
+      Math.min(iw, Math.ceil(c1) + 3 + m), Math.min(ih, Math.ceil(r1) + 3 + m),
     ];
-    if (W[2] <= W[0] || W[3] <= W[1]) return new Float32Array(g.w * g.h).fill(NaN);
+    if (W[2] <= W[0] || W[3] <= W[1]) {
+      const none = () => new Float32Array(g.w * g.h).fill(NaN);
+      return { z: none(), rough: roughness ? none() : null };
+    }
     const src = await this.read(image, W);
     for (let q = 0; q < lc.length; q++) { lc[q] -= W[0]; lr[q] -= W[1]; }
     if (zScale !== 1) for (let q = 0; q < src.length; q++) src[q] *= zScale;
     const srcM = this.info.resM * scale;
     const k = Math.max(1, Math.min(8, Math.ceil(g.res / srcM)));
-    return resample(src, W[2] - W[0], W[3] - W[1], lc, lr, lw, lh, step, g.w, g.h, k);
+    const [sw, sh] = [W[2] - W[0], W[3] - W[1]];
+    const rough = roughness ? resample(roughness(src, sw, sh), sw, sh, lc, lr, lw, lh, step, g.w, g.h, k) : null;
+    return { z: resample(src, sw, sh, lc, lr, lw, lh, step, g.w, g.h, k), rough };
   }
 
   /**
@@ -183,19 +205,37 @@ export class Source {
   async resampleBands(g: Grid, resample: Resample, zScale: number, level = -1,
                       onBand?: (done: number, total: number) => Promise<void> | void,
                       pixelsPerBand = 4_000_000, minBands = 10): Promise<Float32Array> {
+    return (await this.bands(g, resample, zScale, level, onBand, pixelsPerBand, minBands)).z;
+  }
+
+  /** As resampleBands at the native resolution, with the roughness of the native pixels (m)
+   *  averaged onto the grid as well. */
+  async resampleWithRoughness(g: Grid, resample: Resample, roughness: Roughness, zScale: number,
+                              onBand?: (done: number, total: number) => Promise<void> | void)
+                              : Promise<{ z: Float32Array; rough: Float32Array }> {
+    const r = await this.bands(g, resample, zScale, -1, onBand, 4_000_000, 10, roughness);
+    return { z: r.z, rough: r.rough! };
+  }
+
+  private async bands(g: Grid, resample: Resample, zScale: number, level: number,
+                      onBand: ((done: number, total: number) => Promise<void> | void) | undefined,
+                      pixelsPerBand: number, minBands: number, roughness?: Roughness)
+                      : Promise<{ z: Float32Array; rough: Float32Array | null }> {
     const image = level < 0 ? this.image : this.levels[level];
     const srcM = this.info.resM * this.image.getWidth() / image.getWidth();
     const ratio = Math.max(g.res / srcM, 1e-9);
     const byPixels = pixelsPerBand / Math.max(1, g.w * ratio * ratio);
     const rows = Math.min(byPixels, Math.ceil(g.h / minBands));
     const band = Math.max(1, Math.ceil(rows / LATTICE_STEP)) * LATTICE_STEP;
-    const z = new Float32Array(g.w * g.h);
+    const z = new Float32Array(g.w * g.h), rough = roughness ? new Float32Array(g.w * g.h) : null;
     for (let i0 = 0; i0 < g.h; i0 += band) {
       const bh = Math.min(band, g.h - i0);
-      z.set(await this.resampleTo({ ...g, y1: g.y1 - i0 * g.res, h: bh }, resample, zScale, level), i0 * g.w);
+      const s = await this.sample({ ...g, y1: g.y1 - i0 * g.res, h: bh }, resample, zScale, level, roughness);
+      z.set(s.z, i0 * g.w);
+      if (rough) rough.set(s.rough!, i0 * g.w);
       await onBand?.(i0 + bh, g.h);
     }
-    return z;
+    return { z, rough };
   }
 
   /** A preview grid over the whole DEM about `maxSide` cells across, from the coarsest overview

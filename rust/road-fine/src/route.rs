@@ -367,7 +367,8 @@ impl Problem {
                     let g = ax * l.tx[k] + ay * l.ty[k];
                     let s = (-ax * l.ty[k] + ay * l.tx[k]).abs();
                     let st = s.hypot(g);
-                    let d = soil_depth(st, p);
+                    let rho = if self.k_rough > 0.0 { bil_clamped(&self.rough, nr, nc, fr, fc) } else { 0.0 };
+                    let d = if self.k_rough > 0.0 && rho > 0.0 { soil_depth(st + self.k_rough * rho, p) } else { soil_depth(st, p) };
                     let sec = section(s, d, &sp);
                     ss += s;
                     s_terr += st;

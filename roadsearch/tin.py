@@ -86,6 +86,7 @@ def tin_corridor(dem, p: Params, start, goal, exclude, log=print, buffer: float 
     """Returns (grid, region mask, info, corridors as a GeoDataFrame) on the tin_res grid."""
     import roadsearch_core
 
+    from .roughness import rough_k
     from .search import build_cost_table
 
     from . import memguard
@@ -100,10 +101,11 @@ def tin_corridor(dem, p: Params, start, goal, exclude, log=print, buffer: float 
     res = grid.res
     f8 = lambda a: np.ascontiguousarray(a, dtype=np.float64)  # noqa: E731
     rasters = (f8(grid.z), f8(t.z_smooth), f8(t.dzdx), f8(t.dzdy), np.ascontiguousarray(t.code == 0, dtype=np.uint8),
-               f8(np.nan_to_num(t.area_ha)))
+               f8(np.nan_to_num(t.area_ha)), f8(np.nan_to_num(t.rough) if t.rough is not None else np.zeros(grid.shape)))
     table = build_cost_table(p)
     edge = (p.g_max, p.C_travel, p.C_vertical, p.A_min, hairpin_allowance(p), p.C_turn,
-            np.array(p.culvert_area_breaks, dtype=np.float64), np.array(p.culvert_costs, dtype=np.float64))
+            np.array(p.culvert_area_breaks, dtype=np.float64), np.array(p.culvert_costs, dtype=np.float64),
+            rough_k(p) if t.rough is not None else 0.0)
     tin = (p.tin_tolerance, p.tin_k, p.tin_edge_max / res, p.tin_block / res, p.tin_channel_ha, p.tin_alternatives,
            p.tin_penalty, p.tin_stretch, p.tin_max_shared, p.tin_separation / res)
     near = buffer / res

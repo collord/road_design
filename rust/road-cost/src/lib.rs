@@ -160,6 +160,8 @@ pub struct Terrain<'a> {
     pub area: Grid<'a, f64>,
     /// Distance to the nearest channel cell, cells.
     pub chdist: Grid<'a, f64>,
+    /// Roughness (m), thinning the soil as extra slope (k_rough per meter); zeros if none.
+    pub rough: Grid<'a, f64>,
 }
 
 /// Scalars of the cost model.
@@ -180,6 +182,8 @@ pub struct CostParams {
     pub c_travel: f64,
     pub c_vertical: f64,
     pub c_turn: f64,
+    /// Slope added to the soil-thinning slope per meter of roughness (S0 / rough_r0); 0: none.
+    pub k_rough: f64,
 }
 
 /// The cost model: `EdgeCost` for lattice-search.
@@ -421,8 +425,16 @@ impl<'a> RoadCost<'a> {
             zprev = zk;
             step = w_s;
             // Section geometry from the smoothed gradient; grade enters only through soil depth.
-            let g = (ax * a.tx[k] + ay * a.ty[k]).abs().min(q.g_max);
+            let mut g = (ax * a.tx[k] + ay * a.ty[k]).abs().min(q.g_max);
             let s = (-ax * a.ty[k] + ay * a.tx[k]).abs();
+            if q.k_rough > 0.0 {
+                // Roughness thins the soil as extra slope: the soil-effective grade.
+                let rho = bilinear(&t.rough, fr, fc);
+                if rho > 0.0 {
+                    let se = (s * s + g * g).sqrt() + q.k_rough * rho;
+                    g = (se * se - s * s).max(0.0).sqrt();
+                }
+            }
             let cpm = self.section.cost(s, g);
             if cpm == f64::INFINITY {
                 return f64::INFINITY;

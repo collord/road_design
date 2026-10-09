@@ -48,7 +48,9 @@ _LATER_PARAMS = {"C_turn": 0.0, "tin_res": 15.0, "tin_margin": 10000.0, "tin_max
                  "tin_block": 300.0, "tin_channel_ha": 20.0, "tin_alternatives": 4.0, "tin_penalty": 1.5,
                  "tin_stretch": 0.25, "tin_max_shared": 0.5, "tin_separation": 300.0, "tin_buffer": 600.0, "tin_hairpin_cost": -1.0,
                  "cost_samples": 0.0, "cost_sigma": 0.3, "cost_sigma_edge": 0.2,
-                 "tin_node_samples": 0.0, "tin_node_density": 20.0}
+                 "tin_node_samples": 0.0, "tin_node_density": 20.0,
+                 # Runs before roughness ignored it: their ids stay, and runs with it get new ones.
+                 "rough_r0": 0.0}
 
 
 def _id_params(p: Params) -> dict:
@@ -348,6 +350,10 @@ def _run(dem, start_txt: str, goal_txt: str, p: Params, exclude=(), out="out", r
             n_search = int(region_mask.sum()) if region_mask is not None else grid.shape[0] * grid.shape[1]
             log(f"working grid {grid.shape[0]} x {grid.shape[1]} at {grid.res:g} m "
                 f"({n_search * p.N_theta:,} searchable states)")
+            if ginfo.get("roughness"):
+                ri = ginfo["roughness"]
+                log(ri["skipped"] if "skipped" in ri else
+                    f"roughness from {ri['pixels']:,} native pixels of {ri['pixel_size']:.2f} m: median {ri['median_m']:.2f} m")
             with stage('fine: preprocess'):
                 terrain = preprocess(grid, start, goal, p, exclude, run_dir)
             if region_mask is not None:

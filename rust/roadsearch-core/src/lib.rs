@@ -87,6 +87,7 @@ struct TerrArrays<'py> {
     chdist: PyReadonlyArray2<'py, f64>,
     bend: PyReadonlyArray3<'py, f32>,
     macro_lookup: PyReadonlyArray2<'py, i32>,
+    rough: PyReadonlyArray2<'py, f64>,
     params: CostParams,
     ds: f64,
     dg: f64,
@@ -111,6 +112,7 @@ fn terrain_from<'py>(terr: &Bound<'py, PyTuple>) -> PyResult<TerrArrays<'py>> {
         chdist: item(terr, 14, "chdist")?,
         bend: item(terr, 22, "bend")?,
         macro_lookup: item(terr, 26, "macro_lookup")?,
+        rough: item(terr, 27, "rough")?,
         params: CostParams {
             res: item(terr, 8, "res")?,
             g_max: item(terr, 9, "g_max")?,
@@ -125,6 +127,7 @@ fn terrain_from<'py>(terr: &Bound<'py, PyTuple>) -> PyResult<TerrArrays<'py>> {
             c_travel: item(terr, 23, "C_travel")?,
             c_vertical: item(terr, 24, "C_vert")?,
             c_turn: item(terr, 25, "C_turn")?,
+            k_rough: item(terr, 28, "k_rough")?,
         },
     })
 }
@@ -146,6 +149,7 @@ impl<'py> TerrArrays<'py> {
             ("area", self.area.shape()),
             ("chdist", self.chdist.shape()),
             ("macro_lookup", self.macro_lookup.shape()),
+            ("rough", self.rough.shape()),
         ] {
             if s != [nr, nc] {
                 return Err(PyValueError::new_err(format!("{name} has shape {s:?}, open_ has ({nr}, {nc})")));
@@ -160,6 +164,7 @@ impl<'py> TerrArrays<'py> {
             channel: Grid::new(self.channel.as_slice()?, nr, nc),
             area: Grid::new(self.area.as_slice()?, nr, nc),
             chdist: Grid::new(self.chdist.as_slice()?, nr, nc),
+            rough: Grid::new(self.rough.as_slice()?, nr, nc),
         };
         let ts = self.table.shape();
         let section = SectionTable { data: self.table.as_slice()?, ns: ts[0], ng: ts[1], ds: self.ds, dg: self.dg };
@@ -473,6 +478,15 @@ fn grid2<'py, T: numpy::Element>(py: Python<'py>, v: Vec<T>, nr: usize, nc: usiz
 }
 
 /// Gaussian smoothing ignoring NaN cells (preprocess.smooth_dem): sigma in cells.
+/// Detrended relief (roughness.roughness): RMS over 3 x 3 of z minus its Gaussian smoothing.
+#[pyfunction]
+fn terrain_roughness<'py>(py: Python<'py>, z: PyReadonlyArray2<'py, f64>, sigma: f64) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let (nr, nc) = shape2(&z);
+    let zs = z.as_slice()?;
+    let out = py.detach(|| terrain::roughness(zs, nr, nc, sigma));
+    grid2(py, out, nr, nc)
+}
+
 #[pyfunction]
 fn terrain_smooth<'py>(py: Python<'py>, z: PyReadonlyArray2<'py, f64>, sigma: f64) -> PyResult<Bound<'py, PyArray2<f64>>> {
     let (nr, nc) = shape2(&z);
@@ -590,8 +604,10 @@ fn tin_corridors<'py>(
     let gy: PyReadonlyArray2<f64> = item(rasters, 3, "gy")?;
     let open: PyReadonlyArray2<u8> = item(rasters, 4, "open")?;
     let area: PyReadonlyArray2<f64> = item(rasters, 5, "area")?;
+    let rough: PyReadonlyArray2<f64> = item(rasters, 6, "rough")?;
     let (nr, nc) = shape2(&z);
-    for (name, s) in [("zs", zs.shape()), ("gx", gx.shape()), ("gy", gy.shape()), ("open", open.shape()), ("area", area.shape())] {
+    for (name, s) in [("zs", zs.shape()), ("gx", gx.shape()), ("gy", gy.shape()), ("open", open.shape()), ("area", area.shape()),
+                      ("rough", rough.shape())] {
         if s != [nr, nc] {
             return Err(PyValueError::new_err(format!("{name} has shape {s:?}, z has ({nr}, {nc})")));
         }
@@ -608,13 +624,15 @@ fn tin_corridors<'py>(
         open: Grid::new(open.as_slice()?, nr, nc),
         area: Grid::new(area.as_slice()?, nr, nc),
         section: SectionTable { data: section.as_slice()?, ns: ts[0], ng: ts[1], ds, dg },
+        rough: Grid::new(rough.as_slice()?, nr, nc),
         res,
     };
     let ef = floats::<6>(&PyTuple::new(py, (0..6).map(|i| edge.get_item(i)).collect::<PyResult<Vec<_>>>()?)?, "edge params")?;
     let breaks: PyReadonlyArray1<f64> = item(edge, 6, "culvert breaks")?;
     let costs: PyReadonlyArray1<f64> = item(edge, 7, "culvert costs")?;
+    let k_rough: f64 = item(edge, 8, "k_rough")?;
     let e = tin_graph::EdgeParams {
-        g_max: ef[0], c_travel: ef[1], c_vertical: ef[2], a_min: ef[3], hairpin_cost: ef[4],
+        g_max: ef[0], c_travel: ef[1], c_vertical: ef[2], a_min: ef[3], hairpin_cost: ef[4], k_rough,
         culvert_breaks: breaks.as_slice()?.to_vec(), culvert_costs: costs.as_slice()?.to_vec(),
     };
     let c_turn = ef[5];
@@ -694,6 +712,7 @@ fn roadsearch_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hairpin_table, m)?)?;
     m.add_function(wrap_pyfunction!(bend_table, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_smooth, m)?)?;
+    m.add_function(wrap_pyfunction!(terrain_roughness, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_gradient, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_slope_mask, m)?)?;
     m.add_function(wrap_pyfunction!(terrain_contributing_area, m)?)?;

@@ -372,6 +372,33 @@ pub fn reachable(open: &[bool], nr: usize, nc: usize, r: usize, c: usize) -> Vec
     out
 }
 
+/// Detrended relief (roughness.py): the root mean square, over each cell's 3 x 3 neighborhood
+/// (within the grid), of z minus its NaN-aware Gaussian smoothing (sigma in cells). NaN where z is.
+pub fn roughness(z: &[f64], nr: usize, nc: usize, sigma_cells: f64) -> Vec<f64> {
+    let s = smooth(z, nr, nc, sigma_cells);
+    let resid: Vec<f64> = z.iter().zip(&s).map(|(&a, &b)| if a.is_nan() { f64::NAN } else { a - b }).collect();
+    let mut out = vec![f64::NAN; nr * nc];
+    for r in 0..nr {
+        for c in 0..nc {
+            if z[r * nc + c].is_nan() {
+                continue;
+            }
+            let (mut sum, mut n) = (0.0, 0.0);
+            for rr in r.saturating_sub(1)..(r + 2).min(nr) {
+                for cc in c.saturating_sub(1)..(c + 2).min(nc) {
+                    let v = resid[rr * nc + cc];
+                    if !v.is_nan() {
+                        sum += v * v;
+                        n += 1.0;
+                    }
+                }
+            }
+            out[r * nc + c] = (sum / n).sqrt();
+        }
+    }
+    out
+}
+
 /// NaN cells take the value of the nearest cell with data (4-connected steps, ties to the first
 /// reached), so the surface carries on flat past the data's edge instead of dropping to a cliff.
 /// All NaN in, all NaN out.

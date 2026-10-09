@@ -27,7 +27,22 @@ def prob():
     return pr
 
 
-def test_edge_costs_match(prob):
+@pytest.fixture(scope="module")
+def rough_prob():
+    """The same ground with patches of roughness: soil-effective grades past g_max."""
+    p = load_params(overrides={"C_travel": 125.5, "C_vertical": 2576.0, "C_turn": 8000.0, "rough_r0": 0.5})
+    z = random_terrain(7, n=90, relief=15.0)
+    g = make_grid(z, 5.0)
+    g.rough = 0.8 * np.clip(random_terrain(11, n=90, relief=1.0) - 1000.0, 0.0, None)
+    pr = make_problem(preprocess(g, g.xy(5, 5), g.xy(84, 80), p), p)
+    pr.lam_fill = 3.7
+    assert pr.k_rough > 0 and pr.cost.table.shape[1] > 21
+    return pr
+
+
+@pytest.mark.parametrize("which", ["prob", "rough_prob"])
+def test_edge_costs_match(which, request):
+    prob = request.getfixturevalue(which)
     rng = np.random.default_rng(1)
     L = prob.lat
     n = 200_000

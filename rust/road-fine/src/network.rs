@@ -405,7 +405,7 @@ mod tests {
         let z: Vec<f64> = (0..nr * nc).map(|k| 1000.0 + 0.05 * (k % nc) as f64 * res).collect();
         let inputs = FineInputs {
             nr, nc, res, zs: z.clone(), z_raw: z, gx: vec![0.05; nr * nc], gy: vec![0.0; nr * nc], area: vec![0.0; nr * nc],
-            open: vec![1; nr * nc],
+            open: vec![1; nr * nc], rough: Vec::new(),
         };
         Problem::new(inputs, Params::from_json(PARAMS).unwrap(), Macros::Lazy).unwrap()
     }

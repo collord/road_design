@@ -3,8 +3,8 @@
 // progress within the long ones, and "busy" when a task starts and ends. "stop" ends a task at
 // its next checkpoint (between bands of a read, slices of the edges, and corridors).
 import init, * as wasm from "./wasm/roadsearch_wasm.js";
-import { Source, Z_UNIT_SCALE, type Grid } from "./source";
-import { get, hairpinAllowance, maxCatchAtMask, sectionTable, sigmaM, sMask, TABLE_NG, TABLE_NS,
+import { ROUGH_MAX_RES_M, Source, Z_UNIT_SCALE, type Grid } from "./source";
+import { get, hairpinAllowance, maxCatchAtMask, roughK, roughR0, sectionTable, sigmaM, sMask, TABLE_NS,
          type Params } from "./params";
 import type { FineOut, FromWorker, RouteOut, ToWorker } from "./messages";
 import type { FromMacro, ToMacro } from "./macroWorker";
@@ -16,7 +16,9 @@ let area: { grid: Grid; session: wasm.Session; start: [number, number]; goal: [n
              pads: ([number, number] | null)[]; padsXY: [number, number][];
              /** The coarse pad network: its edges (UTM) and the order pads joined it (page pads). */
              network?: { lines: [number, number][][]; order: number[] };
-             acc?: Float32Array; routes?: RouteOut[] } | null = null;
+             acc?: Float32Array; routes?: RouteOut[];
+             /** Whether the area has a roughness (a DEM of fine enough pixels). */
+             rough: boolean } | null = null;
 
 const post = (m: FromWorker, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
@@ -121,8 +123,8 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
       `${(m.maxCells / 1e6).toFixed(0)} million: use cells of ${Math.ceil(fit)} m or more, or a smaller margin`);
   }
   const zScale = Z_UNIT_SCALE[m.zUnits] ?? 1;
-  const z = await timedAsync("read and reproject the area", () =>
-    source!.resampleBands(grid, wasm.resample, zScale, -1, async (done, total) => {
+  const { z, rough } = await timedAsync("read and reproject the area", () =>
+    readDem(grid, true, zScale, async (done, total) => {
       progress("read and reproject the area", done, total);
       await checkpoint();
     }));
@@ -132,11 +134,41 @@ async function load(m: Extract<ToWorker, { type: "load" }>) {
   const pads = m.pads.map(([x, y]) => cellOf(grid, x, y));
   area?.session.free();
   area = { grid, session: new wasm.Session(z, grid.w, grid.h, res), start: s, goal: g, startXY: m.start,
-           goalXY: m.goal ?? m.start, zScale, pads, padsXY: m.pads };
+           goalXY: m.goal ?? m.start, zScale, pads, padsXY: m.pads, rough: rough.length > 0 };
+  if (rough.length) area.session.set_rough(rough);
   const rgba = grayRgba(wasm.hillshade(z, grid.w, grid.h, res));
   post({ type: "raster", layer: "hillshade", grid, rgba }, [rgba.buffer]);
-  post({ type: "area", grid, cells });
+  post({ type: "area", grid, cells, roughness: roughNote(rough) });
 }
+
+/** Roughness (m) of the DEM's native pixels (roughness.py ROUGH_SIGMA_PX = 2). */
+const roughness = (z: Float32Array, w: number, h: number) => wasm.roughness(z, w, h, 2);
+
+/** The DEM on a grid, with its roughness when asked for and the DEM's pixels are fine enough for
+ *  it to mean rock (else empty). */
+async function readDem(g: Grid, withRough: boolean, zScale: number,
+                       onBand: (done: number, total: number) => Promise<void>): Promise<{ z: Float32Array; rough: Float32Array }> {
+  if (withRough && source!.info.resM <= ROUGH_MAX_RES_M) {
+    return source!.resampleWithRoughness(g, wasm.resample, roughness, zScale, onBand);
+  }
+  return { z: await source!.resampleBands(g, wasm.resample, zScale, -1, onBand), rough: new Float32Array(0) };
+}
+
+/** What became of the roughness (roughness.py). */
+function roughNote(rough: Float32Array): string {
+  const px = source!.info.resM;
+  if (!rough.length) {
+    return `roughness: the DEM's ${px.toFixed(1)} m pixels are coarser than ${ROUGH_MAX_RES_M} m: their detrended ` +
+      "relief is landform, not rock; roughness is ignored";
+  }
+  const v = Array.from(rough).filter((x) => !Number.isNaN(x)).sort((a, b) => a - b);
+  return `roughness from the DEM's ${px.toFixed(2)} m pixels: median ${v.length ? v[v.length >> 1].toFixed(2) : "-"} m ` +
+    "(thins the soil when rough_r0 > 0)";
+}
+
+/** The DEM on a fine grid, with its roughness when the parameters use it. */
+const readFine = (fg: Grid, p: Params, zScale: number, onBand: (done: number, total: number) => Promise<void>) =>
+  readDem(fg, roughR0(p) > 0, zScale, onBand);
 
 // --- the fine search's helpers -----------------------------------------------------------------
 
@@ -248,9 +280,11 @@ async function buildGraph(p: Params, terminals: [number, number][], extra: [numb
   const nTri = timed("triangulate", () => session.triangulate(get(p, "tin_tolerance")));
   const tp = session.tri_points(), tt = session.tri_triangles();
   post({ type: "tin", grid, points: tp, triangles: tt, n: nTri }, [tp.buffer, tt.buffer]);
-  const { table, ds, dg } = timed("section cost table", () => sectionTable(p));
+  // Without a roughness the table needs no grades past g_max (nor the time to build them).
+  const pt = area!.rough ? p : { ...p, rough_r0: 0 };
+  const { table, ng, ds, dg } = timed("section cost table", () => sectionTable(pt));
   const edge = new Float64Array([get(p, "g_max"), get(p, "C_travel"), get(p, "C_vertical"), get(p, "A_min"),
-                                 hairpinAllowance(p), get(p, "C_turn")]);
+                                 hairpinAllowance(p), get(p, "C_turn"), roughK(pt)]);
   const tin = new Float64Array([get(p, "tin_tolerance"), get(p, "tin_k"), get(p, "tin_edge_max") / res,
                                 get(p, "tin_block") / res, get(p, "tin_channel_ha"), get(p, "tin_alternatives"),
                                 get(p, "tin_penalty"), get(p, "tin_stretch"), get(p, "tin_max_shared"),
@@ -261,7 +295,7 @@ async function buildGraph(p: Params, terminals: [number, number][], extra: [numb
   const tr = new Uint32Array(terminals.map((t) => t[0])), tc = new Uint32Array(terminals.map((t) => t[1]));
   const er = new Uint32Array(extra.map((t) => t[0])), ec = new Uint32Array(extra.map((t) => t[1]));
   const nPairs = timed("graph nodes and candidate edges", () =>
-    session.graph_begin_terminals(tr, tc, er, ec, edge, breaks, costs, tin, table, TABLE_NS, TABLE_NG, ds, dg));
+    session.graph_begin_terminals(tr, tc, er, ec, edge, breaks, costs, tin, table, TABLE_NS, ng, ds, dg));
   // Cost the edges in slices sized to take about SLICE_MS each.
   const name = "cost the edges on the DEM";
   post({ type: "stage", name, state: "start" });
@@ -466,8 +500,8 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
   const y1 = Math.ceil(Math.min(Math.max(...ys) + buffer, by1) / res) * res;
   const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(Math.max(...xs) + buffer, bx1) - x0) / res),
                      h: Math.ceil((y1 - Math.max(Math.min(...ys) - buffer, by0)) / res) };
-  const z = await timedAsync(`network: read the DEM at ${res} m`, () =>
-    source!.resampleBands(fg, wasm.resample, zScale, -1, async (done, total) => {
+  const { z, rough } = await timedAsync(`network: read the DEM at ${res} m`, () =>
+    readFine(fg, p, zScale, async (done, total) => {
       progress(`network: read the DEM at ${res} m`, done, total);
       await checkpoint();
     }));
@@ -480,10 +514,10 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
   const lr = new Float64Array(lrA), lc = new Float64Array(lcA), none = new Float64Array(0);
   const paramsJson = JSON.stringify(p);
   const fs = timed(`network: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
-    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, none, none, 1, false));
+    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, none, none, 1, false, rough));
   try {
     await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer, or: none,
-                                 oc: none, apart: 1 }, "network", 0, fg);
+                                 oc: none, apart: 1, rough }, "network", 0, fg);
     const cell = (q: [number, number]) => [Math.floor((fg.y1 - q[1]) / res), Math.floor((q[0] - fg.x0) / res)];
     const [ar, ac] = cell(startXY);
     const axes = fs.network_begin(ar, ac, new Float64Array(padsXY.map((q) => toR(q[1]))),
@@ -590,8 +624,8 @@ async function refineOne(k: number, p: Params, res: number, buffer: number, apar
   const x0 = Math.floor(Math.max(xmin - buffer, bx0) / res) * res, y1 = Math.ceil(Math.min(ymax + buffer, by1) / res) * res;
   const fg: Grid = { x0, y1, res, w: Math.ceil((Math.min(xmax + buffer, bx1) - x0) / res),
                      h: Math.ceil((y1 - Math.max(ymin - buffer, by0)) / res) };
-  const z = await timedAsync(`${name}: read the DEM at ${res} m`, () =>
-    source!.resampleBands(fg, wasm.resample, zScale, -1, async (done, total) => {
+  const { z, rough } = await timedAsync(`${name}: read the DEM at ${res} m`, () =>
+    readFine(fg, p, zScale, async (done, total) => {
       progress(`${name}: read the DEM at ${res} m`, done, total);
       await checkpoint();
     }));
@@ -614,11 +648,11 @@ async function refineOne(k: number, p: Params, res: number, buffer: number, apar
   const own = k === 0 ? 1 : apart;
   const paramsJson = JSON.stringify(p);
   const fs = timed(`${name}: preprocess ${fg.w.toLocaleString()} x ${fg.h.toLocaleString()} cells`, () =>
-    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, otherRows, otherCols, own, false));
+    new wasm.FineSession(z, fg.w, fg.h, res, paramsJson, lr, lc, buffer, otherRows, otherCols, own, false, rough));
   await checkpoint();
   try {
     await precomputeMacros(fs, { type: "setup", z, w: fg.w, h: fg.h, res, params: paramsJson, lr, lc, buffer,
-                                 or: otherRows, oc: otherCols, apart: own }, name, k, fg);
+                                 or: otherRows, oc: otherCols, apart: own, rough }, name, k, fg);
     const cell = (x: number, y: number) => [Math.floor((fg.y1 - y) / res), Math.floor((x - fg.x0) / res)];
     const [sr, sc] = cell(startXY[0], startXY[1]), [gr, gc] = cell(goalXY[0], goalXY[1]);
     let stage = "", tStage = 0;

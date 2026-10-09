@@ -942,6 +942,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       areaGrid = m.grid;
       map.fitBounds(boundsOf(m.grid));
       log(`area: ${m.grid.w.toLocaleString()} x ${m.grid.h.toLocaleString()} cells at ${m.grid.res} m`);
+      log(m.roughness);
       break;
     case "points": {
       const g = m.grid, rows = new Uint32Array(m.cells.length), cols = new Uint32Array(m.cells.length);

@@ -23,6 +23,8 @@ hp_leg_max = 60.0     # longest approach leg either side of a hairpin arc (m).
 # --- Soil and slopes ---------------------------------------------------------
 d0 = 2.0              # soil depth on level ground, vertical (m)
 S0 = 0.30             # e-folding slope for soil thinning
+rough_r0 = 0.5        # roughness (m of detrended relief at the DEM's native resolution) over which soil
+                      # thins by e: rough ground is rock (excavated at C_rock); 0: roughness ignored
 c_soil = 1.0          # cut backslope in soil (1H:1V)
 c_rock = 4.0          # cut backslope in rock (0.25H:1V)
 f_soil = 0.67         # fill slope (repose) for soil spoil

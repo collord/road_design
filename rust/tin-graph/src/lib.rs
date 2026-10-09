@@ -73,6 +73,8 @@ pub struct EdgeParams {
     pub culvert_costs: Vec<f64>,
     /// Allowance per implied hairpin on a steep edge.
     pub hairpin_cost: f64,
+    /// Soil slope added per meter of roughness (S0 / rough_r0); 0: none.
+    pub k_rough: f64,
 }
 
 /// The rasters of the coarse grid, all nr x nc.
@@ -90,6 +92,8 @@ pub struct Rasters<'a> {
     pub area: Grid<'a, f64>,
     /// Earthwork cost per meter over (sidehill slope, |grade|), including the base cost.
     pub section: SectionTable<'a>,
+    /// Roughness (m; zeros if none), thinning the soil as extra slope.
+    pub rough: Grid<'a, f64>,
     /// Cell size (m).
     pub res: f64,
 }
@@ -310,7 +314,8 @@ pub fn edge_cost(t: &Rasters, e: &EdgeParams, a: (usize, usize), b: (usize, usiz
         }
         vert += (zk - zprev).abs();
         zprev = zk;
-        sides.push((-ax * ty + ay * tx).abs());
+        let rho = if e.k_rough > 0.0 { bilinear(&t.rough, fr, fc) } else { 0.0 };
+        sides.push(((-ax * ty + ay * tx).abs(), rho));
         let area = t.area.at(cr, cc);
         if area >= e.a_min {
             run_max = if in_run { run_max.max(area) } else { area };
@@ -334,8 +339,15 @@ pub fn edge_cost(t: &Rasters, e: &EdgeParams, a: (usize, usize), b: (usize, usiz
     };
     let g = (dz / le).min(e.g_max);
     let mut earth = 0.0;
-    for s in sides {
-        let cpm = t.section.cost(s, g);
+    for (s, rho) in sides {
+        // Roughness thins the soil as extra slope: the soil-effective grade.
+        let gs = if rho > 0.0 {
+            let se = (s * s + g * g).sqrt() + e.k_rough * rho;
+            (se * se - s * s).max(0.0).sqrt()
+        } else {
+            g
+        };
+        let cpm = t.section.cost(s, gs);
         if !cpm.is_finite() {
             return None;
         }
@@ -1164,6 +1176,40 @@ mod tests {
     }
 
     #[test]
+    fn roughness_raises_the_cost_only_when_it_counts() {
+        // A 5% slope; earthwork cost rising with the (soil-effective) grade column.
+        let (nr, nc) = (20usize, 20usize);
+        let z: Vec<f64> = (0..nr * nc).map(|k| 0.5 * (k % nc) as f64).collect();
+        let (gx, gy) = (vec![0.05; nr * nc], vec![0.0; nr * nc]);
+        let (open, area) = (vec![1u8; nr * nc], vec![0.0; nr * nc]);
+        let (ns, ng) = (11, 41);
+        let tab: Vec<f64> = (0..ns * ng).map(|k| if k / ng == ns - 1 { f64::INFINITY } else { 10.0 + (k % ng) as f64 }).collect();
+        let (zero, rough) = (vec![0.0; nr * nc], vec![1.0; nr * nc]);
+        // Along the contour (north-south): grade 0, sidehill 0.05.
+        let cost = |r: &[f64], k_rough: f64| {
+            let t = Rasters {
+                z: Grid::new(&z, nr, nc),
+                zs: Grid::new(&z, nr, nc),
+                gx: Grid::new(&gx, nr, nc),
+                gy: Grid::new(&gy, nr, nc),
+                open: Grid::new(&open, nr, nc),
+                area: Grid::new(&area, nr, nc),
+                rough: Grid::new(r, nr, nc),
+                section: SectionTable { data: &tab, ns, ng, ds: 0.1, dg: 0.005 },
+                res: 10.0,
+            };
+            let e = EdgeParams { g_max: 0.1, c_travel: 1.0, c_vertical: 0.0, a_min: 2.0, k_rough,
+                                 culvert_breaks: vec![10.0], culvert_costs: vec![0.0, 0.0], hairpin_cost: 0.0 };
+            edge_cost(&t, &e, (2, 10), (17, 10)).unwrap().construction
+        };
+        let base = cost(&zero, 0.0);
+        assert_eq!(cost(&rough, 0.0), base);
+        assert_eq!(cost(&zero, 0.6), base);
+        // Effective grade sqrt((0.05 + 0.6)^2 - 0.05^2) = 0.648: past the table's end (0.2), at its last column.
+        assert!(cost(&rough, 0.6) > base + 30.0 * 150.0 * 0.9, "{} vs {}", cost(&rough, 0.6), base);
+    }
+
+    #[test]
     fn a_ridge_is_crossed_at_its_saddle() {
         // A ridge along the middle row with a low saddle near the east end; endpoints either side.
         let (nr, nc) = (41usize, 61usize);
@@ -1185,6 +1231,7 @@ mod tests {
         }
         let open = vec![1u8; nr * nc];
         let area = vec![0.0; nr * nc];
+        let zero = vec![0.0; nr * nc];
         let tab = table();
         let t = Rasters {
             z: Grid::new(&z, nr, nc),
@@ -1193,10 +1240,11 @@ mod tests {
             gy: Grid::new(&gy, nr, nc),
             open: Grid::new(&open, nr, nc),
             area: Grid::new(&area, nr, nc),
+            rough: Grid::new(&zero, nr, nc),
             section: SectionTable { data: &tab, ns: 11, ng: 3, ds: 0.1, dg: 0.05 },
             res: 10.0,
         };
-        let e = EdgeParams { g_max: 0.1, c_travel: 1.0, c_vertical: 200.0, a_min: 2.0, culvert_breaks: vec![10.0],
+        let e = EdgeParams { g_max: 0.1, c_travel: 1.0, c_vertical: 200.0, a_min: 2.0, k_rough: 0.0, culvert_breaks: vec![10.0],
                              culvert_costs: vec![50.0, 100.0], hairpin_cost: 500.0 };
         let p = TinParams { tolerance: 1.0, k: 12, edge_max: 8.0, block: 5, channel_node_area: 1e9, n_alt: 2,
                             penalty: 1.5, stretch: 0.5, max_shared: 0.5, separation: 0.0 };

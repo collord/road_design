@@ -8,7 +8,7 @@ use pyo3::types::{PyDict, PyList};
 use road_fine::params::Params;
 use road_fine::pipeline::{find_route, RouteResult};
 use road_fine::problem::{FineInputs, Macros, Problem};
-use road_fine::section::{cost_table, section, SectionParams, TABLE_NG, TABLE_NS};
+use road_fine::section::{cost_table, section, SectionParams, TABLE_NS};
 
 fn params(json: &str) -> PyResult<Params> {
     Params::from_json(json).map_err(PyValueError::new_err)
@@ -37,12 +37,14 @@ fn fine_section<'py>(py: Python<'py>, s: PyReadonlyArray1<'py, f64>, d: PyReadon
 #[pyfunction]
 fn fine_cost_table<'py>(py: Python<'py>, params_json: &str) -> PyResult<(Bound<'py, PyArray2<f64>>, f64, f64)> {
     let p = params(params_json)?;
-    let (t, ds, dg) = cost_table(&p);
-    Ok((t.into_pyarray(py).reshape([TABLE_NS, TABLE_NG])?, ds, dg))
+    let (t, ng, ds, dg) = cost_table(&p);
+    Ok((t.into_pyarray(py).reshape([TABLE_NS, ng])?, ds, dg))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn inputs(z_raw: PyReadonlyArray2<f64>, zs: PyReadonlyArray2<f64>, gx: PyReadonlyArray2<f64>, gy: PyReadonlyArray2<f64>,
-          area: PyReadonlyArray2<f64>, open: PyReadonlyArray2<u8>, res: f64) -> PyResult<FineInputs> {
+          area: PyReadonlyArray2<f64>, open: PyReadonlyArray2<u8>, res: f64, rough: Option<PyReadonlyArray2<f64>>)
+          -> PyResult<FineInputs> {
     let (nr, nc) = (z_raw.shape()[0], z_raw.shape()[1]);
     Ok(FineInputs {
         nr, nc, res,
@@ -52,16 +54,22 @@ fn inputs(z_raw: PyReadonlyArray2<f64>, zs: PyReadonlyArray2<f64>, gx: PyReadonl
         gy: gy.as_slice()?.to_vec(),
         area: area.as_slice()?.to_vec(),
         open: open.as_slice()?.to_vec(),
+        rough: match rough {
+            Some(r) => r.as_slice()?.to_vec(),
+            None => Vec::new(),
+        },
     })
 }
 
 /// search.make_problem's arrays: {soil, channel, chdist, hp, bend, macro_lookup, table, ds, dg}.
 #[pyfunction]
+#[pyo3(signature = (z_raw, zs, gx, gy, area, open, res, params_json, rough=None))]
 #[allow(clippy::too_many_arguments)]
 fn fine_problem<'py>(py: Python<'py>, z_raw: PyReadonlyArray2<'py, f64>, zs: PyReadonlyArray2<'py, f64>,
                      gx: PyReadonlyArray2<'py, f64>, gy: PyReadonlyArray2<'py, f64>, area: PyReadonlyArray2<'py, f64>,
-                     open: PyReadonlyArray2<'py, u8>, res: f64, params_json: &str) -> PyResult<Bound<'py, PyDict>> {
-    let inp = inputs(z_raw, zs, gx, gy, area, open, res)?;
+                     open: PyReadonlyArray2<'py, u8>, res: f64, params_json: &str, rough: Option<PyReadonlyArray2<'py, f64>>)
+                     -> PyResult<Bound<'py, PyDict>> {
+    let inp = inputs(z_raw, zs, gx, gy, area, open, res, rough)?;
     let (nr, nc) = (inp.nr, inp.nc);
     let p = params(params_json)?;
     let prob = py.detach(|| Problem::build(inp, p)).map_err(err)?;
@@ -74,7 +82,7 @@ fn fine_problem<'py>(py: Python<'py>, z_raw: PyReadonlyArray2<'py, f64>, zs: PyR
     d.set_item("hp", prob.hp.clone().into_pyarray(py).reshape([n, nh, 2])?)?;
     d.set_item("bend", prob.bend.clone().into_pyarray(py).reshape([n, nh, prob.n_bend_slots])?)?;
     d.set_item("macro_lookup", prob.macro_lookup.clone().into_pyarray(py).reshape([nr, nc])?)?;
-    d.set_item("table", prob.table.clone().into_pyarray(py).reshape([TABLE_NS, TABLE_NG])?)?;
+    d.set_item("table", prob.table.clone().into_pyarray(py).reshape([TABLE_NS, prob.table_ng])?)?;
     d.set_item("ds", prob.ds)?;
     d.set_item("dg", prob.dg)?;
     Ok(d)
@@ -120,13 +128,13 @@ fn route_dict<'py>(py: Python<'py>, prob: &Problem, r: &RouteResult, start: (i64
 /// The fine stage on one grid (pipeline.fill_price_iteration then avoid_self_overlap):
 /// {best: {edges, lam_fill, cost, segments, path} or None, history, rounds, blocked, completed}.
 #[pyfunction]
-#[pyo3(signature = (z_raw, zs, gx, gy, area, open, res, params_json, start, goal, lazy=false))]
+#[pyo3(signature = (z_raw, zs, gx, gy, area, open, res, params_json, start, goal, lazy=false, rough=None))]
 #[allow(clippy::too_many_arguments)]
 fn fine_route<'py>(py: Python<'py>, z_raw: PyReadonlyArray2<'py, f64>, zs: PyReadonlyArray2<'py, f64>,
                    gx: PyReadonlyArray2<'py, f64>, gy: PyReadonlyArray2<'py, f64>, area: PyReadonlyArray2<'py, f64>,
                    open: PyReadonlyArray2<'py, u8>, res: f64, params_json: &str, start: (i64, i64), goal: (i64, i64),
-                   lazy: bool) -> PyResult<Bound<'py, PyDict>> {
-    let inp = inputs(z_raw, zs, gx, gy, area, open, res)?;
+                   lazy: bool, rough: Option<PyReadonlyArray2<'py, f64>>) -> PyResult<Bound<'py, PyDict>> {
+    let inp = inputs(z_raw, zs, gx, gy, area, open, res, rough)?;
     let (nr, nc) = (inp.nr, inp.nc);
     let p = params(params_json)?;
     let out = py.detach(|| -> Result<_, String> {

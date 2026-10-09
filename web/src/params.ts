@@ -44,19 +44,28 @@ export function maxCatchAtMask(p: Params): number {
 export const TABLE_NS = 4097;
 export const TABLE_NG = 21;
 
-/** Cost per meter over (sidehill slope, |grade|) (search.py build_cost_table). */
-export function sectionTable(p: Params): { table: Float64Array; ds: number; dg: number } {
+/** Roughness (m) over which soil thins by e (roughness.py); 0, or absent from a parameter set: off. */
+export const roughR0 = (p: Params) => (typeof p.rough_r0 === "number" ? p.rough_r0 : 0);
+
+/** Soil slope added per meter of roughness (roughness.py rough_k); 0: off. */
+export const roughK = (p: Params) => (roughR0(p) > 0 ? num(p, "S0") / roughR0(p) : 0);
+
+/** Cost per meter over (sidehill slope, |grade|), TABLE_NS x ng (search.py build_cost_table):
+ *  with roughness on, the grade axis runs on at the same step to c_soil, for the soil-effective
+ *  grade. */
+export function sectionTable(p: Params): { table: Float64Array; ng: number; ds: number; dg: number } {
   const sm = sMask(p), gm = num(p, "g_max"), sp = sectionParams(p);
-  const table = new Float64Array(TABLE_NS * TABLE_NG);
   const ds = sm / (TABLE_NS - 1), dg = gm / (TABLE_NG - 1);
+  const ng = roughR0(p) > 0 ? Math.max(TABLE_NG, Math.ceil(num(p, "c_soil") / dg) + 2) : TABLE_NG;
+  const table = new Float64Array(TABLE_NS * ng);
   for (let i = 0; i < TABLE_NS; i++) {
-    for (let j = 0; j < TABLE_NG; j++) {
+    for (let j = 0; j < ng; j++) {
       const s = i * ds, g = j * dg;
-      table[i * TABLE_NG + j] = i === TABLE_NS - 1 ? Infinity
+      table[i * ng + j] = i === TABLE_NS - 1 ? Infinity
         : RoadEval.sectionCore(s, soilDepth(Math.hypot(s, g), p), sp).cost;
     }
   }
-  return { table, ds, dg };
+  return { table, ng, ds, dg };
 }
 
 /** Allowance per hairpin a steep graph edge implies (tin.py hairpin_allowance). */

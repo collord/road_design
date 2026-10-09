@@ -32,6 +32,7 @@ from .lattice import (
 )
 from .params import Params
 from .preprocess import Terrain
+from .roughness import rough_k
 from .section import section_arrays, section_params, soil_depth
 
 TABLE_NS = 4097
@@ -46,8 +47,15 @@ class CostTable:
 
 
 def build_cost_table(p: Params) -> CostTable:
+    """Cost per meter over (sidehill slope, |grade|). Grade enters only through soil depth; with
+    roughness on (rough_r0 > 0) the grade axis runs on at the same step to c_soil (no soil past
+    it), so a sample can look up its soil-effective grade (roughness thinning the soil as extra
+    slope)."""
     s = np.linspace(0.0, p.s_mask, TABLE_NS)
     g = np.linspace(0.0, p.g_max, TABLE_NG)
+    if p.rough_r0 > 0:
+        dg = g[1] - g[0]
+        g = np.concatenate([g, np.arange(TABLE_NG, int(math.ceil(p.c_soil / dg)) + 2) * dg])
     S, G = np.meshgrid(s, g, indexing="ij")
     d = soil_depth(np.hypot(S, G), p)
     out = section_arrays(S.ravel(), d.ravel(), section_params(p))
@@ -83,6 +91,9 @@ class SearchProblem:
     # (nr, nc) int32: row of each grid cell in the hairpin and bend tables, -1 where they have
     # none. The tables hold the cells open when they were built, so memory follows the corridor.
     macro_lookup: np.ndarray | None = None
+    # Roughness (m) and the slope it adds for soil per meter (roughness.rough_k); 0: none.
+    rough: np.ndarray | None = None
+    k_rough: float = 0.0
 
     @property
     def n_theta(self) -> int:
@@ -121,7 +132,9 @@ class SearchProblem:
                 self.bend if self.bend is not None else np.full((0, 1, 1), np.inf, dtype=np.float32),
                 p.C_travel, p.C_vertical, p.C_turn,
                 self.macro_lookup if self.macro_lookup is not None
-                else np.full((self.nr, self.nc), -1, dtype=np.int32))
+                else np.full((self.nr, self.nc), -1, dtype=np.int32),
+                self.rough if self.rough is not None else np.zeros((self.nr, self.nc)),
+                float(self.k_rough))
 
 
 def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool = True,
@@ -167,6 +180,8 @@ def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool =
                            p.kink_max_deg),
         cost=build_cost_table(p), hp=hp, bend=bend, bend_geo=bend_geo, open_tables=open_.copy(),
         macro_lookup=lookup,
+        rough=np.ascontiguousarray(np.nan_to_num(t.rough), dtype=np.float64) if t.rough is not None else None,
+        k_rough=rough_k(p) if t.rough is not None else 0.0,
     )
 
 
@@ -228,7 +243,7 @@ def _eval_fill(r, c, p, lat, terr):
     p_len = lat[4]
     (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base,
      z_raw, channel, area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel,
-     C_vert, C_turn, mlook) = terr
+     C_vert, C_turn, mlook, rough, k_rough) = terr
     nr, nc = open_.shape
     Lc = p_len[p]
     if chdist[r, c] > Lc:
@@ -363,7 +378,7 @@ def _eval_action(r, c, p, lat, terr):
      p_slot, p_turn) = lat
     (open_, gx, gy, zs, hp, table, ds, dg, res, g_max, C_base,
      z_raw, channel, area, chdist, cbreaks, ccosts, lam, w, f_rock, H_max, tol, bend, C_travel,
-     C_vert, C_turn, mlook) = terr
+     C_vert, C_turn, mlook, rough, k_rough) = terr
     nr, nc = open_.shape
     kind = p_kind[p]
     if kind == ACTION_HP_LEFT or kind == ACTION_BEND_L:
@@ -416,6 +431,12 @@ def _eval_action(r, c, p, lat, terr):
         # section only through soil depth (S = hypot(s, g)).
         g = min(abs(ax * stx[k] + ay * sty[k]), g_max)
         s = abs(-ax * sty[k] + ay * stx[k])
+        if k_rough > 0.0:
+            # Roughness thins the soil as extra slope: the soil-effective grade (roughness.py).
+            rho = _bilinear(rough, fr, fc, nr, nc)
+            if rho > 0.0:
+                se = math.sqrt(s * s + g * g) + k_rough * rho
+                g = math.sqrt(max(se * se - s * s, 0.0))
         cpm = _table_cost(table, ds, dg, s, g)
         if cpm == math.inf:
             return math.inf
@@ -669,9 +690,9 @@ def rust_args(prob: SearchProblem):
                 for i, a in enumerate(prob.lat_tuple()))
     t = list(prob.terr_tuple())
     for i, dt in {0: np.uint8, 1: f8, 2: f8, 3: f8, 4: np.float32, 5: f8, 11: f8, 12: np.uint8, 13: f8,
-                  14: f8, 15: f8, 16: f8, 22: np.float32, 26: np.int32}.items():
+                  14: f8, 15: f8, 16: f8, 22: np.float32, 26: np.int32, 27: f8}.items():
         t[i] = np.ascontiguousarray(t[i], dtype=dt)
-    for i in (6, 7, 8, 9, 10, 17, 18, 19, 20, 21, 23, 24, 25):
+    for i in (6, 7, 8, 9, 10, 17, 18, 19, 20, 21, 23, 24, 25, 28):
         t[i] = float(t[i])
     return lat, tuple(t)
 

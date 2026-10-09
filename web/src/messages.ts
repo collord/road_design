@@ -80,5 +80,5 @@ export type FromWorker =
   | { type: "explore"; index: number; grid: Grid; stage: string; settled: number; key: number;
       cells: Uint32Array; g: Float32Array; x: Float64Array; y: Float64Array }
   | { type: "stopped"; task: string }
-  | { type: "area"; grid: Grid; cells: number }
+  | { type: "area"; grid: Grid; cells: number; roughness: string }
   | { type: "error"; message: string };

@@ -153,7 +153,11 @@ def _construction(prob: SearchProblem, seq: int, r: int, c: int, a: int) -> Segm
     g = ax * tx + ay * ty
     s = np.abs(-ax * ty + ay * tx)
     S = np.hypot(s, g)
-    d = soil_depth(S, p)
+    if prob.k_rough > 0:
+        S_soil = S + prob.k_rough * np.nan_to_num(_bil(prob.rough, fr, fc))
+    else:
+        S_soil = S
+    d = soil_depth(S_soil, p)
     sec = section_arrays(s, d, section_params(p))
     length = L.length[a] * prob.res
     w = length / n

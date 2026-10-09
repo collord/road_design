@@ -27,6 +27,7 @@ class Params:
     C_wall: float
     d0: float
     S0: float
+    rough_r0: float
     c_soil: float
     c_rock: float
     f_soil: float
