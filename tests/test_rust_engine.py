@@ -1,5 +1,6 @@
 """The Rust kernel (roadsearch_core) against the numba one: same edge costs, same searches."""
 
+import dataclasses
 import math
 
 import numpy as np
@@ -184,3 +185,34 @@ def test_run_id_records_the_terrain_engine(tmp_path, monkeypatch):
         rec = json.loads((run_dir / "params.json").read_text())
         assert rec["inputs"].get("terrain_engine") == (engine.TERRAIN_ENGINE_TAG if e == "rust" else None)
     assert ids["numba"] != ids["rust"]
+
+
+def test_hairpin_sites_thin_the_table(prob):
+    """With hairpin sites (hp_site_spacing), both engines keep the full table's costs at the sites
+    and nothing elsewhere; every lattice line in a heading meets a site every site_step steps."""
+    from roadsearch.hairpin import hairpin_table, is_site, site_step
+    from roadsearch.lattice import heading_vectors
+
+    terr = prob.macro_terrain_arrays
+    drain = (prob.channel, prob.area)
+    cells = np.flatnonzero(prob.open_tables)
+    p = prob.params
+    sparse = dataclasses.replace(p, hp_site_spacing=1.0)
+    step = site_step(sparse, prob.res)
+    assert step == int(p.R_hp // prob.res) and step > 1
+    full = hairpin_table(terr, p, prob.res, drain, cells, engine="rust")
+    r, c = cells // prob.nc, cells % prob.nc
+    vecs = heading_vectors(p.N_theta)
+    site = np.array([[[is_site(int(a), int(b), float(v[0]), float(v[1]), step)] * full.shape[2] for v in vecs]
+                     for a, b in zip(r, c)])
+    for vx, vy in vecs:
+        for r0, c0 in [(0, 0), (3, 1), (7, 4), (2, 9)]:
+            hits = [is_site(r0 - k * int(vy), c0 + k * int(vx), float(vx), float(vy), step) for k in range(4 * step)]
+            assert sum(hits) == 4 and all(hits[k] == hits[k + step] for k in range(3 * step))
+    assert 0.9 / step < site.mean() < 1.1 / step
+    for engine in ("numba", "rust"):
+        t = hairpin_table(terr, sparse, prob.res, drain, cells, engine=engine)
+        assert np.isinf(t[~site]).all()
+        fa = np.isfinite(full[site])
+        assert np.array_equal(np.isfinite(t[site]), fa)
+        assert np.allclose(t[site][fa], full[site][fa], rtol=1e-6)

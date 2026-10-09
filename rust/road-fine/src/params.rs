@@ -20,6 +20,9 @@ pub struct Params {
     pub w_hp: f64,
     pub hp_leg_max: f64,
     pub hp_gap_min: f64,
+    /// Hairpin sites every this many R_hp (hairpin.py site_step); 0 or absent: every cell.
+    #[serde(default)]
+    pub hp_site_spacing: f64,
     #[serde(rename = "C_wall", deserialize_with = "inf_if_null")]
     pub c_wall: f64,
     pub d0: f64,

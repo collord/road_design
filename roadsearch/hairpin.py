@@ -23,6 +23,13 @@ A right hairpin from node Q with heading h is the left hairpin from
 Q - D*n(h) traveled backwards, so the search prices both from one table
 and a hairpin costs the same in both directions.
 
+Hairpins start only at sites, every site_step lattice steps along the entry heading
+(hp_site_spacing R_hp in whole cells): a cell is a site for heading v when its station along v,
+floor((P . v) / |v|^2) with P = (col, -row), is a multiple of site_step. Every line of the lattice
+in that heading meets a site every site_step steps, so a hairpin shifts at most that far along
+the road and never across the slope. The table is infinite elsewhere; a right hairpin, read from
+the left hairpin at Q - D n(h), has the same station (n is perpendicular to v).
+
 For each heading there are up to two leg spacings: the narrowest with a
 clear gap of at least hp_gap_min between the road edges, and the
 semicircle spacing (2 R_hp snapped up). Each is a separate search action.
@@ -64,7 +71,7 @@ from .section import _clipped_area
 HairpinParams = namedtuple(
     "HairpinParams",
     "w_hp g_hp g_max leg_max c_soil c_rock f_soil f_rock k_soil k_rock "
-    "C_base C_soil C_rock C_borrow catch_max delta R_hp rho C_wall C_travel C_vertical",
+    "C_base C_soil C_rock C_borrow catch_max delta R_hp rho C_wall C_travel C_vertical site_step",
 )
 
 # Detail vector layout returned by hairpin_core.
@@ -79,11 +86,28 @@ N_ACROSS = 6
 R_FACTORS = (1.0, 1.5)
 
 
+def site_step(p: Params, res: float) -> int:
+    """Lattice steps between hairpin sites along a heading: hp_site_spacing R_hp snapped down to
+    whole cells, at least 1 (every cell)."""
+    return max(1, int(math.floor(p.hp_site_spacing * p.R_hp / res + 1e-9)))
+
+
+@numba.njit(cache=True, inline="always")
+def is_site(r, c, vx, vy, step):
+    """Whether (r, c) is a hairpin site for heading (vx, vy) (lattice cells, x east, y north)."""
+    if step <= 1:
+        return True
+    ix = int(vx)
+    iy = int(vy)
+    return ((c * ix - r * iy) // (ix * ix + iy * iy)) % step == 0
+
+
 def hairpin_params(p: Params, res: float) -> HairpinParams:
     return HairpinParams(
         p.w_hp, p.g_hp, p.g_max, p.hp_leg_max, p.c_soil, p.c_rock, p.f_soil, p.f_rock,
         p.k_soil, p.k_rock, p.C_base, p.C_soil, p.C_rock, p.C_borrow, p.catch_max,
         min(0.5 * res, p.w_hp / N_ACROSS), p.R_hp, p.R_min, p.C_wall, p.C_travel, p.C_vertical,
+        float(site_step(p, res)),
     )
 
 
@@ -513,8 +537,11 @@ def _hairpin_table(cells, nr, nc, nh, vx, vy, slots, res, open_, zs, gx, gy, soi
         tmp = np.empty(HP_N)
         r = cells[i] // nc
         c = cells[i] - r * nc
+        step = int(hp.site_step)
         if open_[r, c]:
             for h in range(nh):
+                if not is_site(r, c, vx[h], vy[h], step):
+                    continue
                 vlen = math.hypot(vx[h], vy[h])
                 for j in range(N_SLOTS):
                     k = slots[h, j]

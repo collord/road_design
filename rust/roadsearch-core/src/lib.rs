@@ -400,12 +400,12 @@ fn hairpin_table<'py>(
 ) -> PyResult<Bound<'py, PyArray3<f32>>> {
     let a = MacroArrays::from_tuples(terrain, drainage)?;
     let t = a.view()?;
-    let p = floats::<21>(params, "hairpin params")?;
+    let p = floats::<22>(params, "hairpin params")?;
     let hp = HairpinParams {
         w_hp: p[0], g_hp: p[1], g_max: p[2], leg_max: p[3], c_soil: p[4], c_rock: p[5], f_soil: p[6],
         f_rock: p[7], k_soil: p[8], k_rock: p[9], cost_base: p[10], cost_soil: p[11], cost_rock: p[12],
         cost_borrow: p[13], catch_max: p[14], delta: p[15], r_hp: p[16], rho: p[17], cost_wall: p[18],
-        c_travel: p[19], c_vertical: p[20],
+        c_travel: p[19], c_vertical: p[20], site_step: (p[21] as i64).max(1),
     };
     let nh = vx.len();
     if slots.shape() != [nh, N_SLOTS] {

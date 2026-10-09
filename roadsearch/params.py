@@ -24,6 +24,7 @@ class Params:
     w_hp: float
     hp_leg_max: float
     hp_gap_min: float
+    hp_site_spacing: float
     C_wall: float
     d0: float
     S0: float

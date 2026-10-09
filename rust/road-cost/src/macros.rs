@@ -48,6 +48,9 @@ pub struct HairpinParams {
     pub cost_wall: f64,
     pub c_travel: f64,
     pub c_vertical: f64,
+    /// Hairpins start only at sites this many lattice steps apart along the entry heading
+    /// (hairpin.py is_site; 1: every cell).
+    pub site_step: i64,
 }
 
 /// Bend design and cost parameters (bend.py's BendParams, same order).
@@ -875,12 +878,23 @@ where
     table
 }
 
+/// Whether (r, c) is a hairpin site for heading (vx, vy) (lattice cells, x east, y north): its
+/// station along the heading, floor((P . v) / |v|^2) with P = (col, -row), is a multiple of step.
+/// Every lattice line in the heading meets a site every `step` steps.
+pub fn is_site(r: i64, c: i64, vx: f64, vy: f64, step: i64) -> bool {
+    if step <= 1 {
+        return true;
+    }
+    let (ix, iy) = (vx as i64, vy as i64);
+    (c * ix - r * iy).div_euclid(ix * ix + iy * iy).rem_euclid(step) == 0
+}
+
 /// One entry of the hairpin table: the left hairpin from (r, c) in heading h, slot j.
 #[allow(clippy::too_many_arguments)]
 pub fn hairpin_entry(r: i64, c: i64, h: usize, j: usize, heads: &Headings, slots: &[i64], res: f64, t: &MacroTerrain,
                      hp: &HairpinParams) -> f32 {
     let k = slots[h * N_SLOTS + j];
-    if t.open.at(r, c) == 0 || k == 0 {
+    if t.open.at(r, c) == 0 || k == 0 || !is_site(r, c, heads.vx[h], heads.vy[h], hp.site_step) {
         return f32::INFINITY;
     }
     let (ux, uy, vlen) = heads.unit(h);

@@ -181,6 +181,7 @@ pub fn hairpin_params(p: &Params, res: f64) -> HairpinParams {
         cost_soil: p.c_soil_cost, cost_rock: p.c_rock_cost, cost_borrow: p.c_borrow, catch_max: p.catch_max,
         delta: (0.5 * res).min(p.w_hp / N_ACROSS as f64), r_hp: p.r_hp, rho: p.r_min, cost_wall: p.c_wall,
         c_travel: p.c_travel, c_vertical: p.c_vertical,
+        site_step: ((p.hp_site_spacing * p.r_hp / res + 1e-9).floor() as i64).max(1),
     }
 }
 

@@ -13,6 +13,9 @@ R_hp = 10.0           # hairpin centerline radius (m)
 g_hp = 0.04           # maximum grade through a hairpin
 w_hp = 7.0            # road width through a hairpin (m)
 hp_gap_min = 8.0      # narrowest clear gap between the two legs of a keyhole hairpin (m)
+hp_site_spacing = 0.0 # hairpins start only on a sub-grid of cells this many R_hp apart (snapped down
+                      # to whole cells): a loop's cost changes little over a fraction of its radius,
+                      # and designing one at every cell is most of the fine search's work; 0: every cell
 C_wall = inf          # retaining wall between hairpin legs, per m2 of face; inf = no walls
                       # (legs whose slopes overlap are then reported as conflicts)
 hp_leg_max = 60.0     # longest approach leg either side of a hairpin arc (m).
