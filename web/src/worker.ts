@@ -229,11 +229,13 @@ const SLICE_MS = 150;
 
 /** Preprocess the area and build the coarse graph with these terminals (row, col): the first is
  *  the start or access point. */
-async function buildGraph(p: Params, terminals: [number, number][], extra: [number, number][] = []) {
+async function buildGraph(p: Params, terminals: [number, number][], extra: [number, number][] = [], prepared = false) {
   const { grid, session } = area!;
   const res = grid.res;
-  timed("smooth, gradients, slope mask, flow", () =>
-    session.prepare(sigmaM(p) / res, get(p, "g_max"), sMask(p), maxCatchAtMask(p)));
+  if (!prepared) {
+    timed("smooth, gradients, slope mask, flow", () =>
+      session.prepare(sigmaM(p) / res, get(p, "g_max"), sMask(p), maxCatchAtMask(p)));
+  }
   const open = session.open_mask();
   const slope = new Uint8ClampedArray(open.length * 4);
   for (let i = 0; i < open.length; i++) if (!open[i]) { slope[4 * i] = 215; slope[4 * i + 1] = 48; slope[4 * i + 2] = 31; slope[4 * i + 3] = 110; }
@@ -372,11 +374,22 @@ async function network(p: Params, b: number, refine: number) {
     }
     return termOf.get(k)!;
   });
-  // A denser mesh over the pads: background nodes `refine` times closer than tin_block, over the
-  // pads' convex hull and 300 m around it.
-  const extra = refine > 1
-    ? meshNear(terminals, Math.max(1, get(p, "tin_block") / refine / grid.res), 300 / grid.res, grid.h, grid.w) : [];
-  await buildGraph(p, terminals, extra);
+  // A denser mesh over the pads (their convex hull and 300 m around it): background nodes
+  // `refine` times closer than tin_block, and a triangulation `refine` times tighter than
+  // tin_tolerance there, so nodes land on the benches and breaks in slope near the pads.
+  const zone = 300 / grid.res;
+  const extra = refine > 1 ? meshNear(terminals, Math.max(1, get(p, "tin_block") / refine / grid.res), zone, grid.h, grid.w) : [];
+  if (refine > 1) {
+    timed("smooth, gradients, slope mask, flow", () =>
+      session.prepare(sigmaM(p) / grid.res, get(p, "g_max"), sMask(p), maxCatchAtMask(p)));
+    const rows = terminals.map((t) => t[0]), cols = terminals.map((t) => t[1]);
+    const r0 = Math.max(0, Math.floor(Math.min(...rows) - zone)), c0 = Math.max(0, Math.floor(Math.min(...cols) - zone));
+    const r1 = Math.min(grid.h, Math.ceil(Math.max(...rows) + zone) + 1), c1 = Math.min(grid.w, Math.ceil(Math.max(...cols) + zone) + 1);
+    const v = timed("triangulate the pad zone", () => session.tin_vertices_in(r0, c0, r1, c1, get(p, "tin_tolerance") / refine));
+    const inZone = new Set(meshNear(terminals, 1, zone, grid.h, grid.w).map(([r, c]) => r * grid.w + c));
+    for (let i = 0; i < v.length; i += 2) if (inZone.has(v[i] * grid.w + v[i + 1])) extra.push([v[i], v[i + 1]]);
+  }
+  await buildGraph(p, terminals, extra, refine > 1);
   if (extra.length) post({ type: "stage", name: `mesh near the pads: ${extra.length.toLocaleString()} extra nodes`, state: "end", ms: 0 });
   // Pads lie along the contour.
   const axes = session.contour_angle(new Uint32Array(pads.map((q) => q![0])), new Uint32Array(pads.map((q) => q![1])));

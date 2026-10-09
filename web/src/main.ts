@@ -322,6 +322,10 @@ function setMode(m: "route" | "network") {
   $("start-label").textContent = net ? "Access point" : "Start";
   $("pick-start").textContent = net ? "Click to set the access point" : "Click to set start";
   $("run").textContent = net ? "Find network" : "Find corridors";
+  // A network's area is its pads': a small margin, so finer cells.
+  const margin = $<HTMLInputElement>("margin");
+  if (net && margin.value === "10") margin.value = "2";
+  if (!net && margin.value === "2") margin.value = "10";
   markers.goal?.setStyle({ opacity: net ? 0 : 1, fillOpacity: net ? 0 : 1 });
   estimate();
 }
@@ -439,18 +443,42 @@ function areaPoints(): [number, number][] | null {
   return goal ? [start, goal] : null;
 }
 
-function estimate() {
-  const loadBtn = $<HTMLButtonElement>("load");
+/** Standard cell sizes (m) for the coarse graph. */
+const NICE_RES = [1, 2, 2.5, 3, 4, 5, 6, 7.5, 8, 10, 12, 12.5, 15, 20, 25, 30, 40, 50, 60, 75, 100];
+/** The coarse graph's cells when the size is automatic. */
+const AUTO_CELLS = 6_000_000;
+
+/** The area's extent (m) for the current points and margin. */
+function areaSize(): [number, number] | null {
   const pts = areaPoints();
-  if (!info || !pts || busy) { loadBtn.disabled = true; return; }
-  const m = Number($<HTMLInputElement>("margin").value) * 1000, res = Number($<HTMLInputElement>("res").value);
+  if (!info || !pts) return null;
+  const m = Number($<HTMLInputElement>("margin").value) * 1000;
   const [bx0, by0, bx1, by1] = info.bbox;
   const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
-  const w = (Math.min(Math.max(...xs) + m, bx1) - Math.max(Math.min(...xs) - m, bx0)) / res;
-  const h = (Math.min(Math.max(...ys) + m, by1) - Math.max(Math.min(...ys) - m, by0)) / res;
-  const cells = Math.max(0, w) * Math.max(0, h);
+  return [Math.max(0, Math.min(Math.max(...xs) + m, bx1) - Math.max(Math.min(...xs) - m, bx0)),
+          Math.max(0, Math.min(Math.max(...ys) + m, by1) - Math.max(Math.min(...ys) - m, by0))];
+}
+
+/** The coarse cell size: as typed, or the finest standard size at or above the DEM's own that
+ *  keeps the area within AUTO_CELLS. */
+function coarseRes(): number {
+  const typed = Number($<HTMLInputElement>("res").value);
+  if (typed > 0) return typed;
+  const size = areaSize();
+  const native = info ? info.resM : 10;
+  const area = size ? size[0] * size[1] : 0;
+  return NICE_RES.find((r) => r >= native - 1e-6 && area / (r * r) <= AUTO_CELLS) ?? NICE_RES[NICE_RES.length - 1];
+}
+
+function estimate() {
+  const loadBtn = $<HTMLButtonElement>("load");
+  const size = areaSize();
+  if (!info || !size || busy) { loadBtn.disabled = true; return; }
+  const res = coarseRes();
+  const cells = (size[0] / res) * (size[1] / res);
   const over = cells > MAX_CELLS;
-  $("estimate").textContent = `${(cells / 1e6).toFixed(1)} million cells at ${res} m, about ` +
+  const auto = !(Number($<HTMLInputElement>("res").value) > 0);
+  $("estimate").textContent = `${(cells / 1e6).toFixed(1)} million cells at ${res} m${auto ? " (automatic)" : ""}, about ` +
     `${Math.round(cells * 70 / 1e6)} MB` + (over ? ` — over the limit of ${MAX_CELLS / 1e6} million: use larger cells or a smaller margin` : "");
   loadBtn.disabled = over || res <= 0 || !!busy;
 }
@@ -468,14 +496,14 @@ function params(): Params {
   const k = Number($<HTMLInputElement>("k").value);
   for (const key of ["C_travel", "C_vertical", "C_turn"]) p[key] = (base[key] as number ?? defaults[key] as number) * k;
   p.z_units = zUnits();
-  p.tin_res = Number($<HTMLInputElement>("res").value);
+  p.tin_res = coarseRes();
   return p;
 }
 
 function setControls(p: Params) {
   $<HTMLInputElement>("g_max").value = String(+(100 * (p.g_max as number)).toFixed(2));
   $<HTMLInputElement>("w").value = String(p.w);
-  $<HTMLInputElement>("res").value = String(p.tin_res ?? 15);
+  $<HTMLInputElement>("res").value = "";
   $<HTMLInputElement>("margin").value = String((p.tin_margin as number ?? 10000) / 1000);
   $<HTMLSelectElement>("z_units").value = String(p.z_units ?? "m");
   $<HTMLInputElement>("k").value = "1";
@@ -566,7 +594,7 @@ $("load").addEventListener("click", () => {
   $<HTMLButtonElement>("run").disabled = true;
   send({ type: "load", start, goal: mode === "route" ? goal : null, pads: mode === "network" ? [...pads] : [],
          margin: Number($<HTMLInputElement>("margin").value) * 1000,
-         res: Number($<HTMLInputElement>("res").value), maxCells: MAX_CELLS, zUnits: zUnits() });
+         res: coarseRes(), maxCells: MAX_CELLS, zUnits: zUnits() });
 });
 /** The run's parameters, with the pads' traffic scaling the operating costs in network mode. */
 function runParams(): Params {

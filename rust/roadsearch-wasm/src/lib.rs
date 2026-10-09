@@ -250,6 +250,28 @@ impl Session {
         Ok(tris.len())
     }
 
+    /// Vertices [row, col, ...] (whole-grid cells) of a triangulation of the smoothed DEM over rows
+    /// r0..r1 and columns c0..c1 to `tolerance` m: a finer one where more detail matters (around
+    /// pads, say). After prepare().
+    pub fn tin_vertices_in(&self, r0: usize, c0: usize, r1: usize, c1: usize, tolerance: f64) -> Result<Vec<u32>, JsValue> {
+        if self.zs.is_empty() {
+            return Err(JsValue::from_str("prepare() first"));
+        }
+        let (r1, c1) = (r1.min(self.nr), c1.min(self.nc));
+        if r1 < r0 + 2 || c1 < c0 + 2 {
+            return Ok(Vec::new());
+        }
+        let (h, w) = (r1 - r0, c1 - c0);
+        let mut sub = Vec::with_capacity(h * w);
+        for r in r0..r1 {
+            sub.extend_from_slice(&self.zs[r * self.nc + c0..r * self.nc + c1]);
+        }
+        let filled = terrain::fill_nearest(&sub, h, w);
+        let (pts, _) = delatin::triangulate(&filled, (w, h), delatin::Error(tolerance))
+            .map_err(|e| JsValue::from_str(&format!("triangulation failed: {e:?}")))?;
+        Ok(pts.iter().flat_map(|&(x, y)| [(y + r0) as u32, (x + c0) as u32]).collect())
+    }
+
     /// [col, row, ...] of the triangulation's vertices.
     pub fn tri_points(&self) -> Vec<u32> {
         self.tri_points.clone()
