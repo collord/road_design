@@ -23,6 +23,11 @@ pub struct Params {
     /// Hairpin sites every this many R_hp (hairpin.py site_step); 0 or absent: every cell.
     #[serde(default)]
     pub hp_site_spacing: f64,
+    /// Reversing switchbacks instead of loop hairpins (temporary pad roads): the length (m) of
+    /// the level landing at each, where a truck pulls in and reverses onto the next leg. 0 or
+    /// absent: loop hairpins.
+    #[serde(default)]
+    pub switchback_landing: f64,
     #[serde(rename = "C_wall", deserialize_with = "inf_if_null")]
     pub c_wall: f64,
     pub d0: f64,

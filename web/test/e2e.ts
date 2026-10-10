@@ -248,6 +248,13 @@ try {
         if (fn !== "done") throw new Error(fn);
         const fineRows: string[] = await evaluate(`[...document.querySelectorAll("#fine tr")].map((r) => [...r.cells].map((c) => c.textContent).join(": "))`);
         console.log(`  fine network in ${((Date.now() - tFine) / 1000).toFixed(0)} s: ${fineRows.slice(1).join("; ")}`);
+        // Where the time went: the designs, and the searches all together.
+        const times: string[] = await evaluate(`[...document.querySelectorAll("#log li")].map((li) => li.textContent)
+          .filter((t) => /^network: .*: [0-9.]+ s$/.test(t))`);
+        const secs = (t: string) => Number(t.match(/([0-9.]+) s$/)![1]);
+        const designs = times.filter((t) => /designs/.test(t)).map(secs).reduce((a, b) => a + b, 0);
+        const searches = times.filter((t) => /: (improve: )?pad \d+:/.test(t)).map(secs).reduce((a, b) => a + b, 0);
+        console.log(`  fine network time: designs ${designs.toFixed(0)} s, pad searches ${searches.toFixed(0)} s`);
         const mostFine = Number(fineRows.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
         if (!(mostFine <= 2)) throw new Error(`a pad has ${mostFine} pads beyond it`);
         await shot(`${name}-fine-network`);

@@ -60,6 +60,7 @@ struct FineRoute {
     cost: CostOut,
     length: f64,
     hairpins: usize,
+    switchbacks: usize,
     bends: usize,
     fill_crossings: usize,
     lam_fill: f64,
@@ -101,6 +102,7 @@ fn fine_route(segs: &[Segment], c: &TrueCost, lam_fill: f64) -> FineRoute {
         },
         length: segs.iter().map(|s| s.length).sum(),
         hairpins: count(road_fine::route::HAIRPIN),
+        switchbacks: count(road_fine::route::SWITCHBACK),
         bends: count(road_fine::route::BEND),
         fill_crossings: count(road_fine::route::FILL_CROSSING),
         lam_fill,
@@ -291,6 +293,8 @@ impl FineSession {
             ends: Vec<usize>,
             construction: f64,
             operating: f64,
+            /// Reversing switchbacks on the roads (not counting pads used as landings).
+            switchbacks: usize,
         }
         let uses = net.segment_uses();
         let mut runs: Vec<Run> = Vec::new();
@@ -320,6 +324,8 @@ impl FineSession {
             ends: net.pads.iter().map(|p| p.ends.iter().flatten().count()).collect(),
             construction,
             operating,
+            switchbacks: net.branches.iter().flatten().flat_map(|b| &b.segments)
+                .filter(|s| s.kind == road_fine::route::SWITCHBACK).count(),
         };
         serde_wasm_bindgen::to_value(&st).map_err(js_err)
     }

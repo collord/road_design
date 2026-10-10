@@ -10,6 +10,8 @@
 //!   priced by fill volume at the current fill price;
 //! * hairpins and bends: looked up in precomputed tables (left-hand ones;
 //!   right-hand ones are their reverses);
+//! * reversing switchbacks: a zero-length turn onto a heading roughly opposite, priced by a level
+//!   landing past the junction (its samples carried by the action like a primitive's);
 //! * every edge: a turning charge per radian of heading change.
 //!
 //! An edge is always costed in its canonical direction (the lower-numbered of
@@ -25,6 +27,7 @@ pub const ACTION_HP_RIGHT: u8 = 2;
 pub const ACTION_FILL: u8 = 3;
 pub const ACTION_BEND_L: u8 = 4;
 pub const ACTION_BEND_R: u8 = 5;
+pub const ACTION_SWITCH: u8 = 6;
 
 /// Per-action arrays of the road lattice (roadsearch.lattice.LatticeArrays).
 #[derive(Clone, Debug, Default)]
@@ -280,6 +283,54 @@ impl<'a> RoadCost<'a> {
         true
     }
 
+    /// Reversing switchback at (r, c): a level landing along the action's samples (the bisector of
+    /// the arriving heading and the reverse of the departing one), priced as road on the sidehill
+    /// across it plus the prism of cut or fill that keeps it level, at the fill price.
+    fn eval_switch(&self, r: i64, c: i64, p: usize) -> f64 {
+        let (a, t, q) = (self.actions, &self.terrain, self.params);
+        if !self.cell_open(r, c) {
+            return f64::INFINITY;
+        }
+        let n = a.ns[p];
+        let w_s = a.length[p] * q.res / n as f64;
+        let z0 = t.zs.at(r, c);
+        let (mut total, mut vol) = (0.0, 0.0);
+        for k in a.s0[p]..a.s0[p] + n {
+            let fr = r as f64 + a.sdr[k];
+            let fc = c as f64 + a.sdc[k];
+            if !self.cell_open(nearest(fr), nearest(fc)) {
+                return f64::INFINITY;
+            }
+            let zk = bilinear(&t.zs, fr, fc);
+            let ax = bilinear(&t.gx, fr, fc);
+            let ay = bilinear(&t.gy, fr, fc);
+            if !(ax.abs() < f64::INFINITY && ay.abs() < f64::INFINITY && zk.abs() < f64::INFINITY) {
+                return f64::INFINITY;
+            }
+            let h = z0 - zk;
+            if h.abs() > q.h_fill_max {
+                return f64::INFINITY;
+            }
+            vol += (q.w * h.abs() + h * h / q.f_rock) * w_s;
+            // The ground's slope along the landing enters through soil depth, as grade does on a road.
+            let mut g = (ax * a.tx[k] + ay * a.ty[k]).abs();
+            let s = (-ax * a.ty[k] + ay * a.tx[k]).abs();
+            if q.k_rough > 0.0 {
+                let rho = bilinear(&t.rough, fr, fc);
+                if rho > 0.0 {
+                    let se = (s * s + g * g).sqrt() + q.k_rough * rho;
+                    g = (se * se - s * s).max(0.0).sqrt();
+                }
+            }
+            let cpm = self.section.cost(s, g);
+            if cpm == f64::INFINITY {
+                return f64::INFINITY;
+            }
+            total += cpm * w_s;
+        }
+        total + q.lam_fill * vol
+    }
+
     /// Fill crossing: a straight macro-action over a channel on a linear design.
     fn eval_fill(&self, r: i64, c: i64, p: usize) -> f64 {
         let (a, t, q) = (self.actions, &self.terrain, self.params);
@@ -387,6 +438,9 @@ impl<'a> RoadCost<'a> {
         }
         if kind == ACTION_FILL {
             return self.eval_fill(r, c, p);
+        }
+        if kind == ACTION_SWITCH {
+            return self.eval_switch(r, c, p);
         }
         let (r1, c1) = (r + a.dr[p], c + a.dc[p]);
         if !(self.cell_open(r, c) && self.cell_open(r1, c1)) {

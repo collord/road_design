@@ -71,10 +71,15 @@ export function sectionTable(p: Params): { table: Float64Array; ng: number; ds: 
   return { table, ng, ds, dg };
 }
 
-/** Allowance per hairpin a steep graph edge implies (tin.py hairpin_allowance). */
+/** Landing length (m) of reversing switchbacks; 0, or absent from a parameter set: loop hairpins. */
+export const switchbackLanding = (p: Params) => (typeof p.switchback_landing === "number" ? p.switchback_landing : 0);
+
+/** Allowance per hairpin a steep graph edge implies (tin.py hairpin_allowance); with reversing
+ *  switchbacks, the landing's base cost and the turn. */
 export function hairpinAllowance(p: Params): number {
   const h = num(p, "tin_hairpin_cost");
   if (h >= 0) return h;
+  if (switchbackLanding(p) > 0) return num(p, "C_base") * switchbackLanding(p) + num(p, "C_turn") * Math.PI;
   return (num(p, "C_base") + num(p, "C_travel")) * (Math.PI + 2) * num(p, "R_hp") + num(p, "C_turn") * Math.PI;
 }
 

@@ -212,7 +212,9 @@ async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { 
   while (pool.length < size) pool.push(new Worker(new URL("./macroWorker.ts", import.meta.url), { type: "module" }));
   const n = fs.cells();
   const tableCells = fs.table_cells();
-  const stage = `${name}: hairpin and bend designs on ${pool.length} workers`;
+  // Reversing switchbacks need no hairpin designs: no hairpin sites to show.
+  const switchbacks = Number(JSON.parse(setup.params).switchback_landing) > 0;
+  const stage = `${name}: ${switchbacks ? "bend" : "hairpin and bend"} designs on ${pool.length} workers`;
   post({ type: "stage", name: stage, state: "start" });
   const t0 = performance.now();
   try {
@@ -231,6 +233,10 @@ async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { 
         if (r.type === "error") throw new Error(r.message);
         if (r.type !== "rows") continue;
         fs.set_macro_rows(r.a, r.hp, r.bend);
+        done += Math.min(MACRO_CHUNK, n - r.a);
+        progress(stage + ", cells", Math.min(done, n), n);
+        await checkpoint();
+        if (switchbacks) continue;
         // Where switchbacks come cheap: the cheapest feasible hairpin per cell, for the page.
         const m = Math.min(MACRO_CHUNK, n - r.a), per = r.hp.length / m;
         const cheapest = new Float32Array(m);
@@ -241,9 +247,6 @@ async function precomputeMacros(fs: wasm.FineSession, setup: Extract<ToMacro, { 
         }
         const cells = tableCells.slice(r.a, r.a + m);
         post({ type: "sites", index, grid, cells, cheapest }, [cells.buffer, cheapest.buffer]);
-        done += Math.min(MACRO_CHUNK, n - r.a);
-        progress(stage + ", cells", Math.min(done, n), n);
-        await checkpoint();
       }
     }));
   } catch (err) {
@@ -553,9 +556,9 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     const sendState = (phase: string, final: boolean) => {
       const st = fs.network_state() as { runs: { pad: number; uses: number; rows: number[]; cols: number[]; z: number[] }[];
         connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends: number[]; construction: number;
-        operating: number };
+        operating: number; switchbacks: number };
       post({ type: "fineNetwork", res, phase, final, connected: st.connected, unreachable: st.unreachable, beyond: st.beyond,
-             ends: st.ends,
+             ends: st.ends, switchbacks: st.switchbacks,
              construction: st.construction, operating: st.operating,
              runs: st.runs.map((r) => ({ pad: r.pad, uses: r.uses, z: r.z, x: r.cols.map((c) => fg.x0 + (c + 0.5) * res),
                                          y: r.rows.map((row) => fg.y1 - (row + 0.5) * res) })) });
@@ -664,7 +667,8 @@ async function refineOne(k: number, p: Params, res: number, buffer: number, apar
     const toUtm = (o: any, final: boolean): FineOut => ({
       index: k, res, final, x: o.cols.map((c: number) => fg.x0 + (c + 0.5) * res),
       y: o.rows.map((row: number) => fg.y1 - (row + 0.5) * res), z: o.z, ground: o.ground ?? [], cost: o.cost, length: o.length,
-      hairpins: o.hairpins, bends: o.bends, fill_crossings: o.fill_crossings, segments: o.segments, history: o.history,
+      hairpins: o.hairpins, switchbacks: o.switchbacks ?? 0, bends: o.bends, fill_crossings: o.fill_crossings,
+      segments: o.segments, history: o.history,
       seconds: (performance.now() - t0) / 1000, cells, macros_computed: o.macros_computed,
     });
     const out = fs.search(sr, sc, gr, gc, (o: { stage: string; settled: number; key: number; cells: Uint32Array;

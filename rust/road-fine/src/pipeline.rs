@@ -6,7 +6,7 @@ use road_cost::{ClimbHeuristic, Grid};
 
 use crate::masshaul::{true_cost, TrueCost};
 use crate::problem::Problem;
-use crate::route::{self_overlaps, Edge, Segment, FILL_CROSSING};
+use crate::route::{self_overlaps, Edge, Segment, FILL_CROSSING, SWITCHBACK};
 
 /// Settled states between progress reports.
 pub const PROGRESS_EVERY: u64 = 1 << 16;
@@ -184,6 +184,26 @@ fn dilate(m: &[bool], nr: usize, nc: usize, iterations: usize) -> Vec<bool> {
     cur
 }
 
+/// Overlaps other than the two legs of a reversing switchback within `near` m of it along the
+/// road (they share the junction's ground).
+pub fn without_switchback_legs(ov: Vec<(usize, usize, f64)>, segs: &[Segment], near: f64) -> Vec<(usize, usize, f64)> {
+    let switches: Vec<usize> = (0..segs.len()).filter(|&k| segs[k].kind == SWITCHBACK).collect();
+    if switches.is_empty() {
+        return ov;
+    }
+    // Road length before each segment, not counting landings.
+    let mut station = vec![0.0];
+    for s in segs {
+        station.push(station.last().unwrap() + if s.kind == SWITCHBACK { 0.0 } else { s.length });
+    }
+    ov.into_iter()
+        .filter(|&(i, j, _)| {
+            !switches.iter().any(|&k| i <= k && k <= j && station[k] - station[(i + 1).min(k)] <= near
+                && station[j] - station[k + 1] <= near)
+        })
+        .collect()
+}
+
 /// Re-search while the best route overlaps itself (loops back over its own road): each round
 /// blocks the cells of the excursion between the overlapping pieces, buffered by half the road
 /// width, and repeats the fill-price search; if that leaves no route the previous one is kept.
@@ -200,7 +220,8 @@ pub fn avoid_self_overlap(prob: &mut Problem, start: (i64, i64), goal: (i64, i64
             break;
         }
         let pieces: Vec<Vec<(f64, f64)>> = best.segments.iter().map(|s| s.pts.clone()).collect();
-        let ov = self_overlaps(&pieces, prob.res, prob.params.w, 1.3);
+        let ov = without_switchback_legs(self_overlaps(&pieces, prob.res, prob.params.w, 1.3), &best.segments,
+                                         prob.params.switchback_landing);
         if ov.is_empty() {
             break;
         }

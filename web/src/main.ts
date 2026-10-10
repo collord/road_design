@@ -421,6 +421,7 @@ function showFineNetwork(m: Extract<FromWorker, { type: "fineNetwork" }>) {
     (nUnr ? `<tr><td>unreachable</td><td>${m.unreachable.map((u, i) => (u ? `${i + 1}` +
       (m.ends[i] === 0 ? " (ends on steep ground)" : " (none within the buffer)") : "")).filter(Boolean).join(", ")}</td></tr>` : "") +
     `<tr><td>road length</td><td>${km.toFixed(2)} km</td></tr>` +
+    (m.switchbacks ? `<tr><td>switchbacks</td><td>${m.switchbacks}</td></tr>` : "") +
     `<tr><td>construction</td><td>${fmt(m.construction)}</td></tr>` +
     `<tr><td>operating (all pads' traffic)</td><td>${fmt(m.operating)}</td></tr>` +
     `<tr><td>total</td><td>${fmt(m.construction + m.operating)}</td></tr>` +
@@ -602,6 +603,7 @@ function runParams(): Params {
   if (mode === "network") {
     const tau = Math.max(0, Number($<HTMLInputElement>("pad-traffic").value) || 0);
     for (const k of ["C_travel", "C_vertical", "C_turn"]) p[k] = (p[k] as number) * tau;
+    p.switchback_landing = Math.max(0, Number($<HTMLInputElement>("pad-landing").value) || 0);
   }
   return p;
 }
@@ -716,7 +718,7 @@ function showProfile() {
   const f = done.find((x) => x.index === profileIndex) ??
             [...done].sort((a, b) => a.cost.total - b.cost.total)[0];
   $("profile").innerHTML = f ? profileSvg(f) : "";
-  $("profile-note").textContent = f ? profileSummary(f) + ". Shaded: hairpins (red), bends (blue), fill crossings (yellow)." : "";
+  $("profile-note").textContent = f ? profileSummary(f) + ". Shaded: hairpins and switchbacks (red), bends (blue), fill crossings (yellow)." : "";
   for (const tr of document.querySelectorAll<HTMLTableRowElement>("#fine tr[data-index]")) {
     tr.classList.toggle("selected", f !== undefined && Number(tr.dataset.index) === f.index);
   }
@@ -1053,7 +1055,8 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
         break;
       }
       log(`corridor ${f.index + 1} at ${f.res} m: ${Math.round(f.cost.total).toLocaleString()}, ` +
-          `${(f.length / 1000).toFixed(2)} km, ${f.hairpins} hairpins, ${f.bends} bends, ${f.fill_crossings} crossings ` +
+          `${(f.length / 1000).toFixed(2)} km, ${f.hairpins} hairpins, ` +
+          (f.switchbacks ? `${f.switchbacks} switchbacks, ` : "") + `${f.bends} bends, ${f.fill_crossings} crossings ` +
           `(${f.history.length} searches, ${f.cells.toLocaleString()} cells, ${f.macros_computed.toLocaleString()} macro designs)`);
       break;
     }

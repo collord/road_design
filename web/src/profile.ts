@@ -18,7 +18,8 @@ function tickStep(span: number, n: number): number {
   return [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= raw) ?? 10 * p;
 }
 
-const MARKS: Record<string, string> = { hairpin: "var(--route)", bend: "var(--alt)", fill_crossing: "var(--fine)" };
+const MARKS: Record<string, string> = { hairpin: "var(--route)", switchback: "var(--route)", bend: "var(--alt)",
+                                        fill_crossing: "var(--fine)" };
 
 export function profileSvg(f: FineOut): string {
   const d = stations(f), L = d[d.length - 1] || 1;

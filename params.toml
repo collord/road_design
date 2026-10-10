@@ -16,6 +16,9 @@ hp_gap_min = 8.0      # narrowest clear gap between the two legs of a keyhole ha
 hp_site_spacing = 0.0 # hairpins start only on a sub-grid of cells this many R_hp apart (snapped down
                       # to whole cells): a loop's cost changes little over a fraction of its radius,
                       # and designing one at every cell is most of the fine search's work; 0: every cell
+switchback_landing = 0.0  # reversing switchbacks instead of loop hairpins (temporary pad roads): the
+                      # level landing (m) a truck pulls into before reversing onto the next leg;
+                      # 0: loop hairpins. The browser's pad networks only (the Rust fine stage).
 C_wall = inf          # retaining wall between hairpin legs, per m2 of face; inf = no walls
                       # (legs whose slopes overlap are then reported as conflicts)
 hp_leg_max = 60.0     # longest approach leg either side of a hairpin arc (m).

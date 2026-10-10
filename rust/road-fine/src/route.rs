@@ -2,7 +2,7 @@
 //! exact evaluation of every segment (route.py's evaluate_route), and self-overlap detection.
 
 use road_cost::macros::{self, BEND_N, HP_N};
-use road_cost::{ACTION_BEND_L, ACTION_BEND_R, ACTION_FILL, ACTION_HP_LEFT, ACTION_HP_RIGHT, ACTION_PRIM};
+use road_cost::{ACTION_BEND_L, ACTION_BEND_R, ACTION_FILL, ACTION_HP_LEFT, ACTION_HP_RIGHT, ACTION_PRIM, ACTION_SWITCH};
 
 use crate::lattice::heading_vectors;
 use crate::problem::Problem;
@@ -15,6 +15,7 @@ pub const SEC_INFEASIBLE: &str = "infeasible";
 pub const HAIRPIN: &str = "hairpin";
 pub const BEND: &str = "bend";
 pub const FILL_CROSSING: &str = "fill_crossing";
+pub const SWITCHBACK: &str = "switchback";
 
 /// An edge of a route: (row, col) of its start node and the action.
 pub type Edge = (i64, i64, usize);
@@ -244,6 +245,12 @@ impl Problem {
                 v
             }
             ACTION_BEND_L | ACTION_BEND_R => self.bend_geometry(r, c, p)?.1,
+            // Out along the landing and back to the junction.
+            ACTION_SWITCH => {
+                let k = (l.s0[p] + l.ns[p] - 1) as usize;
+                let f = l.length[p] / (l.sdr[k].hypot(l.sdc[k]));
+                vec![(rf, cf), (rf + f * l.sdr[k], cf + f * l.sdc[k]), (rf, cf)]
+            }
             _ => self.hairpin_geometry(r, c, p)?.1,
         })
     }
@@ -335,6 +342,49 @@ impl Problem {
                     cost_culvert: det[14], culvert_area_ha: det[15], vertical_travel: 0.0, turning: 0.0, cost_operating: 0.0,
                 }
             }
+            ACTION_SWITCH => {
+                // The level landing: road sections across the sidehill, plus the prism that keeps
+                // it level (at the fill price, as the search prices it).
+                let pts = self.edge_points(r, c, a)?;
+                let zs = |r: i64, c: i64| self.zs[r as usize * nc + c as usize];
+                let z0 = zs(r, c);
+                let z = vec![z0; pts.len()];
+                let (s0, n) = (l.s0[a] as usize, l.ns[a] as usize);
+                let length = l.length[a] * self.res;
+                let w = length / n as f64;
+                let sp = SectionParams::new(p);
+                let (mut a_soil, mut a_rock, mut a_fill, mut spoil, mut extra, mut prism, mut ss, mut dd) =
+                    (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+                for k in s0..s0 + n {
+                    let (fr, fc) = (r as f64 + l.sdr[k], c as f64 + l.sdc[k]);
+                    let ax = bil_clamped(&self.gx, nr, nc, fr, fc);
+                    let ay = bil_clamped(&self.gy, nr, nc, fr, fc);
+                    let g = ax * l.tx[k] + ay * l.ty[k];
+                    let s = (-ax * l.ty[k] + ay * l.tx[k]).abs();
+                    let st = s.hypot(g);
+                    let rho = if self.k_rough > 0.0 { bil_clamped(&self.rough, nr, nc, fr, fc) } else { 0.0 };
+                    let d = if self.k_rough > 0.0 && rho > 0.0 { soil_depth(st + self.k_rough * rho, p) } else { soil_depth(st, p) };
+                    let sec = section(s, d, &sp);
+                    let h = z0 - bil_clamped(&self.zs, nr, nc, fr, fc);
+                    prism += p.w * h.abs() + h * h / p.f_rock;
+                    a_soil += sec.a_soil;
+                    a_rock += sec.a_rock;
+                    a_fill += sec.a_fill;
+                    spoil += sec.spoil;
+                    extra += sec.cost - p.c_base;
+                    ss += s;
+                    dd += d;
+                }
+                let nf = n as f64;
+                Segment {
+                    seq, r, c, action: a, kind: SWITCHBACK, pts, z, length, grade: 0.0, sidehill_slope: ss / nf,
+                    terrain_slope: nan, soil_depth: dd / nf, cut_width: p.w, fill_width: 0.0, cut_catch: 0.0,
+                    fill_toe: 0.0, cut_soil_m3: a_soil * w, cut_rock_m3: a_rock * w, fill_m3: a_fill * w + prism * w,
+                    spoil_m3: spoil * w, borrow_m3: 0.0, cost_base: p.c_base * length,
+                    cost_earthwork: extra * w + self.lam_fill * prism * w, cost_surrogate: surrogate, cost_culvert: 0.0,
+                    culvert_area_ha: 0.0, vertical_travel: 0.0, turning: 0.0, cost_operating: 0.0,
+                }
+            }
             ACTION_FILL => {
                 let pts = self.edge_points(r, c, a)?;
                 let (vol, hmax, amax) = self.fill_crossing_detail(r, c, a);
@@ -411,7 +461,9 @@ impl Problem {
         };
         seg.vertical_travel = self.vertical_travel(r, c, a);
         seg.turning = l.turn[a];
-        seg.cost_operating = p.c_travel * seg.length + p.c_vertical * seg.vertical_travel + p.c_turn * seg.turning;
+        // A switchback's landing is turned in, not traveled along the way.
+        let traveled = if kind == ACTION_SWITCH { 0.0 } else { seg.length };
+        seg.cost_operating = p.c_travel * traveled + p.c_vertical * seg.vertical_travel + p.c_turn * seg.turning;
         Ok(seg)
     }
 

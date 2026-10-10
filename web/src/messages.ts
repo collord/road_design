@@ -40,6 +40,7 @@ export interface FineOut {
           crossing_fill: number; fill_m3: number; borrow_m3: number; surrogate: number };
   length: number;
   hairpins: number;
+  switchbacks: number;
   bends: number;
   fill_crossings: number;
   segments: { kind: string; first: number; length: number; grade: number; cost: number }[];
@@ -67,7 +68,7 @@ export type FromWorker =
    *  and per pad whether it is connected or unreachable and how many pads lie beyond. */
   | { type: "fineNetwork"; runs: { pad: number; uses: number; x: number[]; y: number[]; z: number[] }[];
       connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends: number[]; construction: number;
-      operating: number; phase: string; final: boolean; res: number }
+      operating: number; switchbacks: number; phase: string; final: boolean; res: number }
   /** Each pad's long axis (radians, east = 0, counterclockwise): along the contour at its center. */
   | { type: "padAxes"; angles: number[] }
   | { type: "network"; grid: Grid; pairs: number[]; uses: number[]; connected: boolean[]; unreachable: boolean[];

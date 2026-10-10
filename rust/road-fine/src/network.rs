@@ -229,6 +229,12 @@ impl FineNetwork {
                     let h = self.pads[q].ends[br.end].unwrap().heading;
                     src.push((far.cell, Some(h), self.op_to_root(q), From::Through { pad: q }));
                 }
+                // With reversing switchbacks the pad is a landing: pull in, reverse out of the door
+                // onto a new branch, any way. A rig on the pad blocks it, as for the far end.
+                if prob.params.switchback_landing > 0.0 {
+                    let door = self.pads[q].ends[br.end].unwrap();
+                    src.push((door.cell, None, self.op_to_root(q), From::Through { pad: q }));
+                }
             }
         }
         let mut mask: Vec<bool> = prob.open.iter().map(|&o| o != 0).collect();
@@ -408,6 +414,55 @@ mod tests {
             open: vec![1; nr * nc], rough: Vec::new(),
         };
         Problem::new(inputs, Params::from_json(PARAMS).unwrap(), Macros::Lazy).unwrap()
+    }
+
+    /// A uniform 40% slope rising east: too steep to climb straight at 10%.
+    fn steep(switchback_landing: f64) -> Problem {
+        let (nr, nc, res) = (100usize, 60usize, 5.0);
+        let z: Vec<f64> = (0..nr * nc).map(|k| 1000.0 + 0.4 * (k % nc) as f64 * res).collect();
+        let inputs = FineInputs {
+            nr, nc, res, zs: z.clone(), z_raw: z, gx: vec![0.4; nr * nc], gy: vec![0.0; nr * nc], area: vec![0.0; nr * nc],
+            open: vec![1; nr * nc], rough: Vec::new(),
+        };
+        let json = PARAMS.replacen('{', &format!("{{\"switchback_landing\": {switchback_landing}, "), 1);
+        Problem::new(inputs, Params::from_json(&json).unwrap(), Macros::Lazy).unwrap()
+    }
+
+    #[test]
+    fn steep_ground_is_climbed_by_reversing_switchbacks() {
+        use crate::pipeline::find_route;
+        use crate::route::{HAIRPIN, SWITCHBACK};
+        let mut prob = steep(20.0);
+        // No loop hairpins among the moves; switchbacks instead.
+        assert!(!prob.lat.kind.iter().any(|&k| k == road_cost::ACTION_HP_LEFT as i64));
+        assert!(prob.lat.kind.iter().any(|&k| k == road_cost::ACTION_SWITCH as i64));
+        for (i, &k) in prob.lat.kind.iter().enumerate() {
+            if k == road_cost::ACTION_SWITCH as i64 {
+                let j = prob.lat.rev[i] as usize;
+                assert_eq!(prob.lat.rev[j] as usize, i);
+                assert_eq!(prob.lat.kind[j], k);
+            }
+        }
+        // 80 m up from (50, 5) to (50, 45): at most 10% means 800 m of road on 200 m of ground.
+        let (it, _, _) = find_route(&mut prob, (50, 5), (50, 45), &mut |_, _| true, &mut |_, _| {}).unwrap();
+        let best = it.best.expect("a route up the slope");
+        let n_switch = best.segments.iter().filter(|s| s.kind == SWITCHBACK).count();
+        assert!(n_switch >= 2, "{n_switch} switchbacks");
+        assert!(best.segments.iter().all(|s| s.kind != HAIRPIN));
+        let length: f64 = best.segments.iter().filter(|s| s.kind != SWITCHBACK).map(|s| s.length).sum();
+        assert!(length >= 780.0, "{length} m");
+        // Each landing lies along the contour (north-south here), level, about 20 m.
+        for s in best.segments.iter().filter(|s| s.kind == SWITCHBACK) {
+            let (a, b) = (s.pts[0], s.pts[1]);
+            assert!((b.1 - a.1).abs() < 0.25 * (b.0 - a.0).abs(), "landing {a:?} -> {b:?}");
+            assert!((s.length - 20.0).abs() < 1e-9);
+            assert!(s.cost_earthwork.is_finite() && s.cost_surrogate.is_finite());
+        }
+        // The search's cost and the evaluation agree on the landings.
+        for s in best.segments.iter().filter(|s| s.kind == SWITCHBACK) {
+            let t = s.cost_construction();
+            assert!((t - s.cost_surrogate).abs() <= 0.05 * t + 1.0, "evaluated {t}, searched {}", s.cost_surrogate);
+        }
     }
 
     #[test]

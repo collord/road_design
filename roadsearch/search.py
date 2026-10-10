@@ -139,6 +139,9 @@ class SearchProblem:
 
 def make_problem(t: Terrain, p: Params, hairpins: bool = True, crossings: bool = True,
                  bends: bool = True) -> SearchProblem:
+    if p.switchback_landing > 0:
+        raise ValueError("switchback_landing > 0 (reversing switchbacks) is only in the browser's fine stage "
+                         "(rust/road-fine); the command line has loop hairpins: set it to 0")
     g = t.grid
     open_ = ((t.code == 0) & t.clip).astype(np.uint8)
     gx = np.ascontiguousarray(t.dzdx, dtype=np.float64)

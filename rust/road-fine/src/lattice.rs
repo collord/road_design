@@ -12,7 +12,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::PI;
 
 use lattice_search::{Action, Lattice};
-use road_cost::{Actions, ACTION_BEND_L, ACTION_BEND_R, ACTION_FILL, ACTION_HP_LEFT, ACTION_HP_RIGHT, ACTION_PRIM};
+use road_cost::{
+    Actions, ACTION_BEND_L, ACTION_BEND_R, ACTION_FILL, ACTION_HP_LEFT, ACTION_HP_RIGHT, ACTION_PRIM, ACTION_SWITCH,
+};
 
 const HEADINGS_8: [(i64, i64); 8] = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)];
 const HEADINGS_16: [(i64, i64); 16] = [
@@ -642,6 +644,62 @@ pub fn lattice_arrays(
 }
 
 impl LatticeArrays {
+    /// Add reversing switchbacks: from each heading h to every heading u whose reverse is within
+    /// 90 degrees of h (but not h itself: the legs must part), at the same cell. Each carries the
+    /// samples of its level landing, `landing_cells` long, along the bisector of h and the reverse
+    /// of u (the way past the junction from both legs, so an action and its reverse share it).
+    pub fn add_switchbacks(&mut self, landing_cells: f64) {
+        let n = self.n_theta;
+        let half = n / 2;
+        let ang = heading_angles(n);
+        let n_samples = ((2.0 * landing_cells).ceil() as usize).max(2);
+        let mut out: Vec<Vec<i64>> = (0..n)
+            .map(|h| self.by_heading[h * self.max_out..(h + 1) * self.max_out].iter().copied().take_while(|&a| a >= 0).collect())
+            .collect();
+        let mut index = HashMap::new();
+        for h in 0..n {
+            for u in 0..n {
+                let back = (u + half) % n;
+                let part = wrap_pi(ang[back] - ang[h]);
+                if back == h || part.abs() > 0.5 * PI + 1e-9 {
+                    continue;
+                }
+                let i = self.h0.len();
+                index.insert((h, u), i);
+                let bis = ang[h] + 0.5 * part;
+                let (bx, by) = (bis.cos(), bis.sin());
+                self.h0.push(h as i64);
+                self.h1.push(u as i64);
+                self.dr.push(0);
+                self.dc.push(0);
+                self.length.push(landing_cells);
+                self.rev.push(-1);
+                self.kind.push(ACTION_SWITCH as i64);
+                self.slot.push(0);
+                self.s0.push(self.sdr.len() as i64);
+                self.ns.push(n_samples as i64);
+                for k in 0..n_samples {
+                    let t = (k as f64 + 0.5) / n_samples as f64 * landing_cells;
+                    self.sdr.push(-t * by);
+                    self.sdc.push(t * bx);
+                    self.tx.push(bx);
+                    self.ty.push(by);
+                }
+                self.turn.push(wrap_pi(ang[u] - ang[h]).abs());
+                out[h].push(i as i64);
+            }
+        }
+        // The reverse of h -> u is reverse(u) -> reverse(h).
+        for (&(h, u), &i) in &index {
+            self.rev[i] = index[&((u + half) % n, (h + half) % n)] as i64;
+        }
+        self.max_out = out.iter().map(Vec::len).max().unwrap_or(0);
+        self.by_heading = vec![-1i64; n * self.max_out];
+        for (h, lst) in out.iter().enumerate() {
+            self.by_heading[h * self.max_out..h * self.max_out + lst.len()].copy_from_slice(lst);
+        }
+    }
+
     /// The search lattice and the cost model's action table, keeping the by_heading expansion order.
     pub fn to_search(&self) -> (Lattice, Actions) {
         let usz = |v: &[i64]| v.iter().map(|&x| x as usize).collect::<Vec<_>>();

@@ -238,10 +238,15 @@ impl Problem {
         let channel: Vec<u8> = area.iter().map(|&a| (a >= p.a_min) as u8).collect();
         let is_channel: Vec<bool> = channel.iter().map(|&c| c != 0).collect();
         let chdist = terrain::distance_to(&is_channel, nr, nc, 1.0, 1.0);
-        let hp_slots = hairpin_slots(p, res);
+        // Reversing switchbacks replace loop hairpins: no hairpin actions (all slots unused).
+        let switchbacks = p.switchback_landing > 0.0;
+        let hp_slots = if switchbacks { vec![0; p.n_theta * N_SLOTS] } else { hairpin_slots(p, res) };
         let bend_geo = build_bends(p.n_theta, p.r_min / res)?;
-        let lat = lattice_arrays(p.n_theta, p.r_min / res, Some(&hp_slots), p.l_cross_max / res, Some(&bend_geo),
-                                 p.move_max_cells, p.kink_max_deg)?;
+        let mut lat = lattice_arrays(p.n_theta, p.r_min / res, Some(&hp_slots), p.l_cross_max / res, Some(&bend_geo),
+                                     p.move_max_cells, p.kink_max_deg)?;
+        if switchbacks {
+            lat.add_switchbacks(p.switchback_landing / res);
+        }
         let (lattice, actions) = lat.to_search();
         let (table, table_ng, ds, dg) = cost_table(p);
         let table_cells: Vec<i64> = (0..n).filter(|&k| open[k] != 0).map(|k| k as i64).collect();
