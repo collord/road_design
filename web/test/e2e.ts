@@ -5,6 +5,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import init, * as wasm from "../src/wasm/roadsearch_wasm.js";
+import { Source, Z_UNIT_SCALE } from "../src/source.ts";
 
 const url = process.argv[2] ?? "http://localhost:5173/";
 const candidates = [
@@ -214,18 +216,63 @@ try {
       const [[sx, sy], [gx, gy]] = box;
       let seed = 7;
       const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-      const rows = ["x,y"];
-      for (let i = 0; i < 16; i++) {
+      // NET_PADS: a CSV of pads (x, y in the page's UTM) instead of the 16 seeded over the box.
+      const rows = process.env.NET_PADS ? readFileSync(process.env.NET_PADS, "utf-8").trim().split(String.fromCharCode(10)).map((l) => l.trim()) : ["x,y"];
+      for (let i = 0; i < (process.env.NET_PADS ? 0 : 16); i++) {
         rows.push(`${(Math.min(sx, gx) - 500 + rnd() * (Math.abs(gx - sx) + 1000)).toFixed(1)},` +
                   `${(Math.min(sy, gy) - 500 + rnd() * (Math.abs(gy - sy) + 1000)).toFixed(1)}`);
       }
       const csv = join(profile, "pads.csv");
       writeFileSync(csv, rows.join(String.fromCharCode(10)));
       await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "network"; s.dispatchEvent(new Event("change")); })()`);
+      // NET_ACCESS=m: the access point that far from the lowest pad, the way the drill roads are only
+      // the last approach: of 24 directions away from the other pads, the lowest open spot.
+      if (process.env.NET_ACCESS) {
+        const ex = JSON.parse(readFileSync(new URL("../public/examples.json", import.meta.url), "utf-8")).find((e: { name: string }) => e.name === name);
+        await init({ module_or_path: readFileSync(new URL("../src/wasm/roadsearch_wasm_bg.wasm", import.meta.url)) });
+        const buf = readFileSync(new URL(`../public/${ex.dem}`, import.meta.url));
+        const src = await Source.open(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength), ex.dem);
+        const zs = Z_UNIT_SCALE[ex.params.z_units] ?? 1;
+        const elev = async (x: number, y: number) =>
+          (await src.resampleTo({ x0: x - 5, y1: y + 5, res: 10, w: 1, h: 1 }, wasm.resample, zs))[0];
+        const pts = rows.slice(1).map((r) => r.split(",").map(Number));
+        const zp = await Promise.all(pts.map(([x, y]) => elev(x, y)));
+        const low = zp.indexOf(Math.min(...zp.filter(Number.isFinite)));
+        const [lx, ly] = pts[low];
+        const cx = pts.reduce((a, q) => a + q[0], 0) / pts.length, cy = pts.reduce((a, q) => a + q[1], 0) / pts.length;
+        const d = Number(process.env.NET_ACCESS);
+        let best: [number, number, number] | null = null;
+        for (let k = 0; k < 24; k++) {
+          const t = (2 * Math.PI * k) / 24;
+          const [ax, ay] = [lx + d * Math.cos(t), ly + d * Math.sin(t)];
+          // Away from the others: no pad closer than the lowest one.
+          if (pts.some(([x, y]) => Math.hypot(x - ax, y - ay) < d - 1)) continue;
+          if (Math.hypot(ax - cx, ay - cy) < Math.hypot(lx - cx, ly - cy)) continue;
+          const z = await elev(ax, ay);
+          if (Number.isFinite(z) && (!best || z < best[2])) best = [ax, ay, z];
+        }
+        if (!best) throw new Error("no access point 1 km from the lowest pad");
+        await evaluate(`(() => { const i = document.querySelector("#start-text"); i.value = "${best[0].toFixed(1)}, ${best[1].toFixed(1)}";
+          i.dispatchEvent(new Event("change")); })()`);
+        console.log(`  access point ${d} m from the lowest pad (${zp[low].toFixed(0)} m), at ${best[2].toFixed(0)} m`);
+      }
+      if (process.env.PAD_LANDING) {
+        await evaluate(`document.querySelector("#pad-landing").value = ${JSON.stringify(process.env.PAD_LANDING)}`);
+        console.log(`  switchback landing ${process.env.PAD_LANDING} m`);
+      }
       const doc = await send("DOM.getDocument", {});
       const q = await send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: "#pads-file" });
       await send("DOM.setFileInputFiles", { nodeId: q.result.nodeId, files: [csv] });
-      await until(`/16 pads/.test(document.querySelector("#pads-info").textContent)`, "the pads", 10000);
+      const nPads = rows.length - 1;
+      await until(`/${nPads} pads/.test(document.querySelector("#pads-info").textContent)`, "the pads", 10000);
+      // NET_START=x,y: the access point; ROAD_W (m) and G_MAX (%): the road.
+      for (const [env, id] of [["NET_START", "start-text"], ["ROAD_W", "w"], ["G_MAX", "g_max"]]) {
+        const v = process.env[env];
+        if (!v) continue;
+        await evaluate(`(() => { const i = document.querySelector("#${id}"); i.value = ${JSON.stringify(v)};
+          i.dispatchEvent(new Event("change")); i.dispatchEvent(new Event("input")); })()`);
+        console.log(`  ${id}: ${v}`);
+      }
       await until(`!document.querySelector("#load").disabled`, "load enabled", 10000);
       await evaluate(`document.querySelector("#load").click()`);
       await until(`(${hasError}) || (!document.querySelector("#run").disabled && "ready")`, "the network's area", 120000);
