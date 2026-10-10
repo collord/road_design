@@ -422,6 +422,9 @@ function showFineNetwork(m: Extract<FromWorker, { type: "fineNetwork" }>) {
       (m.ends[i] === 0 ? " (ends on steep ground)" : " (none within the buffer)") : "")).filter(Boolean).join(", ")}</td></tr>` : "") +
     `<tr><td>road length</td><td>${km.toFixed(2)} km</td></tr>` +
     (m.switchbacks ? `<tr><td>switchbacks</td><td>${m.switchbacks}</td></tr>` : "") +
+    (m.beside ? `<tr><td>pads beside the road</td><td>${m.beside}</td></tr>` : "") +
+    `<tr><td>pad benches (in construction)</td><td>${fmt(m.pad_cost)}</td></tr>` +
+    `<tr><td>dead ends (rigs at once)</td><td>${m.dead_ends}</td></tr>` +
     `<tr><td>construction</td><td>${fmt(m.construction)}</td></tr>` +
     `<tr><td>operating (all pads' traffic)</td><td>${fmt(m.operating)}</td></tr>` +
     `<tr><td>total</td><td>${fmt(m.construction + m.operating)}</td></tr>` +
@@ -618,7 +621,9 @@ $("refine").addEventListener("click", () => {
     clearFine();
     const [length, width] = padSize();
     send({ type: "refineNetwork", params: runParams(), res, buffer: Number($<HTMLInputElement>("fine-buffer").value) || 300,
-           b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))), length, width });
+           b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))), length, width,
+           beside: $<HTMLInputElement>("pad-beside").checked,
+           rigs: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-rigs").value) || 0)) });
     return;
   }
   send({ type: "refine", params: params(), res, which: $<HTMLSelectElement>("fine-which").value as "best" | "all",

@@ -256,6 +256,15 @@ try {
           i.dispatchEvent(new Event("change")); })()`);
         console.log(`  access point ${d} m from the lowest pad (${zp[low].toFixed(0)} m), at ${best[2].toFixed(0)} m`);
       }
+      // PAD_BESIDE=0/1 and RIGS=n: pads beside the road, and rigs to design for.
+      if (process.env.PAD_BESIDE) {
+        await evaluate(`document.querySelector("#pad-beside").checked = ${process.env.PAD_BESIDE === "1"}`);
+        console.log(`  pads beside the road: ${process.env.PAD_BESIDE === "1" ? "allowed" : "no"}`);
+      }
+      if (process.env.RIGS) {
+        await evaluate(`document.querySelector("#pad-rigs").value = ${JSON.stringify(process.env.RIGS)}`);
+        console.log(`  rigs: ${process.env.RIGS}`);
+      }
       if (process.env.PAD_LANDING) {
         await evaluate(`document.querySelector("#pad-landing").value = ${JSON.stringify(process.env.PAD_LANDING)}`);
         console.log(`  switchback landing ${process.env.PAD_LANDING} m`);
@@ -302,8 +311,14 @@ try {
         const designs = times.filter((t) => /designs/.test(t)).map(secs).reduce((a, b) => a + b, 0);
         const searches = times.filter((t) => /: (improve: )?pad \d+:/.test(t)).map(secs).reduce((a, b) => a + b, 0);
         console.log(`  fine network time: designs ${designs.toFixed(0)} s, pad searches ${searches.toFixed(0)} s`);
-        const mostFine = Number(fineRows.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
-        if (!(mostFine <= 2)) throw new Error(`a pad has ${mostFine} pads beyond it`);
+        // The pad rule, or with rigs at most that many dead ends.
+        if (Number(process.env.RIGS) > 0) {
+          const dead = Number(fineRows.find((r) => r.startsWith("dead ends"))?.split(": ")[1]);
+          if (!(dead <= Number(process.env.RIGS))) throw new Error(`${dead} dead ends for ${process.env.RIGS} rigs`);
+        } else {
+          const mostFine = Number(fineRows.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
+          if (!(mostFine <= 2)) throw new Error(`a pad has ${mostFine} pads beyond it`);
+        }
         await shot(`${name}-fine-network`);
       }
       await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "route"; s.dispatchEvent(new Event("change")); })()`);

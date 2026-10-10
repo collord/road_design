@@ -240,14 +240,16 @@ impl FineSession {
     /// col, cell coordinates), `length` x `width` m each with the long axis along the contour, at
     /// most `b` pads beyond any pad. Returns each pad's long axis (radians, east = 0).
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn network_begin(&mut self, ar: i32, ac: i32, pad_rows: &[f64], pad_cols: &[f64], length: f64, width: f64,
-                         b: usize) -> Result<Vec<f64>, JsValue> {
+                         b: usize, alongside: bool, rigs: usize) -> Result<Vec<f64>, JsValue> {
         let (nr, nc) = (self.prob.nr as i32, self.prob.nc as i32);
         if ar < 0 || ac < 0 || ar >= nr || ac >= nc {
             return Err(js_err("the access point is outside the network's grid"));
         }
         let centers: Vec<(f64, f64)> = pad_rows.iter().zip(pad_cols).map(|(&r, &c)| (r, c)).collect();
-        let net = FineNetwork::new(&mut self.prob, (ar as i64, ac as i64), &centers, length, width, b);
+        let mut net = FineNetwork::new(&mut self.prob, (ar as i64, ac as i64), &centers, length, width, b, alongside);
+        net.rigs = rigs;
         let axes = net.pads.iter().map(|p| p.axis).collect();
         self.network = Some(net);
         Ok(axes)
@@ -295,6 +297,11 @@ impl FineSession {
             operating: f64,
             /// Reversing switchbacks on the roads (not counting pads used as landings).
             switchbacks: usize,
+            /// Pads beside the road, and all pads' benches.
+            beside: usize,
+            pad_cost: f64,
+            /// Dead ends of the network (branches no other continues from).
+            dead_ends: usize,
         }
         let uses = net.segment_uses();
         let mut runs: Vec<Run> = Vec::new();
@@ -326,6 +333,9 @@ impl FineSession {
             operating,
             switchbacks: net.branches.iter().flatten().flat_map(|b| &b.segments)
                 .filter(|s| s.kind == road_fine::route::SWITCHBACK).count(),
+            beside: net.branches.iter().flatten().filter(|b| b.beside).count(),
+            pad_cost: net.branches.iter().flatten().map(|b| b.pad_cost).sum(),
+            dead_ends: net.dead_ends(),
         };
         serde_wasm_bindgen::to_value(&st).map_err(js_err)
     }

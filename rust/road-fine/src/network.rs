@@ -12,6 +12,18 @@
 //!
 //! The pad rule: a rig on a pad blocks the road through it, so a pad may lie on the way to at most
 //! `b` other pads.
+//!
+//! Pads are level benches, priced with the road's section model (earthwork only): a pad at the end
+//! of its branch is a bench of its own. With `alongside`, a pad may instead sit beside the road,
+//! which runs along its long side at its level: the road's bench widened by the pad's width, priced
+//! as the widening (on steep or rocky ground a wider bench cuts much deeper, so it can cost more
+//! than a separate pad). A road beside a pad is not blocked by its rig, and branches may go on from
+//! there. Each pad's branch is searched both ways and the cheaper kept.
+//!
+//! With `rigs` = N > 0 the pad rule gives way to N branches: roads may run through any number of
+//! pads, and the network has at most N dead ends, so N rigs can work at once, each from the far
+//! end of its branch back toward the access point. Once there are N, a pad joins only by carrying
+//! a branch on past its last pad, not by forking a new one.
 
 use std::collections::HashMap;
 
@@ -22,6 +34,7 @@ use crate::lattice::heading_angles;
 use crate::pipeline::{FineProgress, Report, PROGRESS_EVERY};
 use crate::problem::Problem;
 use crate::route::{Edge, Segment};
+use crate::section::{section, SectionParams};
 
 /// One end of a pad: the cell a road arrives at and its heading into the pad.
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +52,12 @@ pub struct Pad {
     pub ends: [Option<End>; 2],
     /// Cells of the footprint.
     pub cells: Vec<(i64, i64)>,
+    /// Where a road passes beside it: cells off each long side, heading along the axis either way.
+    pub sides: Vec<End>,
+    /// Earthwork of its bench alone, and of widening a road's bench by it (infinite where the
+    /// ground is too steep for the bench).
+    pub cost_alone: f64,
+    pub cost_beside: f64,
 }
 
 /// Where a branch leaves the network.
@@ -54,8 +73,12 @@ pub enum From {
 #[derive(Clone, Debug)]
 pub struct Branch {
     pub from: From,
-    /// The end of the pad it arrives at.
+    /// The end of the pad it arrives at, or (beside) its entry in the pad's sides.
     pub end: usize,
+    /// Arriving beside the pad rather than at an end.
+    pub beside: bool,
+    /// The pad's bench (alone, or the widening), included in construction.
+    pub pad_cost: f64,
     pub edges: Vec<Edge>,
     pub segments: Vec<Segment>,
     /// Operating cost from the branch's start to each of its nodes (len edges + 1).
@@ -67,6 +90,10 @@ pub struct FineNetwork {
     pub root: (i64, i64),
     pub pads: Vec<Pad>,
     pub b: usize,
+    /// Pads may sit beside the road (see the module docs).
+    pub alongside: bool,
+    /// Rigs to design for (see the module docs); 0: the pad rule (`b`).
+    pub rigs: usize,
     /// Per pad: its branch, once connected.
     pub branches: Vec<Option<Branch>>,
     pub unreachable: Vec<bool>,
@@ -89,8 +116,9 @@ fn nearest_heading(angles: &[f64], a: f64) -> usize {
 
 impl FineNetwork {
     /// Pads at (row, col) centers, `length` x `width` m, long axis along the contour of the
-    /// smoothed DEM; their footprints closed in prob.open.
-    pub fn new(prob: &mut Problem, root: (i64, i64), centers: &[(f64, f64)], length: f64, width: f64, b: usize) -> Self {
+    /// smoothed DEM; their footprints closed in prob.open. `alongside`: pads may sit beside the road.
+    pub fn new(prob: &mut Problem, root: (i64, i64), centers: &[(f64, f64)], length: f64, width: f64, b: usize,
+               alongside: bool) -> Self {
         let (nr, nc, res) = (prob.nr as i64, prob.nc as i64, prob.res);
         let angles = heading_angles(prob.n_theta());
         let mut pads = Vec::new();
@@ -122,15 +150,48 @@ impl FineNetwork {
                 let heading = nearest_heading(&angles, (-s * uy).atan2(-s * ux));
                 ends[e] = Some(End { cell: (er, ec), heading });
             }
-            pads.push(Pad { center: (r, c), axis, ends, cells });
+            // The bench: across the slope at the center, with the soil there.
+            let (s, d) = (gx.hypot(gy), prob.soil[k]);
+            let bench = |w: f64| {
+                let mut sp = SectionParams::new(&prob.params);
+                sp.w = w;
+                section(s, d, &sp).cost
+            };
+            let road_w = prob.params.w;
+            let cost_alone = length * (bench(width) - prob.params.c_base);
+            let cost_beside = length * (bench(road_w + width) - bench(road_w));
+            pads.push(Pad { center: (r, c), axis, ends, cells, sides: Vec::new(), cost_alone, cost_beside });
+        }
+        // Beside each long side: the road's centerline half its width and half the pad's out.
+        for p in &mut pads {
+            let (ux, uy) = (p.axis.cos(), p.axis.sin());
+            let (h_fwd, h_back) = (nearest_heading(&angles, p.axis), nearest_heading(&angles, p.axis + std::f64::consts::PI));
+            for s in [1.0f64, -1.0] {
+                let mut d = 0.5 * (width + prob.params.w);
+                for _ in 0..4 {
+                    let (sr, sc) = ((p.center.0 - s * ux * d / res).round() as i64, (p.center.1 - s * uy * d / res).round() as i64);
+                    if sr < 0 || sc < 0 || sr >= nr || sc >= nc {
+                        break;
+                    }
+                    if p.cells.contains(&(sr, sc)) {
+                        d += res;
+                        continue;
+                    }
+                    for h in [h_fwd, h_back] {
+                        p.sides.push(End { cell: (sr, sc), heading: h });
+                    }
+                    break;
+                }
+            }
         }
         for p in &pads {
             for &(r, c) in &p.cells {
                 prob.open[(r * nc + c) as usize] = 0;
             }
         }
-        // An end on closed ground cannot be reached.
+        // An end or side on closed ground cannot be reached.
         for p in &mut pads {
+            p.sides.retain(|e| prob.open[(e.cell.0 * nc + e.cell.1) as usize] != 0);
             for e in p.ends.iter_mut() {
                 if let Some(end) = e {
                     if prob.open[(end.cell.0 * nc + end.cell.1) as usize] == 0 {
@@ -140,7 +201,7 @@ impl FineNetwork {
             }
         }
         let n = pads.len();
-        FineNetwork { root, pads, b, branches: vec![None; n], unreachable: vec![false; n] }
+        FineNetwork { root, pads, b, alongside, rigs: 0, branches: vec![None; n], unreachable: vec![false; n] }
     }
 
     /// Operating cost from the start of pad p's branch to the access point.
@@ -192,6 +253,11 @@ impl FineNetwork {
         (c, o)
     }
 
+    /// Connected pads no other branch continues from: the network's dead ends.
+    pub fn dead_ends(&self) -> usize {
+        (0..self.pads.len()).filter(|&q| self.branches[q].is_some() && self.dependents(q) == 0).count()
+    }
+
     /// Pads whose branch starts on pad p's branch or out of pad p.
     fn dependents(&self, p: usize) -> usize {
         self.branches
@@ -201,27 +267,71 @@ impl FineNetwork {
             .count()
     }
 
-    /// The cheapest branch from the network to pad p, or None.
+    /// Operating cost from where a branch would start to the access point.
+    fn op_from(&self, from: From) -> f64 {
+        match from {
+            From::Root => 0.0,
+            From::Branch { pad, node } => self.op_at_start(pad) + self.branches[pad].as_ref().unwrap().op[node],
+            From::Through { pad } => self.op_to_root(pad),
+        }
+    }
+
+    /// The cheapest branch from the network to pad p (its bench included), or None: to an end,
+    /// or with `alongside` also beside it, whichever costs the network less.
     fn search(&self, prob: &Problem, p: usize, stage: &str, report: &mut Report) -> Option<Branch> {
-        let goals: Vec<End> = self.pads[p].ends.iter().flatten().copied().collect();
+        let pad = &self.pads[p];
+        let ends: Vec<End> = pad.ends.iter().flatten().copied().collect();
+        let mut best: Option<(f64, Branch)> = None;
+        let mut consider = |b: Option<Branch>, me: &Self| {
+            if let Some(b) = b {
+                let total = b.construction + me.op_from(b.from) + b.op.last().copied().unwrap_or(0.0);
+                if total.is_finite() && best.as_ref().is_none_or(|(t, _)| total < *t) {
+                    best = Some((total, b));
+                }
+            }
+        };
+        if pad.cost_alone.is_finite() {
+            consider(self.search_to(prob, p, &ends, false, stage, report), self);
+        }
+        if self.alongside && pad.cost_beside.is_finite() && !pad.sides.is_empty() {
+            consider(self.search_to(prob, p, &pad.sides, true, &format!("{stage}, beside"), report), self);
+        }
+        best.map(|(_, b)| b)
+    }
+
+    /// The cheapest branch from the network to one of `goals` of pad p (beside it or at an end).
+    fn search_to(&self, prob: &Problem, p: usize, goals: &[End], beside: bool, stage: &str, report: &mut Report)
+                 -> Option<Branch> {
         if goals.is_empty() {
             return None;
         }
         let (nr, nc, nh) = (prob.nr, prob.nc, prob.n_theta());
         let beyond = self.beyond();
-        let ok = |q: usize| beyond[q] < self.b;
+        let ok = |q: usize| self.rigs > 0 || beyond[q] < self.b;
+        // With N rigs and N dead ends already, only carrying a branch on past its last pad.
+        let leaf = |q: usize| self.branches[q].is_some() && self.dependents(q) == 0;
+        let full = self.rigs > 0 && (0..self.pads.len()).filter(|&q| leaf(q)).count() >= self.rigs;
         // Sources: (cell, heading or all, cost, where).
-        let mut src: Vec<((i64, i64), Option<usize>, f64, From)> = vec![(self.root, None, 0.0, From::Root)];
+        let mut src: Vec<((i64, i64), Option<usize>, f64, From)> =
+            if full { Vec::new() } else { vec![(self.root, None, 0.0, From::Root)] };
         for q in 0..self.pads.len() {
             let Some(br) = self.branches[q].as_ref() else { continue };
-            if !self.pads_before(q).into_iter().all(ok) {
+            if !self.pads_before(q).into_iter().all(ok) || (full && !leaf(q)) {
                 continue;
             }
             let start = self.op_at_start(q);
-            // Interior nodes (not the junction itself, not the pad's door).
-            for node in 1..br.edges.len() {
+            // Interior nodes (not the junction itself, not the pad's door): forks.
+            for node in (1..br.edges.len()).filter(|_| !full) {
                 let (r, c, _) = br.edges[node];
                 src.push(((r, c), None, start + br.op[node], From::Branch { pad: q, node }));
+            }
+            // Beside a pad the road goes on: its last node is a junction like any other.
+            if br.beside {
+                let node = br.edges.len();
+                let &(r, c, a) = br.edges.last().unwrap();
+                let cell = (r + prob.lat.dr[a], c + prob.lat.dc[a]);
+                src.push((cell, None, start + br.op[node], From::Branch { pad: q, node }));
+                continue;
             }
             // Through the pad, out of its far end, continuing the way it arrived.
             if ok(q) {
@@ -241,7 +351,7 @@ impl FineNetwork {
         for s in &src {
             mask[(s.0 .0 as usize) * nc + s.0 .1 as usize] = true;
         }
-        for g in &goals {
+        for g in goals {
             mask[(g.cell.0 as usize) * nc + g.cell.1 as usize] = true;
         }
         let index = CellIndex::from_mask(nr, nc, &mask);
@@ -260,7 +370,7 @@ impl FineNetwork {
         }
         // The goal: arriving at an end heading into the pad (or one heading bin either side).
         let mut goal_states = Vec::new();
-        for g in &goals {
+        for g in goals {
             for dh in [0, 1, nh - 1] {
                 if let Some(s) = index.state(g.cell.0, g.cell.1, ((g.heading + dh) % nh) as u16, nh) {
                     goal_states.push(s);
@@ -313,14 +423,19 @@ impl FineNetwork {
         }
         let cell = index.cell((gs / nh as u64) as u32);
         let cell = (cell.0 as i64, cell.1 as i64);
-        let end = self.pads[p].ends.iter().position(|e| e.map(|e| e.cell) == Some(cell)).unwrap_or(0);
+        let end = if beside {
+            goals.iter().position(|e| e.cell == cell).unwrap_or(0)
+        } else {
+            self.pads[p].ends.iter().position(|e| e.map(|e| e.cell) == Some(cell)).unwrap_or(0)
+        };
         let segments = prob.evaluate_route(&edges).ok()?;
         let mut op = vec![0.0];
         for sg in &segments {
             op.push(op.last().unwrap() + sg.cost_operating);
         }
-        let construction = segments.iter().map(|s| s.cost_construction()).sum();
-        Some(Branch { from, end, edges, segments, op, construction })
+        let pad_cost = if beside { self.pads[p].cost_beside } else { self.pads[p].cost_alone };
+        let construction = segments.iter().map(|s| s.cost_construction()).sum::<f64>() + pad_cost;
+        Some(Branch { from, end, beside, pad_cost, edges, segments, op, construction })
     }
 
     /// Connect pad p (the stage names the progress reports). False if no branch reaches it.
@@ -429,6 +544,74 @@ mod tests {
     }
 
     #[test]
+    fn pads_in_a_row_share_a_road_beside_them() {
+        // Three pads along the contour (north-south on this slope), no pad may block another.
+        let centers = [(30.0, 60.0), (60.0, 60.0), (90.0, 60.0)];
+        let run = |alongside: bool| {
+            let mut prob = slope();
+            let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 0, alongside);
+            let mut report = |_: &str, _: &FineProgress| true;
+            for p in 0..centers.len() {
+                assert!(net.connect(&prob, p, &mut report), "pad {p}");
+            }
+            net.improve(&prob, &mut report);
+            assert!(net.beyond().iter().all(|&b| b == 0));
+            net
+        };
+        let ends = run(false);
+        let beside = run(true);
+        let pad = &beside.pads[0];
+        assert!(pad.cost_alone > 0.0 && pad.cost_beside.is_finite());
+        assert_eq!(pad.sides.len(), 4);
+        // Every pad's bench is paid for either way.
+        for net in [&ends, &beside] {
+            for b in net.branches.iter().flatten() {
+                assert!(b.pad_cost > 0.0);
+            }
+        }
+        // The row is served by a road beside a pad that others branch from (no pad blocks another).
+        assert!(beside.branches.iter().flatten().any(|b| b.beside));
+        let (c_ends, o_ends) = ends.cost();
+        let (c_beside, o_beside) = beside.cost();
+        assert!(c_beside + o_beside < c_ends + o_ends, "beside {c_beside} + {o_beside} vs ends {c_ends} + {o_ends}");
+        // On 40% ground a bench costs far more than on 5%, and widening the road's more than a
+        // pad of its own.
+        let mut steep = steep(20.0);
+        let net = FineNetwork::new(&mut steep, (50, 5), &[(50.0, 30.0)], 15.0, 10.0, 0, true);
+        let sp = &net.pads[0];
+        assert!(sp.cost_alone > 20.0 * pad.cost_alone && sp.cost_beside > sp.cost_alone,
+                "40%: alone {} widening {}; 5%: alone {} widening {}", sp.cost_alone, sp.cost_beside, pad.cost_alone,
+                pad.cost_beside);
+    }
+
+    #[test]
+    fn one_rig_makes_one_branch_through_the_pads() {
+        let centers = [(30.0, 60.0), (60.0, 60.0), (90.0, 60.0), (60.0, 100.0)];
+        let mut prob = slope();
+        let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 0, false);
+        net.rigs = 1;
+        let mut report = |_: &str, _: &FineProgress| true;
+        for p in 0..centers.len() {
+            assert!(net.connect(&prob, p, &mut report), "pad {p}");
+            assert_eq!(net.dead_ends(), 1);
+        }
+        net.improve(&prob, &mut report);
+        assert_eq!(net.dead_ends(), 1);
+        // One chain: the pads lie on the way to one another, three of them to the last.
+        let mut beyond = net.beyond();
+        beyond.sort();
+        assert_eq!(beyond, vec![0, 1, 2, 3]);
+        // Two rigs: two dead ends at most.
+        let mut prob = slope();
+        let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 0, false);
+        net.rigs = 2;
+        for p in 0..centers.len() {
+            assert!(net.connect(&prob, p, &mut report), "pad {p}");
+            assert!(net.dead_ends() <= 2);
+        }
+    }
+
+    #[test]
     fn steep_ground_is_climbed_by_reversing_switchbacks() {
         use crate::pipeline::find_route;
         use crate::route::{HAIRPIN, SWITCHBACK};
@@ -469,7 +652,7 @@ mod tests {
     fn pads_are_reached_along_their_long_axis_and_footprints_stay_clear() {
         let mut prob = slope();
         let centers = [(30.0, 90.0), (90.0, 90.0), (90.0, 30.0)];
-        let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 2);
+        let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 2, false);
         // Contours run north-south: the long axis is north (or south).
         for p in &net.pads {
             assert!((p.axis.sin().abs() - 1.0).abs() < 1e-9, "{}", p.axis);
@@ -506,7 +689,7 @@ mod tests {
         let separate: f64 = (0..centers.len())
             .map(|p| {
                 let mut pr = slope();
-                let mut lone = FineNetwork::new(&mut pr, (10, 10), &centers[p..p + 1], 15.0, 10.0, 2);
+                let mut lone = FineNetwork::new(&mut pr, (10, 10), &centers[p..p + 1], 15.0, 10.0, 2, false);
                 let mut report = |_: &str, _: &FineProgress| true;
                 assert!(lone.connect(&pr, 0, &mut report));
                 lone.cost().0

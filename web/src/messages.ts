@@ -7,7 +7,8 @@ export type ToWorker =
   | { type: "load"; start: [number, number]; goal: [number, number] | null; pads: [number, number][]; margin: number;
       res: number; maxCells: number; zUnits: string; roughMaxRes: number }
   | { type: "network"; params: Params; b: number; refine: number }
-  | { type: "refineNetwork"; params: Params; res: number; buffer: number; b: number; length: number; width: number }
+  | { type: "refineNetwork"; params: Params; res: number; buffer: number; b: number; length: number; width: number;
+      beside: boolean; rigs: number }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
@@ -68,7 +69,8 @@ export type FromWorker =
    *  and per pad whether it is connected or unreachable and how many pads lie beyond. */
   | { type: "fineNetwork"; runs: { pad: number; uses: number; x: number[]; y: number[]; z: number[] }[];
       connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends: number[]; construction: number;
-      operating: number; switchbacks: number; phase: string; final: boolean; res: number }
+      operating: number; switchbacks: number; beside: number; pad_cost: number; dead_ends: number; phase: string;
+      final: boolean; res: number }
   /** Each pad's long axis (radians, east = 0, counterclockwise): along the contour at its center. */
   | { type: "padAxes"; angles: number[] }
   | { type: "network"; grid: Grid; pairs: number[]; uses: number[]; connected: boolean[]; unreachable: boolean[];
