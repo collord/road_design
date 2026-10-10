@@ -309,7 +309,12 @@ function buttonsRefineState() {
   if (!busy) $<HTMLButtonElement>("refine").disabled = mode === "network" ? !haveNetwork : !haveCorridors;
 }
 
+/** Drill pad roads' maximum grade (%), the network mode's default; the route grade waits meanwhile. */
+const PAD_ROAD_GRADE = "15";
+let routeGrade: string | null = null;
+
 function setMode(m: "route" | "network") {
+  const switching = m !== mode;
   mode = m;
   const net = m === "network";
   $("pads-box").hidden = !net;
@@ -326,6 +331,15 @@ function setMode(m: "route" | "network") {
   const margin = $<HTMLInputElement>("margin");
   if (net && margin.value === "10") margin.value = "2";
   if (!net && margin.value === "2") margin.value = "10";
+  // Pad roads at their own grade; the route's back when leaving.
+  const grade = $<HTMLInputElement>("g_max");
+  if (switching && net) {
+    routeGrade = grade.value;
+    grade.value = PAD_ROAD_GRADE;
+  } else if (switching && routeGrade !== null) {
+    grade.value = routeGrade;
+    routeGrade = null;
+  }
   markers.goal?.setStyle({ opacity: net ? 0 : 1, fillOpacity: net ? 0 : 1 });
   estimate();
 }
@@ -507,7 +521,10 @@ function params(): Params {
 }
 
 function setControls(p: Params) {
-  $<HTMLInputElement>("g_max").value = String(+(100 * (p.g_max as number)).toFixed(2));
+  const grade = String(+(100 * (p.g_max as number)).toFixed(2));
+  // In network mode the pad roads' grade stays; the example's waits for route mode.
+  if (mode === "network") routeGrade = grade;
+  else $<HTMLInputElement>("g_max").value = grade;
   $<HTMLInputElement>("w").value = String(p.w);
   $<HTMLInputElement>("res").value = "";
   $<HTMLInputElement>("margin").value = String((p.tin_margin as number ?? 10000) / 1000);
