@@ -23,7 +23,10 @@
 //! With `rigs` = N > 0 the pad rule gives way to N branches: roads may run through any number of
 //! pads, and the network has at most N dead ends, so N rigs can work at once, each from the far
 //! end of its branch back toward the access point. Once there are N, a pad joins only by carrying
-//! a branch on past its last pad, not by forking a new one.
+//! a branch on past its last pad, not by forking a new one. For a grid of holes, rig_pieces lays
+//! the branches out as a person would: rows along the contour, linked end to end as a serpentine
+//! from the bottom up, cut into N runs; each run's first pad joins the network where cheapest and
+//! the rest carry its branch on, pad after pad (each rig then drills its run from the top down).
 
 use std::collections::HashMap;
 
@@ -94,6 +97,8 @@ pub struct FineNetwork {
     pub alongside: bool,
     /// Rigs to design for (see the module docs); 0: the pad rule (`b`).
     pub rigs: usize,
+    /// While set, a branch may only carry this pad's branch on (past it, or reversing out of it).
+    pub only_from: Option<usize>,
     /// Per pad: its branch, once connected.
     pub branches: Vec<Option<Branch>>,
     pub unreachable: Vec<bool>,
@@ -201,7 +206,9 @@ impl FineNetwork {
             }
         }
         let n = pads.len();
-        FineNetwork { root, pads, b, alongside, rigs: 0, branches: vec![None; n], unreachable: vec![false; n] }
+        FineNetwork {
+            root, pads, b, alongside, rigs: 0, only_from: None, branches: vec![None; n], unreachable: vec![false; n],
+        }
     }
 
     /// Operating cost from the start of pad p's branch to the access point.
@@ -251,6 +258,94 @@ impl FineNetwork {
         let c = self.branches.iter().flatten().map(|b| b.construction).sum();
         let o = (0..self.pads.len()).filter(|&p| self.branches[p].is_some()).map(|p| self.op_to_root(p)).sum();
         (c, o)
+    }
+
+    /// The pads in rows along the contour, linked end to end as a serpentine from the bottom row up
+    /// (starting at the end nearer the access point), cut into `rigs` runs of about equal size.
+    /// Rows run the way each pad's nearest neighbor lies (the commonest such direction); a row
+    /// ends where the next pad across that direction is more than half a spacing further on.
+    pub fn rig_pieces(&self, prob: &Problem) -> Vec<Vec<usize>> {
+        let n = self.pads.len();
+        if n == 0 || self.rigs == 0 {
+            return Vec::new();
+        }
+        // East, north in cells.
+        let xy: Vec<(f64, f64)> = self.pads.iter().map(|p| (p.center.1, -p.center.0)).collect();
+        let (mut sx, mut sy, mut gx, mut gy) = (0.0, 0.0, 0.0, 0.0);
+        let mut nn = Vec::with_capacity(n);
+        for i in 0..n {
+            let j = (0..n).filter(|&j| j != i)
+                .min_by(|&a, &b| {
+                    let d = |j: usize| (xy[j].0 - xy[i].0).hypot(xy[j].1 - xy[i].1);
+                    d(a).total_cmp(&d(b))
+                });
+            if let Some(j) = j {
+                let (dx, dy) = (xy[j].0 - xy[i].0, xy[j].1 - xy[i].1);
+                let a = 2.0 * dy.atan2(dx);
+                sx += a.cos();
+                sy += a.sin();
+                nn.push(dx.hypot(dy));
+            }
+            let (r, c) = (self.pads[i].center.0.round() as usize, self.pads[i].center.1.round() as usize);
+            let k = r.min(prob.nr - 1) * prob.nc + c.min(prob.nc - 1);
+            gx += prob.gx[k];
+            gy += prob.gy[k];
+        }
+        let along = 0.5 * sy.atan2(sx);
+        let (ax, ay) = (along.cos(), along.sin());
+        // Across the rows, uphill.
+        let (mut ux, mut uy) = (-ay, ax);
+        if ux * gx + uy * gy < 0.0 {
+            ux = -ux;
+            uy = -uy;
+        }
+        nn.sort_by(f64::total_cmp);
+        let spacing = if nn.is_empty() { 1.0 } else { nn[nn.len() / 2] };
+        let mut order: Vec<usize> = (0..n).collect();
+        let v = |i: usize| xy[i].0 * ux + xy[i].1 * uy;
+        let u = |i: usize| xy[i].0 * ax + xy[i].1 * ay;
+        order.sort_by(|&a, &b| v(a).total_cmp(&v(b)));
+        let mut rows: Vec<Vec<usize>> = vec![vec![order[0]]];
+        for w in order.windows(2) {
+            if v(w[1]) - v(w[0]) > 0.5 * spacing {
+                rows.push(Vec::new());
+            }
+            rows.last_mut().unwrap().push(w[1]);
+        }
+        for r in &mut rows {
+            r.sort_by(|&a, &b| u(a).total_cmp(&u(b)));
+        }
+        // The bottom row starts at the end nearer the access point; rows then alternate.
+        let root = (self.root.1 as f64, -(self.root.0 as f64));
+        let dist = |i: usize| (xy[i].0 - root.0).hypot(xy[i].1 - root.1);
+        let mut flip = dist(*rows[0].last().unwrap()) < dist(rows[0][0]);
+        let mut snake = Vec::with_capacity(n);
+        for r in rows {
+            if flip {
+                snake.extend(r.iter().rev());
+            } else {
+                snake.extend(r.iter());
+            }
+            flip = !flip;
+        }
+        let k = self.rigs.min(n);
+        (0..k).map(|i| snake[i * n / k..(i + 1) * n / k].to_vec()).collect()
+    }
+
+    /// Connect pad p by carrying pad `prev`'s branch on (past it, or reversing out of it); if no
+    /// such branch reaches it, by the cheapest branch from anywhere. False if none reaches it.
+    pub fn connect_after(&mut self, prob: &Problem, p: usize, prev: usize, report: &mut Report) -> bool {
+        self.only_from = Some(prev);
+        let b = self.search(prob, p, &format!("pad {} after {}", p + 1, prev + 1), report);
+        self.only_from = None;
+        match b {
+            Some(b) => {
+                self.branches[p] = Some(b);
+                self.unreachable[p] = false;
+                true
+            }
+            None => self.connect(prob, p, report),
+        }
     }
 
     /// Connected pads no other branch continues from: the network's dead ends.
@@ -312,16 +407,20 @@ impl FineNetwork {
         let leaf = |q: usize| self.branches[q].is_some() && self.dependents(q) == 0;
         let full = self.rigs > 0 && (0..self.pads.len()).filter(|&q| leaf(q)).count() >= self.rigs;
         // Sources: (cell, heading or all, cost, where).
+        let forced = self.only_from;
         let mut src: Vec<((i64, i64), Option<usize>, f64, From)> =
-            if full { Vec::new() } else { vec![(self.root, None, 0.0, From::Root)] };
+            if full || forced.is_some() { Vec::new() } else { vec![(self.root, None, 0.0, From::Root)] };
         for q in 0..self.pads.len() {
             let Some(br) = self.branches[q].as_ref() else { continue };
+            if forced.is_some_and(|f| f != q) {
+                continue;
+            }
             if !self.pads_before(q).into_iter().all(ok) || (full && !leaf(q)) {
                 continue;
             }
             let start = self.op_at_start(q);
             // Interior nodes (not the junction itself, not the pad's door): forks.
-            for node in (1..br.edges.len()).filter(|_| !full) {
+            for node in (1..br.edges.len()).filter(|_| !full && forced.is_none()) {
                 let (r, c, _) = br.edges[node];
                 src.push(((r, c), None, start + br.op[node], From::Branch { pad: q, node }));
             }
@@ -608,6 +707,44 @@ mod tests {
         for p in 0..centers.len() {
             assert!(net.connect(&prob, p, &mut report), "pad {p}");
             assert!(net.dead_ends() <= 2);
+        }
+    }
+
+    #[test]
+    fn a_grid_is_drilled_by_rigs_along_its_rows() {
+        // Rows along the contour (north-south here), 12 cells apart up the slope (east), 4 holes a
+        // row 12 cells apart, alternate rows offset by half.
+        let mut centers = Vec::new();
+        for (j, c) in [40.0, 52.0, 64.0].into_iter().enumerate() {
+            for i in 0..4 {
+                centers.push((30.0 + 12.0 * i as f64 + if j % 2 == 1 { 6.0 } else { 0.0 }, c));
+            }
+        }
+        let mut prob = slope();
+        let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 0, false);
+        net.rigs = 2;
+        let pieces = net.rig_pieces(&prob);
+        assert_eq!(pieces.iter().map(Vec::len).collect::<Vec<_>>(), vec![6, 6]);
+        let snake: Vec<usize> = pieces.concat();
+        // Bottom row first, from its end nearer the access point (north-west), then back along the next.
+        assert_eq!(snake[..4], [0, 1, 2, 3]);
+        assert_eq!(snake[4..8], [7, 6, 5, 4]);
+        assert_eq!(snake[8..], [8, 9, 10, 11]);
+        let mut report = |_: &str, _: &FineProgress| true;
+        for piece in &pieces {
+            assert!(net.connect(&prob, piece[0], &mut report));
+            for w in piece.windows(2) {
+                assert!(net.connect_after(&prob, w[1], w[0], &mut report), "pad {}", w[1]);
+            }
+        }
+        assert!(net.branches.iter().all(Option::is_some));
+        assert!(net.dead_ends() <= 2, "{} dead ends", net.dead_ends());
+        // Each run is a chain: every pad after the first carries the previous one's branch on.
+        for piece in &pieces {
+            for w in piece.windows(2) {
+                let from = net.branches[w[1]].as_ref().unwrap().from;
+                assert_eq!(from, From::Through { pad: w[0] }, "pad {} from {from:?}", w[1]);
+            }
         }
     }
 

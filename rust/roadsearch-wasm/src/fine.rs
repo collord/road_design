@@ -265,6 +265,30 @@ impl FineSession {
         Ok(net.connect(&self.prob, p, &mut report))
     }
 
+    /// With rigs: the pads as runs to connect in order (rig_pieces), -1 between runs.
+    pub fn network_rig_pieces(&self) -> Result<Vec<i32>, JsValue> {
+        let net = self.network.as_ref().ok_or_else(|| js_err("network_begin() first"))?;
+        let mut out = Vec::new();
+        for (i, piece) in net.rig_pieces(&self.prob).iter().enumerate() {
+            if i > 0 {
+                out.push(-1);
+            }
+            out.extend(piece.iter().map(|&p| p as i32));
+        }
+        Ok(out)
+    }
+
+    /// Connect pad `p` by carrying pad `prev`'s branch on (else from anywhere); false if no branch
+    /// reaches it.
+    pub fn network_connect_after(&mut self, p: usize, prev: usize, progress: &js_sys::Function) -> Result<bool, JsValue> {
+        let net = self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?;
+        if p >= net.pads.len() || prev >= net.pads.len() {
+            return Err(js_err("no such pad"));
+        }
+        let mut report = js_report(progress);
+        Ok(net.connect_after(&self.prob, p, prev, &mut report))
+    }
+
     /// One improvement pass; returns the pads whose branch moved.
     pub fn network_improve(&mut self, progress: &js_sys::Function) -> Result<Vec<u32>, JsValue> {
         let net = self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?;

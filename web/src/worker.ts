@@ -488,6 +488,9 @@ async function network(p: Params, b: number, refine: number) {
  * then improvement passes. The network is posted after every pad; the searches show as the
  * wavefront.
  */
+/** Lay a rigs network out as row runs (see refineNetwork). */
+const RIG_RUNS = false;
+
 async function refineNetwork(p: Params, res: number, buffer: number, b: number, length: number, width: number,
                              beside: boolean, rigs: number) {
   if (!area?.network || !source) throw new Error("find the network first");
@@ -565,10 +568,19 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
                                          y: r.rows.map((row) => fg.y1 - (row + 0.5) * res) })) });
     };
     let k = 0;
-    for (const pad of net.order) {
+    // RIG_RUNS: with rigs, the grid's rows as a serpentine cut into one run per rig (each run's
+    // first pad joins where cheapest, the rest carry its branch on). Off: on ground where the rows
+    // cross the contours (pads turned to their own contour) it costs more than the coarse
+    // network's order. Otherwise the coarse network's order.
+    const runs = rigs > 0 && RIG_RUNS ? Array.from(fs.network_rig_pieces()) : [];
+    const order: [number, number][] = runs.length
+      ? runs.map((p, i) => [p, i > 0 ? runs[i - 1] : -1] as [number, number]).filter(([p]) => p >= 0)
+      : net.order.map((p) => [p, -1] as [number, number]);
+    for (const [pad, prev] of order) {
       progress("network: connect the pads", k, n);
       await checkpoint();
-      fs.network_connect(pad, onProgress);
+      if (prev >= 0) fs.network_connect_after(pad, prev, onProgress);
+      else fs.network_connect(pad, onProgress);
       closeStage();
       k++;
       sendState(`${k} of ${n} pads searched`, false);
