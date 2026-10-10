@@ -226,10 +226,11 @@ try {
       writeFileSync(csv, rows.join(String.fromCharCode(10)));
       const routeGrade: string = await evaluate(`document.querySelector("#g_max").value`);
       await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "network"; s.dispatchEvent(new Event("change")); })()`);
-      // Pad roads default to 15%.
+      // Pad roads default to 15% and 9 ft.
       const padGrade: string = await evaluate(`document.querySelector("#g_max").value`);
-      if (padGrade !== "15") throw new Error(`network mode's grade is ${padGrade}%, not 15%`);
-      console.log(`  grade: ${routeGrade}% for routes, ${padGrade}% for pad roads`);
+      const padWidth: string = await evaluate(`document.querySelector("#w").value`);
+      if (padGrade !== "15" || padWidth !== "2.74") throw new Error(`network mode's road is ${padGrade}%, ${padWidth} m`);
+      console.log(`  grade: ${routeGrade}% for routes, ${padGrade}% and ${padWidth} m for pad roads`);
       // NET_ACCESS=m: the access point that far from the lowest pad, the way the drill roads are only
       // the last approach: of 24 directions away from the other pads, the lowest open spot.
       if (process.env.NET_ACCESS) {

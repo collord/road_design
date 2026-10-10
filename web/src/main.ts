@@ -309,9 +309,10 @@ function buttonsRefineState() {
   if (!busy) $<HTMLButtonElement>("refine").disabled = mode === "network" ? !haveNetwork : !haveCorridors;
 }
 
-/** Drill pad roads' maximum grade (%), the network mode's default; the route grade waits meanwhile. */
-const PAD_ROAD_GRADE = "15";
-let routeGrade: string | null = null;
+/** Drill pad roads' maximum grade (%) and width (m, 9 ft), network mode's defaults; the route's
+ *  values wait meanwhile. */
+const PAD_ROAD: Record<string, string> = { g_max: "15", w: "2.74" };
+let routeRoad: Record<string, string> | null = null;
 
 function setMode(m: "route" | "network") {
   const switching = m !== mode;
@@ -331,14 +332,16 @@ function setMode(m: "route" | "network") {
   const margin = $<HTMLInputElement>("margin");
   if (net && margin.value === "10") margin.value = "2";
   if (!net && margin.value === "2") margin.value = "10";
-  // Pad roads at their own grade; the route's back when leaving.
-  const grade = $<HTMLInputElement>("g_max");
+  // Pad roads at their own grade and width; the route's back when leaving.
   if (switching && net) {
-    routeGrade = grade.value;
-    grade.value = PAD_ROAD_GRADE;
-  } else if (switching && routeGrade !== null) {
-    grade.value = routeGrade;
-    routeGrade = null;
+    routeRoad = {};
+    for (const [id, v] of Object.entries(PAD_ROAD)) {
+      routeRoad[id] = $<HTMLInputElement>(id).value;
+      $<HTMLInputElement>(id).value = v;
+    }
+  } else if (switching && routeRoad) {
+    for (const [id, v] of Object.entries(routeRoad)) $<HTMLInputElement>(id).value = v;
+    routeRoad = null;
   }
   markers.goal?.setStyle({ opacity: net ? 0 : 1, fillOpacity: net ? 0 : 1 });
   estimate();
@@ -521,11 +524,10 @@ function params(): Params {
 }
 
 function setControls(p: Params) {
-  const grade = String(+(100 * (p.g_max as number)).toFixed(2));
-  // In network mode the pad roads' grade stays; the example's waits for route mode.
-  if (mode === "network") routeGrade = grade;
-  else $<HTMLInputElement>("g_max").value = grade;
-  $<HTMLInputElement>("w").value = String(p.w);
+  // In network mode the pad roads' grade and width stay; the example's wait for route mode.
+  const road = { g_max: String(+(100 * (p.g_max as number)).toFixed(2)), w: String(p.w) };
+  if (mode === "network") routeRoad = road;
+  else for (const [id, v] of Object.entries(road)) $<HTMLInputElement>(id).value = v;
   $<HTMLInputElement>("res").value = "";
   $<HTMLInputElement>("margin").value = String((p.tin_margin as number ?? 10000) / 1000);
   $<HTMLSelectElement>("z_units").value = String(p.z_units ?? "m");
