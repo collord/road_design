@@ -27,6 +27,12 @@
 //! the branches out as a person would: rows along the contour, linked end to end as a serpentine
 //! from the bottom up, cut into N runs; each run's first pad joins the network where cheapest and
 //! the rest carry its branch on, pad after pad (each rig then drills its run from the top down).
+//!
+//! With orient_by_road, pads lie the way the road arrives rather than along the contour, as drill
+//! pads at the ends of spurs are built: a level bench centered on the hole, its long axis along
+//! the arriving heading, reached at its near end from any of the lattice's headings. Each heading
+//! has its own bench (across the slope, plus the cut or fill that keeps it level along its
+//! length), and the search finishes at the cheapest road plus bench.
 
 use std::collections::HashMap;
 
@@ -36,8 +42,8 @@ use road_cost::{ClimbHeuristic, Grid};
 use crate::lattice::heading_angles;
 use crate::pipeline::{FineProgress, Report, PROGRESS_EVERY};
 use crate::problem::Problem;
-use crate::route::{Edge, Segment};
-use crate::section::{section, SectionParams};
+use crate::route::{bil_clamped, Edge, Segment};
+use crate::section::{section, soil_depth, SectionParams};
 
 /// One end of a pad: the cell a road arrives at and its heading into the pad.
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +67,9 @@ pub struct Pad {
     /// ground is too steep for the bench).
     pub cost_alone: f64,
     pub cost_beside: f64,
+    /// With orient_by_road: each way in (the near end of a pad lying along that heading) and its
+    /// bench's cost (infinite where it cannot be built).
+    pub by_road: Vec<(End, f64)>,
 }
 
 /// Where a branch leaves the network.
@@ -99,6 +108,8 @@ pub struct FineNetwork {
     pub rigs: usize,
     /// While set, a branch may only carry this pad's branch on (past it, or reversing out of it).
     pub only_from: Option<usize>,
+    /// Pads lie the way the road arrives (see the module docs).
+    pub by_road: bool,
     /// Per pad: its branch, once connected.
     pub branches: Vec<Option<Branch>>,
     pub unreachable: Vec<bool>,
@@ -163,9 +174,11 @@ impl FineNetwork {
                 section(s, d, &sp).cost
             };
             let road_w = prob.params.w;
-            let cost_alone = length * (bench(width) - prob.params.c_base);
+            // Its own bench along the axis, as pads by road are priced (bench_along).
+            let cost_alone = bench_along(prob, (r, c), axis, length, width);
             let cost_beside = length * (bench(road_w + width) - bench(road_w));
-            pads.push(Pad { center: (r, c), axis, ends, cells, sides: Vec::new(), cost_alone, cost_beside });
+            pads.push(Pad { center: (r, c), axis, ends, cells, sides: Vec::new(), cost_alone, cost_beside,
+                            by_road: Vec::new() });
         }
         // Beside each long side: the road's centerline half its width and half the pad's out.
         for p in &mut pads {
@@ -207,7 +220,8 @@ impl FineNetwork {
         }
         let n = pads.len();
         FineNetwork {
-            root, pads, b, alongside, rigs: 0, only_from: None, branches: vec![None; n], unreachable: vec![false; n],
+            root, pads, b, alongside, rigs: 0, only_from: None, by_road: false, branches: vec![None; n],
+            unreachable: vec![false; n],
         }
     }
 
@@ -348,6 +362,31 @@ impl FineNetwork {
         }
     }
 
+    /// Pads lie the way the road arrives: their footprints reopen (their direction is not known
+    /// yet), and each heading gets its way in and its bench.
+    pub fn orient_by_road(&mut self, prob: &mut Problem, length: f64, width: f64) {
+        self.by_road = true;
+        let (nr, nc, res) = (prob.nr as i64, prob.nc as i64, prob.res);
+        let angles = heading_angles(prob.n_theta());
+        for pad in &mut self.pads {
+            for &(r, c) in &pad.cells {
+                let k = (r * nc + c) as usize;
+                prob.open[k] = prob.open_tables[k];
+            }
+            pad.by_road.clear();
+            for (h, &a) in angles.iter().enumerate() {
+                let (ux, uy) = (a.cos(), a.sin());
+                let d = 0.5 * length + 0.75 * res;
+                let (er, ec) = ((pad.center.0 + uy * d / res).round() as i64, (pad.center.1 - ux * d / res).round() as i64);
+                if er < 0 || ec < 0 || er >= nr || ec >= nc || prob.open[(er * nc + ec) as usize] == 0 {
+                    continue;
+                }
+                let cost = bench_along(prob, pad.center, a, length, width);
+                pad.by_road.push((End { cell: (er, ec), heading: h }, cost));
+            }
+        }
+    }
+
     /// Connected pads no other branch continues from: the network's dead ends.
     pub fn dead_ends(&self) -> usize {
         (0..self.pads.len()).filter(|&q| self.branches[q].is_some() && self.dependents(q) == 0).count()
@@ -375,6 +414,10 @@ impl FineNetwork {
     /// or with `alongside` also beside it, whichever costs the network less.
     fn search(&self, prob: &Problem, p: usize, stage: &str, report: &mut Report) -> Option<Branch> {
         let pad = &self.pads[p];
+        if self.by_road {
+            let (goals, costs): (Vec<End>, Vec<f64>) = pad.by_road.iter().filter(|g| g.1.is_finite()).copied().unzip();
+            return self.search_to(prob, p, &goals, Some(&costs), false, stage, report);
+        }
         let ends: Vec<End> = pad.ends.iter().flatten().copied().collect();
         let mut best: Option<(f64, Branch)> = None;
         let mut consider = |b: Option<Branch>, me: &Self| {
@@ -386,17 +429,19 @@ impl FineNetwork {
             }
         };
         if pad.cost_alone.is_finite() {
-            consider(self.search_to(prob, p, &ends, false, stage, report), self);
+            consider(self.search_to(prob, p, &ends, None, false, stage, report), self);
         }
         if self.alongside && pad.cost_beside.is_finite() && !pad.sides.is_empty() {
-            consider(self.search_to(prob, p, &pad.sides, true, &format!("{stage}, beside"), report), self);
+            consider(self.search_to(prob, p, &pad.sides, None, true, &format!("{stage}, beside"), report), self);
         }
         best.map(|(_, b)| b)
     }
 
-    /// The cheapest branch from the network to one of `goals` of pad p (beside it or at an end).
-    fn search_to(&self, prob: &Problem, p: usize, goals: &[End], beside: bool, stage: &str, report: &mut Report)
-                 -> Option<Branch> {
+    /// The cheapest branch from the network to one of `goals` of pad p (beside it, at an end, or
+    /// by road with `goal_costs`, each goal's bench).
+    #[allow(clippy::too_many_arguments)]
+    fn search_to(&self, prob: &Problem, p: usize, goals: &[End], goal_costs: Option<&[f64]>, beside: bool, stage: &str,
+                 report: &mut Report) -> Option<Branch> {
         if goals.is_empty() {
             return None;
         }
@@ -426,22 +471,26 @@ impl FineNetwork {
             }
             // Beside a pad the road goes on: its last node is a junction like any other.
             if br.beside {
-                let node = br.edges.len();
-                let &(r, c, a) = br.edges.last().unwrap();
-                let cell = (r + prob.lat.dr[a], c + prob.lat.dc[a]);
-                src.push((cell, None, start + br.op[node], From::Branch { pad: q, node }));
+                // (A branch of no edges arrived on the network itself: nothing new to start from.)
+                if let Some(&(r, c, a)) = br.edges.last() {
+                    let node = br.edges.len();
+                    let cell = (r + prob.lat.dr[a], c + prob.lat.dc[a]);
+                    src.push((cell, None, start + br.op[node], From::Branch { pad: q, node }));
+                }
                 continue;
             }
-            // Through the pad, out of its far end, continuing the way it arrived.
+            // Through the pad, out of its far end, continuing the way it arrived (a pad by road
+            // ends its spur).
             if ok(q) {
-                if let Some(far) = self.pads[q].ends[1 - br.end] {
-                    let h = self.pads[q].ends[br.end].unwrap().heading;
-                    src.push((far.cell, Some(h), self.op_to_root(q), From::Through { pad: q }));
+                let door = if self.by_road { self.pads[q].by_road[br.end].0 } else { self.pads[q].ends[br.end].unwrap() };
+                if !self.by_road {
+                    if let Some(far) = self.pads[q].ends[1 - br.end] {
+                        src.push((far.cell, Some(door.heading), self.op_to_root(q), From::Through { pad: q }));
+                    }
                 }
                 // With reversing switchbacks the pad is a landing: pull in, reverse out of the door
                 // onto a new branch, any way. A rig on the pad blocks it, as for the far end.
                 if prob.params.switchback_landing > 0.0 {
-                    let door = self.pads[q].ends[br.end].unwrap();
                     src.push((door.cell, None, self.op_to_root(q), From::Through { pad: q }));
                 }
             }
@@ -467,12 +516,26 @@ impl FineNetwork {
                 }
             }
         }
-        // The goal: arriving at an end heading into the pad (or one heading bin either side).
-        let mut goal_states = Vec::new();
-        for g in goals {
+        // The goal: arriving at an end heading into the pad (or one heading bin either side), each
+        // with its goal's finishing cost if any.
+        let (mut goal_states, mut goal_of, mut finish) = (Vec::new(), Vec::new(), Vec::new());
+        for (i, g) in goals.iter().enumerate() {
             for dh in [0, 1, nh - 1] {
                 if let Some(s) = index.state(g.cell.0, g.cell.1, ((g.heading + dh) % nh) as u16, nh) {
-                    goal_states.push(s);
+                    // A state two goals share keeps the cheaper.
+                    let c = goal_costs.map_or(0.0, |gc| gc[i]);
+                    match goal_states.iter().position(|&x| x == s) {
+                        Some(j) if finish[j] <= c => {}
+                        Some(j) => {
+                            goal_of[j] = i;
+                            finish[j] = c;
+                        }
+                        None => {
+                            goal_states.push(s);
+                            goal_of.push(i);
+                            finish.push(c);
+                        }
+                    }
                 }
             }
         }
@@ -493,7 +556,7 @@ impl FineNetwork {
         );
         let spec = SearchSpec {
             sources: &sources, goal: None, stop_at_goal: true, max_cost: f64::INFINITY, goal_states: Some(&goal_states),
-            source_costs: Some(&costs),
+            source_costs: Some(&costs), goal_costs: goal_costs.map(|_| &finish[..]),
         };
         let start = self.root;
         let mut rep = |pr: &Progress| {
@@ -515,14 +578,17 @@ impl FineNetwork {
             s = prev;
         }
         let from = *from_of.get(&s)?;
+        // No edges: the network already arrives at a way in (the pad sits on it), so only its bench.
         let edges: Vec<Edge> =
             res.edges_to(&prob.lattice, &index, gs).into_iter().map(|(r, c, a)| (r as i64, c as i64, a)).collect();
-        if edges.is_empty() {
-            return None;
-        }
         let cell = index.cell((gs / nh as u64) as u32);
         let cell = (cell.0 as i64, cell.1 as i64);
-        let end = if beside {
+        let reached = goal_states.iter().position(|&x| x == gs).map(|j| goal_of[j]);
+        let end = if self.by_road {
+            // Its entry in the pad's ways in.
+            let g = goals[reached?];
+            self.pads[p].by_road.iter().position(|w| w.0.cell == g.cell && w.0.heading == g.heading)?
+        } else if beside {
             goals.iter().position(|e| e.cell == cell).unwrap_or(0)
         } else {
             self.pads[p].ends.iter().position(|e| e.map(|e| e.cell) == Some(cell)).unwrap_or(0)
@@ -532,7 +598,13 @@ impl FineNetwork {
         for sg in &segments {
             op.push(op.last().unwrap() + sg.cost_operating);
         }
-        let pad_cost = if beside { self.pads[p].cost_beside } else { self.pads[p].cost_alone };
+        let pad_cost = if self.by_road {
+            self.pads[p].by_road[end].1
+        } else if beside {
+            self.pads[p].cost_beside
+        } else {
+            self.pads[p].cost_alone
+        };
         let construction = segments.iter().map(|s| s.cost_construction()).sum::<f64>() + pad_cost;
         Some(Branch { from, end, beside, pad_cost, edges, segments, op, construction })
     }
@@ -609,6 +681,42 @@ impl FineNetwork {
         }
         out
     }
+}
+
+/// A level pad bench centered at (row, col), `length` along `angle` (radians, east = 0,
+/// counterclockwise) by `width`, at the smoothed DEM's elevation at its center: the road section
+/// model's earthwork for a bench of that width across the slope (as the switchbacks' landings),
+/// plus the prism that keeps it level along its length at the fill price. Infinite off the grid,
+/// on ground too steep for the section, or past H_fill_max of cut or fill.
+pub fn bench_along(prob: &Problem, center: (f64, f64), angle: f64, length: f64, width: f64) -> f64 {
+    let (nr, nc, res) = (prob.nr, prob.nc, prob.res);
+    let p = &prob.params;
+    let mut sp = SectionParams::new(p);
+    sp.w = width;
+    let (ux, uy) = (angle.cos(), angle.sin());
+    let n = ((2.0 * length / res).ceil() as usize).max(2);
+    let ds = length / n as f64;
+    let z0 = bil_clamped(&prob.zs, nr, nc, center.0, center.1);
+    let (mut earth, mut prism) = (0.0, 0.0);
+    for k in 0..n {
+        let t = (k as f64 + 0.5) * ds - 0.5 * length;
+        let (fr, fc) = (center.0 - t * uy / res, center.1 + t * ux / res);
+        if fr < 0.0 || fc < 0.0 || fr > (nr - 1) as f64 || fc > (nc - 1) as f64 {
+            return f64::INFINITY;
+        }
+        let ax = bil_clamped(&prob.gx, nr, nc, fr, fc);
+        let ay = bil_clamped(&prob.gy, nr, nc, fr, fc);
+        let s = (-ax * uy + ay * ux).abs();
+        let g = ax * ux + ay * uy;
+        let sec = section(s, soil_depth(s.hypot(g), p), &sp);
+        let h = z0 - bil_clamped(&prob.zs, nr, nc, fr, fc);
+        if !sec.cost.is_finite() || h.abs() > p.h_fill_max {
+            return f64::INFINITY;
+        }
+        earth += (sec.cost - p.c_base) * ds;
+        prism += (width * h.abs() + h * h / p.f_rock) * ds;
+    }
+    earth + prob.lam_fill * prism
 }
 
 #[cfg(test)]
@@ -746,6 +854,41 @@ mod tests {
                 assert_eq!(from, From::Through { pad: w[0] }, "pad {} from {from:?}", w[1]);
             }
         }
+    }
+
+    #[test]
+    fn pads_lie_the_way_the_road_arrives() {
+        let centers = [(30.0, 90.0), (90.0, 90.0), (90.0, 30.0)];
+        let build = |by_road: bool| {
+            let mut prob = slope();
+            let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 20.0, 15.0, 0, false);
+            if by_road {
+                net.orient_by_road(&mut prob, 20.0, 15.0);
+            }
+            let mut report = |_: &str, _: &FineProgress| true;
+            for p in 0..centers.len() {
+                assert!(net.connect(&prob, p, &mut report), "pad {p}");
+            }
+            (prob, net)
+        };
+        let (prob, net) = build(true);
+        let angles = heading_angles(prob.n_theta());
+        for (p, b) in net.branches.iter().enumerate() {
+            let b = b.as_ref().unwrap();
+            let (way, cost) = net.pads[p].by_road[b.end];
+            assert!(cost.is_finite() && (b.pad_cost - cost).abs() < 1e-9);
+            // The last move ends at the way in, heading into the pad (within a heading bin).
+            let &(r, c, a) = b.edges.last().unwrap();
+            assert_eq!((r + prob.lat.dr[a], c + prob.lat.dc[a]), way.cell);
+            let d = angles[prob.lat.h1[a] as usize] - angles[way.heading];
+            assert!(d.cos() > 0.95, "pad {p}");
+        }
+        // Every heading has a way in on open ground; the footprint is open again.
+        assert!(net.pads[0].by_road.len() >= 30);
+        assert!(net.pads[0].cells.iter().all(|&(r, c)| prob.open[(r * prob.nc as i64 + c) as usize] != 0));
+        let (_, contour) = build(false);
+        let total = |n: &FineNetwork| { let (c, o) = n.cost(); c + o };
+        assert!(total(&net) <= 1.05 * total(&contour), "by road {} vs contour {}", total(&net), total(&contour));
     }
 
     #[test]

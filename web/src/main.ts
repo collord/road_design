@@ -401,6 +401,8 @@ function showNetwork(m: Extract<FromWorker, { type: "network" }>) {
 function showFineNetwork(m: Extract<FromWorker, { type: "fineNetwork" }>) {
   fineNet = m;
   padStatus = { connected: m.connected, unreachable: m.unreachable, beyond: m.beyond, ends: m.ends };
+  // Pads by road lie the way their road arrives; until connected, along the contour.
+  if (m.axes.length) padAxes = m.axes.map((a, i) => (Number.isFinite(a) ? a : padAxes?.[i] ?? 0));
   drawPads();
   const group = L.layerGroup();
   const color = getComputedStyle(document.documentElement).getPropertyValue("--fine").trim();
@@ -623,6 +625,7 @@ $("refine").addEventListener("click", () => {
     send({ type: "refineNetwork", params: runParams(), res, buffer: Number($<HTMLInputElement>("fine-buffer").value) || 300,
            b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))), length, width,
            beside: $<HTMLInputElement>("pad-beside").checked,
+           byRoad: $<HTMLSelectElement>("pad-orient").value === "road",
            rigs: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-rigs").value) || 0)) });
     return;
   }

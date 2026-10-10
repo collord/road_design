@@ -70,7 +70,7 @@ impl Segment {
 }
 
 /// Bilinear with the corner clamped into the grid (route.py's _bil).
-fn bil_clamped(a: &[f64], nr: usize, nc: usize, fr: f64, fc: f64) -> f64 {
+pub(crate) fn bil_clamped(a: &[f64], nr: usize, nc: usize, fr: f64, fc: f64) -> f64 {
     let r0 = (fr.floor() as i64).clamp(0, nr as i64 - 2) as usize;
     let c0 = (fc.floor() as i64).clamp(0, nc as i64 - 2) as usize;
     let (wr, wc) = (fr - r0 as f64, fc - c0 as f64);

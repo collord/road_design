@@ -8,7 +8,7 @@ export type ToWorker =
       res: number; maxCells: number; zUnits: string; roughMaxRes: number }
   | { type: "network"; params: Params; b: number; refine: number }
   | { type: "refineNetwork"; params: Params; res: number; buffer: number; b: number; length: number; width: number;
-      beside: boolean; rigs: number }
+      beside: boolean; rigs: number; byRoad: boolean }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
@@ -69,7 +69,8 @@ export type FromWorker =
    *  and per pad whether it is connected or unreachable and how many pads lie beyond. */
   | { type: "fineNetwork"; runs: { pad: number; uses: number; x: number[]; y: number[]; z: number[] }[];
       connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends: number[]; construction: number;
-      operating: number; switchbacks: number; beside: number; pad_cost: number; dead_ends: number; phase: string;
+      operating: number; switchbacks: number; beside: number; pad_cost: number; dead_ends: number; axes: number[];
+      phase: string;
       final: boolean; res: number }
   /** Each pad's long axis (radians, east = 0, counterclockwise): along the contour at its center. */
   | { type: "padAxes"; angles: number[] }

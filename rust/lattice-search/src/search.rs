@@ -41,15 +41,25 @@ pub struct SearchSpec<'a> {
     /// Starting costs of the sources (default 0): a search from a road network, say, where each
     /// junction carries the cost of its way back to the network's root.
     pub source_costs: Option<&'a [f64]>,
+    /// Costs of finishing at each of `goal_states` (default 0): a pad's bench, say, which depends
+    /// on the way the road arrives. `goal_state` is then the one with the least cost plus this,
+    /// and A* stops once no state left could finish cheaper.
+    pub goal_costs: Option<&'a [f64]>,
 }
 
 impl<'a> SearchSpec<'a> {
     pub fn dijkstra(sources: &'a [u64]) -> Self {
-        SearchSpec { sources, goal: None, stop_at_goal: false, max_cost: f64::INFINITY, goal_states: None, source_costs: None }
+        SearchSpec {
+            sources, goal: None, stop_at_goal: false, max_cost: f64::INFINITY, goal_states: None, source_costs: None,
+            goal_costs: None,
+        }
     }
 
     pub fn astar(sources: &'a [u64], goal: (i32, i32)) -> Self {
-        SearchSpec { sources, goal: Some(goal), stop_at_goal: true, max_cost: f64::INFINITY, goal_states: None, source_costs: None }
+        SearchSpec {
+            sources, goal: Some(goal), stop_at_goal: true, max_cost: f64::INFINITY, goal_states: None, source_costs: None,
+            goal_costs: None,
+        }
     }
 }
 
@@ -178,6 +188,10 @@ where
     }
     let mut n_exp = 0u64;
     let mut goal_state: Option<u64> = None;
+    // With goal costs: the least cost plus finishing cost found so far, and the least finishing
+    // cost (every key plus it bounds what a state could still finish at).
+    let mut best_total = f64::INFINITY;
+    let least_finish = spec.goal_costs.map_or(0.0, |gc| gc.iter().copied().fold(f64::INFINITY, f64::min).max(0.0));
     // Cells settled for the first time since the last report (tracked only if anyone listens).
     let reporting = every != u64::MAX;
     let mut seen = vec![false; if reporting { index.len() } else { 0 }];
@@ -187,7 +201,7 @@ where
         if closed[ui] != 0 {
             continue;
         }
-        if key > spec.max_cost {
+        if key > spec.max_cost || (spec.stop_at_goal && key + least_finish >= best_total) {
             break;
         }
         closed[ui] = 1;
@@ -212,10 +226,21 @@ where
         let h = (u % nh as u64) as usize;
         let (r, c) = index.cell(cell);
         if let Some(gs) = spec.goal_states {
-            if gs.contains(&u) {
-                goal_state = Some(u);
-                if spec.stop_at_goal {
-                    break;
+            if let Some(i) = gs.iter().position(|&s| s == u) {
+                match spec.goal_costs {
+                    // Others may still finish cheaper: keep the best and stop when none can.
+                    Some(gc) => {
+                        if g[ui] + gc[i] < best_total {
+                            best_total = g[ui] + gc[i];
+                            goal_state = Some(u);
+                        }
+                    }
+                    None => {
+                        goal_state = Some(u);
+                        if spec.stop_at_goal {
+                            break;
+                        }
+                    }
                 }
             }
         } else if r == goal_r && c == goal_c && goal_state.map_or(true, |gs| g[ui] < g[gs as usize]) {
@@ -288,6 +313,25 @@ mod tests {
             let (a, b) = ((r - self.0).abs() as f64, (c - self.1).abs() as f64);
             a.max(b) + (2f64.sqrt() - 1.0) * a.min(b)
         }
+    }
+
+    #[test]
+    fn goal_costs_pick_the_cheapest_finish_not_the_nearest() {
+        let (nr, nc) = (10usize, 30usize);
+        let lat = grid_lattice();
+        let cost = Len(&lat, vec![true; nr * nc], nc);
+        let index = CellIndex::full(nr, nc);
+        let src: Vec<u64> = (0..8).map(|h| index.state(5, 2, h, 8).unwrap()).collect();
+        // Two goals heading east: 5 cells away finishing at 100, 20 cells away finishing at 1.
+        let goals = [index.state(5, 7, 0, 8).unwrap(), index.state(5, 22, 0, 8).unwrap()];
+        let spec = SearchSpec {
+            goal_states: Some(&goals), goal_costs: Some(&[100.0, 1.0]), ..SearchSpec::astar(&src, (-1, -1))
+        };
+        let res = search(&lat, &index, &cost, &ZeroHeuristic, &spec);
+        assert_eq!(res.goal_state, Some(goals[1]));
+        // Without finishing costs, the nearer.
+        let spec = SearchSpec { goal_states: Some(&goals), ..SearchSpec::astar(&src, (-1, -1)) };
+        assert_eq!(search(&lat, &index, &cost, &ZeroHeuristic, &spec).goal_state, Some(goals[0]));
     }
 
     #[test]

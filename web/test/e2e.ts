@@ -261,6 +261,17 @@ try {
         await evaluate(`document.querySelector("#pad-beside").checked = ${process.env.PAD_BESIDE === "1"}`);
         console.log(`  pads beside the road: ${process.env.PAD_BESIDE === "1" ? "allowed" : "no"}`);
       }
+      // PAD_ORIENT=road|contour, PAD_SIZE=LxW (m).
+      if (process.env.PAD_ORIENT) {
+        await evaluate(`document.querySelector("#pad-orient").value = ${JSON.stringify(process.env.PAD_ORIENT)}`);
+        console.log(`  pads lie: ${process.env.PAD_ORIENT}`);
+      }
+      if (process.env.PAD_SIZE) {
+        const [pl, pw] = process.env.PAD_SIZE.split("x");
+        await evaluate(`(() => { document.querySelector("#pad-w").value = ${JSON.stringify(pl)};
+          document.querySelector("#pad-h").value = ${JSON.stringify(pw)}; })()`);
+        console.log(`  pad size: ${process.env.PAD_SIZE} m`);
+      }
       if (process.env.RIGS) {
         await evaluate(`document.querySelector("#pad-rigs").value = ${JSON.stringify(process.env.RIGS)}`);
         console.log(`  rigs: ${process.env.RIGS}`);

@@ -492,7 +492,7 @@ async function network(p: Params, b: number, refine: number) {
 const RIG_RUNS = false;
 
 async function refineNetwork(p: Params, res: number, buffer: number, b: number, length: number, width: number,
-                             beside: boolean, rigs: number) {
+                             beside: boolean, rigs: number, byRoad: boolean) {
   if (!area?.network || !source) throw new Error("find the network first");
   const { network: net, startXY, zScale, padsXY } = area;
   const [bx0, by0, bx1, by1] = source.info.bbox;
@@ -532,7 +532,7 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     const cell = (q: [number, number]) => [Math.floor((fg.y1 - q[1]) / res), Math.floor((q[0] - fg.x0) / res)];
     const [ar, ac] = cell(startXY);
     const axes = fs.network_begin(ar, ac, new Float64Array(padsXY.map((q) => toR(q[1]))),
-                                  new Float64Array(padsXY.map((q) => toC(q[0]))), length, width, b, beside, rigs);
+                                  new Float64Array(padsXY.map((q) => toC(q[0]))), length, width, b, beside, rigs, byRoad);
     post({ type: "padAxes", angles: Array.from(axes) });
     const n = padsXY.length;
     let stage = "", tStage = 0;
@@ -560,9 +560,10 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     const sendState = (phase: string, final: boolean) => {
       const st = fs.network_state() as { runs: { pad: number; uses: number; rows: number[]; cols: number[]; z: number[] }[];
         connected: boolean[]; unreachable: boolean[]; beyond: number[]; ends: number[]; construction: number;
-        operating: number; switchbacks: number; beside: number; pad_cost: number; dead_ends: number };
+        operating: number; switchbacks: number; beside: number; pad_cost: number; dead_ends: number; axes: number[] };
       post({ type: "fineNetwork", res, phase, final, connected: st.connected, unreachable: st.unreachable, beyond: st.beyond,
              ends: st.ends, switchbacks: st.switchbacks, beside: st.beside, pad_cost: st.pad_cost, dead_ends: st.dead_ends,
+             axes: st.axes,
              construction: st.construction, operating: st.operating,
              runs: st.runs.map((r) => ({ pad: r.pad, uses: r.uses, z: r.z, x: r.cols.map((c) => fg.x0 + (c + 0.5) * res),
                                          y: r.rows.map((row) => fg.y1 - (row + 0.5) * res) })) });
@@ -731,7 +732,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       else if (m.type === "run") await run(m.params);
       else if (m.type === "network") await network(m.params, m.b, m.refine);
       else if (m.type === "refineNetwork") {
-        await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs);
+        await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad);
       }
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "channels" && area?.acc) {

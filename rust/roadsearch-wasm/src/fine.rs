@@ -242,7 +242,7 @@ impl FineSession {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn network_begin(&mut self, ar: i32, ac: i32, pad_rows: &[f64], pad_cols: &[f64], length: f64, width: f64,
-                         b: usize, alongside: bool, rigs: usize) -> Result<Vec<f64>, JsValue> {
+                         b: usize, alongside: bool, rigs: usize, by_road: bool) -> Result<Vec<f64>, JsValue> {
         let (nr, nc) = (self.prob.nr as i32, self.prob.nc as i32);
         if ar < 0 || ac < 0 || ar >= nr || ac >= nc {
             return Err(js_err("the access point is outside the network's grid"));
@@ -250,6 +250,9 @@ impl FineSession {
         let centers: Vec<(f64, f64)> = pad_rows.iter().zip(pad_cols).map(|(&r, &c)| (r, c)).collect();
         let mut net = FineNetwork::new(&mut self.prob, (ar as i64, ac as i64), &centers, length, width, b, alongside);
         net.rigs = rigs;
+        if by_road {
+            net.orient_by_road(&mut self.prob, length, width);
+        }
         let axes = net.pads.iter().map(|p| p.axis).collect();
         self.network = Some(net);
         Ok(axes)
@@ -326,6 +329,9 @@ impl FineSession {
             pad_cost: f64,
             /// Dead ends of the network (branches no other continues from).
             dead_ends: usize,
+            /// Each pad's long axis (radians, east = 0, counterclockwise): the way its road arrives
+            /// for pads by road (NaN until connected), else along the contour.
+            axes: Vec<f64>,
         }
         let uses = net.segment_uses();
         let mut runs: Vec<Run> = Vec::new();
@@ -360,6 +366,14 @@ impl FineSession {
             beside: net.branches.iter().flatten().filter(|b| b.beside).count(),
             pad_cost: net.branches.iter().flatten().map(|b| b.pad_cost).sum(),
             dead_ends: net.dead_ends(),
+            axes: {
+                let angles = road_fine::lattice::heading_angles(self.prob.n_theta());
+                net.pads.iter().zip(&net.branches).map(|(p, b)| match (net.by_road, b) {
+                    (true, Some(b)) => angles[p.by_road[b.end].0.heading],
+                    (true, None) => f64::NAN,
+                    (false, _) => p.axis,
+                }).collect()
+            },
         };
         serde_wasm_bindgen::to_value(&st).map_err(js_err)
     }
