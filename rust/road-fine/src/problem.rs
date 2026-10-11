@@ -368,6 +368,7 @@ impl Problem {
             culvert_costs: p.culvert_costs.clone(), lam_fill: self.lam_fill, w: p.w, f_rock: p.f_rock,
             h_fill_max: p.h_fill_max, fill_tol: p.fill_tol, c_travel: p.c_travel, c_vertical: p.c_vertical,
             c_turn: p.c_turn, k_rough: self.k_rough, check_macro_chords: false,
+            switchback_weight: p.switchback_weight,
         }
     }
 

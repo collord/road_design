@@ -628,6 +628,7 @@ function runParams(): Params {
     const tau = Math.max(0, Number($<HTMLInputElement>("pad-traffic").value) || 0);
     for (const k of ["C_travel", "C_vertical", "C_turn"]) p[k] = (p[k] as number) * tau;
     p.switchback_landing = Math.max(0, Number($<HTMLInputElement>("pad-landing").value) || 0);
+    p.switchback_weight = Math.max(1, Number($<HTMLInputElement>("pad-switch-weight").value) || 1);
   }
   return p;
 }

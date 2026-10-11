@@ -26,6 +26,7 @@ class Params:
     hp_gap_min: float
     hp_site_spacing: float
     switchback_landing: float
+    switchback_weight: float
     C_wall: float
     d0: float
     S0: float

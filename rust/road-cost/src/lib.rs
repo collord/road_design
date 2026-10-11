@@ -190,6 +190,8 @@ pub struct CostParams {
     /// Hairpins and bends also need the cells along their chord open (their tables were built on
     /// an earlier mask: a network search closes pads' footprints as it goes).
     pub check_macro_chords: bool,
+    /// Each reversing switchback costs this many times its landing.
+    pub switchback_weight: f64,
 }
 
 /// The cost model: `EdgeCost` for lattice-search.
@@ -331,7 +333,7 @@ impl<'a> RoadCost<'a> {
             }
             total += cpm * w_s;
         }
-        total + q.lam_fill * vol
+        q.switchback_weight * (total + q.lam_fill * vol)
     }
 
     /// Whether the cells along the straight line from (r, c) by (dr, dc), every half cell, are open.

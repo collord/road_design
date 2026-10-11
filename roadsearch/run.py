@@ -52,7 +52,8 @@ _LATER_PARAMS = {"C_turn": 0.0, "tin_res": 15.0, "tin_margin": 10000.0, "tin_max
                  # Runs before roughness ignored it: their ids stay, and runs with it get new ones.
                  "rough_r0": 0.0, "rough_max_res": 3.0,
                  # Hairpins at every cell, as before the sub-grid of sites.
-                 "hp_site_spacing": 0.0, "switchback_landing": 0.0}
+                 "hp_site_spacing": 0.0, "switchback_landing": 0.0,
+                 "switchback_weight": 1.0}
 
 
 def _id_params(p: Params) -> dict:

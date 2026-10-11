@@ -28,6 +28,9 @@ pub struct Params {
     /// absent: loop hairpins.
     #[serde(default)]
     pub switchback_landing: f64,
+    /// Each switchback costs this many times its landing (reversing's time, wear and risk).
+    #[serde(default = "one")]
+    pub switchback_weight: f64,
     #[serde(rename = "C_wall", deserialize_with = "inf_if_null")]
     pub c_wall: f64,
     pub d0: f64,
@@ -105,4 +108,8 @@ impl Params {
     pub fn culvert_cost(&self, area_ha: f64) -> f64 {
         road_cost::culvert_cost(area_ha, &self.culvert_area_breaks, &self.culvert_costs)
     }
+}
+
+fn one() -> f64 {
+    1.0
 }

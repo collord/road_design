@@ -380,8 +380,9 @@ impl Problem {
                     seq, r, c, action: a, kind: SWITCHBACK, pts, z, length, grade: 0.0, sidehill_slope: ss / nf,
                     terrain_slope: nan, soil_depth: dd / nf, cut_width: p.w, fill_width: 0.0, cut_catch: 0.0,
                     fill_toe: 0.0, cut_soil_m3: a_soil * w, cut_rock_m3: a_rock * w, fill_m3: a_fill * w + prism * w,
-                    spoil_m3: spoil * w, borrow_m3: 0.0, cost_base: p.c_base * length,
-                    cost_earthwork: extra * w + self.lam_fill * prism * w, cost_surrogate: surrogate, cost_culvert: 0.0,
+                    spoil_m3: spoil * w, borrow_m3: 0.0, cost_base: p.switchback_weight * p.c_base * length,
+                    cost_earthwork: p.switchback_weight * (extra * w + self.lam_fill * prism * w),
+                    cost_surrogate: surrogate, cost_culvert: 0.0,
                     culvert_area_ha: 0.0, vertical_travel: 0.0, turning: 0.0, cost_operating: 0.0,
                 }
             }

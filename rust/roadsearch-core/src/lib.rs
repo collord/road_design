@@ -129,6 +129,7 @@ fn terrain_from<'py>(terr: &Bound<'py, PyTuple>) -> PyResult<TerrArrays<'py>> {
             c_turn: item(terr, 25, "C_turn")?,
             k_rough: item(terr, 28, "k_rough")?,
             check_macro_chords: false,
+            switchback_weight: 1.0,
         },
     })
 }

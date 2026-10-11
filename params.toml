@@ -19,6 +19,8 @@ hp_site_spacing = 0.0 # hairpins start only on a sub-grid of cells this many R_h
 switchback_landing = 0.0  # reversing switchbacks instead of loop hairpins (temporary pad roads): the
                       # level landing (m) a truck pulls into before reversing onto the next leg;
                       # 0: loop hairpins. The browser's pad networks only (the Rust fine stage).
+switchback_weight = 1.0   # each switchback costs this many times its landing (reversing's time, wear
+                      # and risk on top of the bench)
 C_wall = inf          # retaining wall between hairpin legs, per m2 of face; inf = no walls
                       # (legs whose slopes overlap are then reported as conflicts)
 hp_leg_max = 60.0     # longest approach leg either side of a hairpin arc (m).
