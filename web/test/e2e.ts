@@ -337,6 +337,14 @@ try {
           if (!(mostFine <= 2)) throw new Error(`a pad has ${mostFine} pads beyond it`);
         }
         await shot(`${name}-fine-network`);
+        // SAVE_NETWORK=dir: the fine network's GeoJSON (the page's download) saved there.
+        if (process.env.SAVE_NETWORK) {
+          const dir = join(process.cwd(), process.env.SAVE_NETWORK);
+          await send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: dir });
+          await evaluate(`document.querySelector("#download").click()`);
+          await until(`true`, "the download", 2000).then(() => sleep(1500));
+          console.log(`  network GeoJSON saved in ${process.env.SAVE_NETWORK}`);
+        }
       }
       await evaluate(`(() => { const s = document.querySelector("#mode"); s.value = "route"; s.dispatchEvent(new Event("change")); })()`);
       const backGrade: string = await evaluate(`document.querySelector("#g_max").value`);

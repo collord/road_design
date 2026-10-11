@@ -451,10 +451,20 @@ impl FineNetwork {
         // With N rigs and N dead ends already, only carrying a branch on past its last pad.
         let leaf = |q: usize| self.branches[q].is_some() && self.dependents(q) == 0;
         let full = self.rigs > 0 && (0..self.pads.len()).filter(|&q| leaf(q)).count() >= self.rigs;
-        // Sources: (cell, heading or all, cost, where).
+        // Sources: (cell, headings, cost, where).
         let forced = self.only_from;
-        let mut src: Vec<((i64, i64), Option<usize>, f64, From)> =
-            if full || forced.is_some() { Vec::new() } else { vec![(self.root, None, 0.0, From::Root)] };
+        let all: Vec<usize> = (0..nh).collect();
+        // Leaving a road at a junction: at most a right angle from its direction of travel (a
+        // sharper turn means reversing, which only a switchback or a pad's landing allows).
+        let angles = heading_angles(nh);
+        let turn_off = |h: usize| -> Vec<usize> {
+            (0..nh)
+                .filter(|&k| ((angles[k] - angles[h] + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)
+                    - std::f64::consts::PI).abs() <= 0.5 * std::f64::consts::PI + 1e-9)
+                .collect()
+        };
+        let mut src: Vec<((i64, i64), Vec<usize>, f64, From)> =
+            if full || forced.is_some() { Vec::new() } else { vec![(self.root, all.clone(), 0.0, From::Root)] };
         for q in 0..self.pads.len() {
             let Some(br) = self.branches[q].as_ref() else { continue };
             if forced.is_some_and(|f| f != q) {
@@ -466,8 +476,8 @@ impl FineNetwork {
             let start = self.op_at_start(q);
             // Interior nodes (not the junction itself, not the pad's door): forks.
             for node in (1..br.edges.len()).filter(|_| !full && forced.is_none()) {
-                let (r, c, _) = br.edges[node];
-                src.push(((r, c), None, start + br.op[node], From::Branch { pad: q, node }));
+                let (r, c, a) = br.edges[node];
+                src.push(((r, c), turn_off(prob.lat.h0[a] as usize), start + br.op[node], From::Branch { pad: q, node }));
             }
             // Beside a pad the road goes on: its last node is a junction like any other.
             if br.beside {
@@ -475,7 +485,7 @@ impl FineNetwork {
                 if let Some(&(r, c, a)) = br.edges.last() {
                     let node = br.edges.len();
                     let cell = (r + prob.lat.dr[a], c + prob.lat.dc[a]);
-                    src.push((cell, None, start + br.op[node], From::Branch { pad: q, node }));
+                    src.push((cell, turn_off(prob.lat.h1[a] as usize), start + br.op[node], From::Branch { pad: q, node }));
                 }
                 continue;
             }
@@ -485,13 +495,13 @@ impl FineNetwork {
                 let door = if self.by_road { self.pads[q].by_road[br.end].0 } else { self.pads[q].ends[br.end].unwrap() };
                 if !self.by_road {
                     if let Some(far) = self.pads[q].ends[1 - br.end] {
-                        src.push((far.cell, Some(door.heading), self.op_to_root(q), From::Through { pad: q }));
+                        src.push((far.cell, vec![door.heading], self.op_to_root(q), From::Through { pad: q }));
                     }
                 }
                 // With reversing switchbacks the pad is a landing: pull in, reverse out of the door
                 // onto a new branch, any way. A rig on the pad blocks it, as for the far end.
                 if prob.params.switchback_landing > 0.0 {
-                    src.push((door.cell, None, self.op_to_root(q), From::Through { pad: q }));
+                    src.push((door.cell, all.clone(), self.op_to_root(q), From::Through { pad: q }));
                 }
             }
         }
@@ -506,9 +516,9 @@ impl FineNetwork {
         let mut sources = Vec::new();
         let mut costs = Vec::new();
         let mut from_of: HashMap<u64, From> = HashMap::new();
-        for &((r, c), h, cost, from) in &src {
-            let hs: Vec<usize> = h.map_or((0..nh).collect(), |h| vec![h]);
-            for h in hs {
+        for ((r, c), hs, cost, from) in &src {
+            let (r, c, cost, from) = (*r, *c, *cost, *from);
+            for &h in hs {
                 if let Some(s) = index.state(r, c, h as u16, nh) {
                     sources.push(s);
                     costs.push(cost);
@@ -624,28 +634,59 @@ impl FineNetwork {
         }
     }
 
-    /// One improvement pass: each pad at the end of the network (nothing branching from its
-    /// branch or through it) is searched again with its branch off; kept if the whole network
-    /// got cheaper. Returns the pads that moved.
+    /// Pad p and every pad whose branch starts on its branch or out of it, recursively: the
+    /// branches that move with p's. In the order to connect them again (p first).
+    fn subtree(&self, p: usize) -> Vec<usize> {
+        let mut out = vec![p];
+        let mut i = 0;
+        while i < out.len() {
+            let q = out[i];
+            for (r, b) in self.branches.iter().enumerate() {
+                if let Some(b) = b {
+                    if matches!(b.from, From::Branch { pad, .. } | From::Through { pad } if pad == q) && !out.contains(&r) {
+                        out.push(r);
+                    }
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// One improvement pass: each pad's branch, with the branches hanging off it (at most
+    /// MAX_SUBTREE pads), is taken up and the pads connected again in turn, each to anywhere on
+    /// the network (a neighbor's road it ran beside, say); kept if every pad connects and the
+    /// whole network got cheaper. Returns the pads whose branch moved.
     pub fn improve(&mut self, prob: &Problem, report: &mut Report) -> Vec<usize> {
+        const MAX_SUBTREE: usize = 12;
         let mut moved = Vec::new();
         for p in 0..self.pads.len() {
-            if self.branches[p].is_none() || self.dependents(p) > 0 {
+            if self.branches[p].is_none() {
+                continue;
+            }
+            let sub = self.subtree(p);
+            if sub.len() > MAX_SUBTREE {
                 continue;
             }
             let (c0, o0) = self.cost();
-            let old = self.branches[p].take();
-            match self.search(prob, p, &format!("improve: pad {}", p + 1), report) {
-                Some(b) => {
-                    self.branches[p] = Some(b);
-                    let (c1, o1) = self.cost();
-                    if c1 + o1 < c0 + o0 - 1e-6 * (c0 + o0).abs().max(1.0) {
-                        moved.push(p);
-                    } else {
-                        self.branches[p] = old;
+            let old: Vec<Option<Branch>> = sub.iter().map(|&q| self.branches[q].take()).collect();
+            let mut ok = true;
+            for &q in &sub {
+                match self.search(prob, q, &format!("improve: pad {}", q + 1), report) {
+                    Some(b) => self.branches[q] = Some(b),
+                    None => {
+                        ok = false;
+                        break;
                     }
                 }
-                None => self.branches[p] = old,
+            }
+            let (c1, o1) = self.cost();
+            if ok && c1 + o1 < c0 + o0 - 1e-6 * (c0 + o0).abs().max(1.0) {
+                moved.push(p);
+            } else {
+                for (&q, b) in sub.iter().zip(old) {
+                    self.branches[q] = b;
+                }
             }
         }
         moved
