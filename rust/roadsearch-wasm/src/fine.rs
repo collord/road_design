@@ -242,7 +242,8 @@ impl FineSession {
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn network_begin(&mut self, ar: i32, ac: i32, pad_rows: &[f64], pad_cols: &[f64], length: f64, width: f64,
-                         b: usize, alongside: bool, rigs: usize, by_road: bool) -> Result<Vec<f64>, JsValue> {
+                         b: usize, alongside: bool, rigs: usize, by_road: bool, approach: f64)
+                         -> Result<Vec<f64>, JsValue> {
         let (nr, nc) = (self.prob.nr as i32, self.prob.nc as i32);
         if ar < 0 || ac < 0 || ar >= nr || ac >= nc {
             return Err(js_err("the access point is outside the network's grid"));
@@ -252,6 +253,7 @@ impl FineSession {
         net.rigs = rigs;
         if by_road {
             net.orient_by_road(&mut self.prob, length, width);
+            net.approach = approach.max(0.0);
         }
         let axes = net.pads.iter().map(|p| p.axis).collect();
         self.network = Some(net);

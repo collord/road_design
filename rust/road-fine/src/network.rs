@@ -34,6 +34,8 @@
 //! has its own bench (across the slope, plus the cut or fill that keeps it level along its
 //! length), and the search finishes at the cheapest road plus bench. A placed pad's footprint is
 //! closed to roads searched after it, and a pad only lies where its footprint is clear of roads.
+//! The road's last `approach` meters into a pad are one straight move along its axis, so a rig
+//! truck lines up to pull on.
 
 use std::collections::HashMap;
 
@@ -112,6 +114,8 @@ pub struct FineNetwork {
     /// Pads lie the way the road arrives (see the module docs), `pad_size` (length, width) m.
     pub by_road: bool,
     pub pad_size: (f64, f64),
+    /// Straight approach into a pad by road (m; 0: none).
+    pub approach: f64,
     /// Per pad: its branch, once connected.
     pub branches: Vec<Option<Branch>>,
     pub unreachable: Vec<bool>,
@@ -222,7 +226,7 @@ impl FineNetwork {
         }
         let n = pads.len();
         FineNetwork {
-            root, pads, b, alongside, rigs: 0, only_from: None, by_road: false, pad_size: (0.0, 0.0), branches: vec![None; n],
+            root, pads, b, alongside, rigs: 0, only_from: None, by_road: false, pad_size: (0.0, 0.0), approach: 0.0, branches: vec![None; n],
             unreachable: vec![false; n],
         }
     }
@@ -416,13 +420,24 @@ impl FineNetwork {
     /// The cheapest branch from the network to pad p (its bench included), or None: to an end,
     /// or with `alongside` also beside it, whichever costs the network less.
     fn search(&self, prob: &Problem, p: usize, stage: &str, report: &mut Report) -> Option<Branch> {
+        // A pad no straight approach reaches (steep ground hemmed in by others) is reached without.
+        let b = self.search_with(prob, p, stage, report, self.approach);
+        if b.is_none() && self.by_road && self.approach > 0.0 {
+            return self.search_with(prob, p, &format!("{stage}, no straight approach"), report, 0.0);
+        }
+        b
+    }
+
+    fn search_with(&self, prob: &Problem, p: usize, stage: &str, report: &mut Report, approach: f64) -> Option<Branch> {
         let pad = &self.pads[p];
         if self.by_road {
             // Every pad's core (what any of its directions covers) closed, placed pads' whole
             // footprints too; this pad only where its footprint is clear of roads.
+            // Every pad not yet placed keeps all it could cover (this one included); placed pads
+            // their footprints, closed below.
             let mut open = prob.open.clone();
-            for q in 0..self.pads.len() {
-                for k in self.core(prob, q, q == p) {
+            for q in (0..self.pads.len()).filter(|&q| q == p || self.branches[q].is_none()) {
+                for k in self.core(prob, q, true) {
                     open[k] = 0;
                 }
             }
@@ -434,13 +449,37 @@ impl FineNetwork {
                 }
             }
             let roads = self.road_cells(prob);
-            let (goals, costs): (Vec<End>, Vec<f64>) = pad
-                .by_road
-                .iter()
-                .filter(|g| g.1.is_finite() && self.footprint(prob, p, g.0.heading).iter().all(|&k| !roads[k]))
-                .copied()
-                .unzip();
-            return self.search_to_open(prob, Some(&open), p, &goals, Some(&costs), false, stage, report);
+            let (mut goals, mut costs, mut ends, mut tails) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            prob.with_model_open(&open, |model| {
+                for (i, &(way, bench)) in pad.by_road.iter().enumerate() {
+                    if !bench.is_finite() || self.footprint(prob, p, way.heading).iter().any(|&k| roads[k]) {
+                        continue;
+                    }
+                    // The straight approach: the goal moves back along it, its cost into the finish.
+                    let (goal, cost, tail) = match self.straight_move(prob, way.heading) {
+                        Some(a) if approach > 0.0 => {
+                            let k = (approach / (prob.lat.length[a] * prob.res) - 1e-9).ceil().max(1.0) as i64;
+                            let (dr, dc) = (prob.lat.dr[a], prob.lat.dc[a]);
+                            let s = (way.cell.0 - k * dr, way.cell.1 - k * dc);
+                            if s.0 < 0 || s.1 < 0 || s.0 >= prob.nr as i64 || s.1 >= prob.nc as i64 {
+                                continue;
+                            }
+                            let tail: Vec<Edge> = (0..k).map(|i| (s.0 + i * dr, s.1 + i * dc, a)).collect();
+                            let c: f64 = tail.iter().map(|&(r, c, a)| model.edge_cost(r, c, a)).sum();
+                            (End { cell: s, heading: way.heading }, bench + c, tail)
+                        }
+                        _ => (way, bench, Vec::new()),
+                    };
+                    if cost.is_finite() {
+                        goals.push(goal);
+                        costs.push(cost);
+                        ends.push(i);
+                        tails.push(tail);
+                    }
+                }
+            });
+            return self.search_to_open(prob, Some(&open), p, &goals, Some(&costs), Some((&ends, &tails)), false, stage,
+                                       report);
         }
         let ends: Vec<End> = pad.ends.iter().flatten().copied().collect();
         let mut best: Option<(f64, Branch)> = None;
@@ -459,6 +498,23 @@ impl FineNetwork {
             consider(self.search_to(prob, p, &pad.sides, None, true, &format!("{stage}, beside"), report), self);
         }
         best.map(|(_, b)| b)
+    }
+
+    /// The straight move along `heading` the approach into a pad is made of (repeated): the
+    /// longest there is.
+    fn straight_move(&self, prob: &Problem, heading: usize) -> Option<usize> {
+        let l = &prob.lat;
+        let want = self.approach / prob.res;
+        let (vx, vy) = (prob.vx[heading], prob.vy[heading]);
+        let straight: Vec<usize> = (0..l.n_prims)
+            .filter(|&a| {
+                let (x, y) = (l.dc[a] as f64, -(l.dr[a] as f64));
+                l.h0[a] as usize == heading && l.h1[a] as usize == heading && (x * vy - y * vx).abs() < 1e-9
+                    && x * vx + y * vy > 0.0
+            })
+            .collect();
+        straight.iter().copied().filter(|&a| l.length[a] <= want + 1e-9).max_by(|&a, &b| l.length[a].total_cmp(&l.length[b]))
+            .or_else(|| straight.iter().copied().min_by(|&a, &b| l.length[a].total_cmp(&l.length[b])))
     }
 
     /// Cells (flat) of pad p's footprint lying along `heading` (pads by road).
@@ -517,13 +573,16 @@ impl FineNetwork {
     #[allow(clippy::too_many_arguments)]
     fn search_to(&self, prob: &Problem, p: usize, goals: &[End], goal_costs: Option<&[f64]>, beside: bool, stage: &str,
                  report: &mut Report) -> Option<Branch> {
-        self.search_to_open(prob, None, p, goals, goal_costs, beside, stage, report)
+        self.search_to_open(prob, None, p, goals, goal_costs, None, beside, stage, report)
     }
 
-    /// As search_to, on `open` (the ground roads may use) rather than prob.open.
-    #[allow(clippy::too_many_arguments)]
+    /// As search_to, on `open` (the ground roads may use) rather than prob.open; for pads by road,
+    /// `by_way` gives each goal's way in (its index in the pad's by_road) and the straight
+    /// approach to append from the goal to it, if any.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn search_to_open(&self, prob: &Problem, open: Option<&[u8]>, p: usize, goals: &[End], goal_costs: Option<&[f64]>,
-                      beside: bool, stage: &str, report: &mut Report) -> Option<Branch> {
+                      by_way: Option<(&[usize], &[Vec<Edge>])>, beside: bool, stage: &str, report: &mut Report)
+                      -> Option<Branch> {
         let open = open.unwrap_or(&prob.open);
         if goals.is_empty() {
             return None;
@@ -665,12 +724,17 @@ impl FineNetwork {
         }
         let from = *from_of.get(&s)?;
         // No edges: the network already arrives at a way in (the pad sits on it), so only its bench.
-        let edges: Vec<Edge> =
+        let mut edges: Vec<Edge> =
             res.edges_to(&prob.lattice, &index, gs).into_iter().map(|(r, c, a)| (r as i64, c as i64, a)).collect();
         let cell = index.cell((gs / nh as u64) as u32);
         let cell = (cell.0 as i64, cell.1 as i64);
         let reached = goal_states.iter().position(|&x| x == gs).map(|j| goal_of[j]);
-        let end = if self.by_road {
+        let end = if let Some((ends, tails)) = by_way {
+            // Its way in, and the straight approach to it.
+            let i = reached?;
+            edges.extend(tails[i].iter().copied());
+            ends[i]
+        } else if self.by_road {
             // Its entry in the pad's ways in.
             let g = goals[reached?];
             self.pads[p].by_road.iter().position(|w| w.0.cell == g.cell && w.0.heading == g.heading)?
@@ -981,6 +1045,7 @@ mod tests {
             let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 20.0, 15.0, 0, false);
             if by_road {
                 net.orient_by_road(&mut prob, 20.0, 15.0);
+                net.approach = 15.0;
             }
             let mut report = |_: &str, _: &FineProgress| true;
             for p in 0..centers.len() {
@@ -994,9 +1059,14 @@ mod tests {
             let b = b.as_ref().unwrap();
             let (way, cost) = net.pads[p].by_road[b.end];
             assert!(cost.is_finite() && (b.pad_cost - cost).abs() < 1e-9);
-            // The last move ends at the way in, heading into the pad (within a heading bin).
+            // The last move ends at the way in, heading into the pad (within a heading bin), a
+            // straight run along its axis at least the approach long.
             let &(r, c, a) = b.edges.last().unwrap();
             assert_eq!((r + prob.lat.dr[a], c + prob.lat.dc[a]), way.cell);
+            let straight = |&(_, _, a): &Edge| prob.lat.kind[a] == road_cost::ACTION_PRIM as i64
+                && prob.lat.h0[a] == prob.lat.h1[a] && prob.lat.h0[a] as usize == way.heading;
+            let run: f64 = b.edges.iter().rev().take_while(|e| straight(e)).map(|e| prob.lat.length[e.2] * prob.res).sum();
+            assert!(run >= 15.0 - 1e-9, "pad {p}: a straight approach of {run} m");
             let d = angles[prob.lat.h1[a] as usize] - angles[way.heading];
             assert!(d.cos() > 0.95, "pad {p}");
         }

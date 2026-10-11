@@ -492,7 +492,7 @@ async function network(p: Params, b: number, refine: number) {
 const RIG_RUNS = false;
 
 async function refineNetwork(p: Params, res: number, buffer: number, b: number, length: number, width: number,
-                             beside: boolean, rigs: number, byRoad: boolean) {
+                             beside: boolean, rigs: number, byRoad: boolean, approach: number, padOrder: string) {
   if (!area?.network || !source) throw new Error("find the network first");
   const { network: net, startXY, zScale, padsXY } = area;
   const [bx0, by0, bx1, by1] = source.info.bbox;
@@ -532,7 +532,7 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     const cell = (q: [number, number]) => [Math.floor((fg.y1 - q[1]) / res), Math.floor((q[0] - fg.x0) / res)];
     const [ar, ac] = cell(startXY);
     const axes = fs.network_begin(ar, ac, new Float64Array(padsXY.map((q) => toR(q[1]))),
-                                  new Float64Array(padsXY.map((q) => toC(q[0]))), length, width, b, beside, rigs, byRoad);
+                                  new Float64Array(padsXY.map((q) => toC(q[0]))), length, width, b, beside, rigs, byRoad, approach);
     post({ type: "padAxes", angles: Array.from(axes) });
     const n = padsXY.length;
     let stage = "", tStage = 0;
@@ -574,9 +574,16 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     // cross the contours (pads turned to their own contour) it costs more than the coarse
     // network's order. Otherwise the coarse network's order.
     const runs = rigs > 0 && RIG_RUNS ? Array.from(fs.network_rig_pieces()) : [];
+    // Lowest first: lower pads are on the network before the pads above, which may then switch
+    // back on them; otherwise cheapest first, the coarse network's order.
+    const elev = (q: [number, number]) => {
+      const r = Math.min(fg.h - 1, Math.max(0, Math.round(toR(q[1])))), c = Math.min(fg.w - 1, Math.max(0, Math.round(toC(q[0]))));
+      return z[r * fg.w + c];
+    };
+    const coarseOrder = padOrder === "lowest" ? [...net.order].sort((a, b) => elev(padsXY[a]) - elev(padsXY[b])) : net.order;
     const order: [number, number][] = runs.length
       ? runs.map((p, i) => [p, i > 0 ? runs[i - 1] : -1] as [number, number]).filter(([p]) => p >= 0)
-      : net.order.map((p) => [p, -1] as [number, number]);
+      : coarseOrder.map((p) => [p, -1] as [number, number]);
     for (const [pad, prev] of order) {
       progress("network: connect the pads", k, n);
       await checkpoint();
@@ -732,7 +739,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       else if (m.type === "run") await run(m.params);
       else if (m.type === "network") await network(m.params, m.b, m.refine);
       else if (m.type === "refineNetwork") {
-        await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad);
+        await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad, m.approach, m.padOrder);
       }
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "channels" && area?.acc) {

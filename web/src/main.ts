@@ -645,6 +645,8 @@ $("refine").addEventListener("click", () => {
            b: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-b").value))), length, width,
            beside: $<HTMLInputElement>("pad-beside").checked,
            byRoad: $<HTMLSelectElement>("pad-orient").value === "road",
+           approach: Math.max(0, Number($<HTMLInputElement>("pad-approach").value) || 0),
+           padOrder: $<HTMLSelectElement>("pad-order").value,
            rigs: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-rigs").value) || 0)) });
     return;
   }

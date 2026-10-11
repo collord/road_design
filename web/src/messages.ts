@@ -8,7 +8,7 @@ export type ToWorker =
       res: number; maxCells: number; zUnits: string; roughMaxRes: number }
   | { type: "network"; params: Params; b: number; refine: number }
   | { type: "refineNetwork"; params: Params; res: number; buffer: number; b: number; length: number; width: number;
-      beside: boolean; rigs: number; byRoad: boolean }
+      beside: boolean; rigs: number; byRoad: boolean; approach: number; padOrder: string }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }

@@ -278,6 +278,10 @@ try {
           document.querySelector("#pad-h").value = ${JSON.stringify(pw)}; })()`);
         console.log(`  pad size: ${process.env.PAD_SIZE} m`);
       }
+      if (process.env.PAD_ORDER) {
+        await evaluate(`document.querySelector("#pad-order").value = ${JSON.stringify(process.env.PAD_ORDER)}`);
+        console.log(`  join pads: ${process.env.PAD_ORDER} first`);
+      }
       if (process.env.RIGS) {
         await evaluate(`document.querySelector("#pad-rigs").value = ${JSON.stringify(process.env.RIGS)}`);
         console.log(`  rigs: ${process.env.RIGS}`);
