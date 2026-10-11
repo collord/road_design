@@ -187,6 +187,9 @@ pub struct CostParams {
     pub c_turn: f64,
     /// Slope added to the soil-thinning slope per meter of roughness (S0 / rough_r0); 0: none.
     pub k_rough: f64,
+    /// Hairpins and bends also need the cells along their chord open (their tables were built on
+    /// an earlier mask: a network search closes pads' footprints as it goes).
+    pub check_macro_chords: bool,
 }
 
 /// The cost model: `EdgeCost` for lattice-search.
@@ -331,6 +334,15 @@ impl<'a> RoadCost<'a> {
         total + q.lam_fill * vol
     }
 
+    /// Whether the cells along the straight line from (r, c) by (dr, dc), every half cell, are open.
+    fn chord_open(&self, r: i64, c: i64, dr: i64, dc: i64) -> bool {
+        let n = (2.0 * ((dr * dr + dc * dc) as f64).sqrt()).ceil().max(1.0) as i64;
+        (1..n).all(|k| {
+            let f = k as f64 / n as f64;
+            self.cell_open(nearest(r as f64 + f * dr as f64), nearest(c as f64 + f * dc as f64))
+        })
+    }
+
     /// Fill crossing: a straight macro-action over a channel on a linear design.
     fn eval_fill(&self, r: i64, c: i64, p: usize) -> f64 {
         let (a, t, q) = (self.actions, &self.terrain, self.params);
@@ -431,6 +443,9 @@ impl<'a> RoadCost<'a> {
         if kind == ACTION_HP_LEFT || kind == ACTION_BEND_L {
             // Tables are built once; the end nodes are checked against the current mask.
             if !(self.cell_open(r, c) && self.cell_open(r + a.dr[p], c + a.dc[p])) {
+                return f64::INFINITY;
+            }
+            if q.check_macro_chords && !self.chord_open(r, c, a.dr[p], a.dc[p]) {
                 return f64::INFINITY;
             }
             let tab = if kind == ACTION_HP_LEFT { &self.hairpins } else { &self.bends };

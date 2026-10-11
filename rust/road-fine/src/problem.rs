@@ -367,7 +367,7 @@ impl Problem {
             res: self.res, g_max: p.g_max, c_base: p.c_base, culvert_breaks: p.culvert_area_breaks.clone(),
             culvert_costs: p.culvert_costs.clone(), lam_fill: self.lam_fill, w: p.w, f_rock: p.f_rock,
             h_fill_max: p.h_fill_max, fill_tol: p.fill_tol, c_travel: p.c_travel, c_vertical: p.c_vertical,
-            c_turn: p.c_turn, k_rough: self.k_rough,
+            c_turn: p.c_turn, k_rough: self.k_rough, check_macro_chords: false,
         }
     }
 
@@ -379,7 +379,15 @@ impl Problem {
 
     /// Calls `f` with the cost model over this problem (its lam_fill included).
     pub fn with_model<R>(&self, f: impl FnOnce(&RoadCost) -> R) -> R {
-        let cp = self.cost_params();
+        self.with_model_open(&self.open, f)
+    }
+
+    /// As with_model, with `open` (nr x nc) as the ground roads may use: a network search with
+    /// pads' footprints closed, say.
+    pub fn with_model_open<R>(&self, open: &[u8], f: impl FnOnce(&RoadCost) -> R) -> R {
+        // On another mask than the one the macro tables were built on, macros check their chord.
+        let mut cp = self.cost_params();
+        cp.check_macro_chords = !std::ptr::eq(open.as_ptr(), self.open.as_ptr());
         let heads = Headings { vx: &self.vx, vy: &self.vy };
         let g = &self.bend_geo;
         let shapes = BendShapes { ns: g.ns, x: &g.x, y: &g.y, l1: &g.l1, l2: &g.l2, dth: &g.dth, radius: g.r };
@@ -401,7 +409,7 @@ impl Problem {
         let model = RoadCost {
             actions: &self.actions,
             terrain: Terrain {
-                open: Grid::new(&self.open, nr, nc),
+                open: Grid::new(open, nr, nc),
                 gx: Grid::new(&self.gx, nr, nc),
                 gy: Grid::new(&self.gy, nr, nc),
                 zs: Grid::new(&self.zs, nr, nc),
