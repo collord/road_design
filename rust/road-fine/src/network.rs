@@ -453,16 +453,9 @@ impl FineNetwork {
         let full = self.rigs > 0 && (0..self.pads.len()).filter(|&q| leaf(q)).count() >= self.rigs;
         // Sources: (cell, headings, cost, where).
         let forced = self.only_from;
+        // A branch may leave a road at a junction any way: drill trucks reverse at junctions as a
+        // matter of course.
         let all: Vec<usize> = (0..nh).collect();
-        // Leaving a road at a junction: at most a right angle from its direction of travel (a
-        // sharper turn means reversing, which only a switchback or a pad's landing allows).
-        let angles = heading_angles(nh);
-        let turn_off = |h: usize| -> Vec<usize> {
-            (0..nh)
-                .filter(|&k| ((angles[k] - angles[h] + std::f64::consts::PI).rem_euclid(2.0 * std::f64::consts::PI)
-                    - std::f64::consts::PI).abs() <= 0.5 * std::f64::consts::PI + 1e-9)
-                .collect()
-        };
         let mut src: Vec<((i64, i64), Vec<usize>, f64, From)> =
             if full || forced.is_some() { Vec::new() } else { vec![(self.root, all.clone(), 0.0, From::Root)] };
         for q in 0..self.pads.len() {
@@ -476,8 +469,8 @@ impl FineNetwork {
             let start = self.op_at_start(q);
             // Interior nodes (not the junction itself, not the pad's door): forks.
             for node in (1..br.edges.len()).filter(|_| !full && forced.is_none()) {
-                let (r, c, a) = br.edges[node];
-                src.push(((r, c), turn_off(prob.lat.h0[a] as usize), start + br.op[node], From::Branch { pad: q, node }));
+                let (r, c, _) = br.edges[node];
+                src.push(((r, c), all.clone(), start + br.op[node], From::Branch { pad: q, node }));
             }
             // Beside a pad the road goes on: its last node is a junction like any other.
             if br.beside {
@@ -485,7 +478,7 @@ impl FineNetwork {
                 if let Some(&(r, c, a)) = br.edges.last() {
                     let node = br.edges.len();
                     let cell = (r + prob.lat.dr[a], c + prob.lat.dc[a]);
-                    src.push((cell, turn_off(prob.lat.h1[a] as usize), start + br.op[node], From::Branch { pad: q, node }));
+                    src.push((cell, all.clone(), start + br.op[node], From::Branch { pad: q, node }));
                 }
                 continue;
             }
