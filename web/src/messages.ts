@@ -12,6 +12,7 @@ export type ToWorker =
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
+  | { type: "layout"; area: [number, number][]; spacing: number; zUnits: string }
   | { type: "stop" };
 
 export interface RouteOut {
@@ -61,7 +62,9 @@ export type FromWorker =
       pairs: Uint32Array; costPerM: Float32Array }
   | { type: "corridors"; grid: Grid; routes: RouteOut[]; final: boolean }
   | { type: "progress"; name: string; done: number; total: number }
-  | { type: "busy"; task: "open" | "load" | "run" | "refine" | "network" | "refineNetwork" | null }
+  | { type: "busy"; task: "open" | "load" | "run" | "refine" | "network" | "refineNetwork" | "layout" | null }
+  /** Drill holes laid out over an area: rows along the contours, then infill. */
+  | { type: "holes"; holes: [number, number][]; rows: number; dz: number; slope: number }
   | { type: "fine"; route: FineOut }
   /** The pad network on the graph: its edges (graph node pairs) with the pads each serves, and per
    *  pad (in the page's order) whether it is connected or unreachable and how many pads lie beyond. */

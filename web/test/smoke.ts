@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import init, * as wasm from "../src/wasm/roadsearch_wasm.js";
 import { writeArrayBuffer } from "geotiff";
+import { inside, layoutHoles } from "../src/layout.ts";
 import { Source, Z_UNIT_SCALE } from "../src/source.ts";
 import { get, hairpinAllowance, maxCatchAtMask, roughK, sectionTable, sigmaM, sMask, TABLE_NS } from "../src/params.ts";
 
@@ -104,5 +105,30 @@ for (const ex of examples) {
   check(off.cost === plain.cost && on.cost > off.cost,
         `west-side corridor ${Math.round(off.cost).toLocaleString()} without roughness, ${Math.round(on.cost).toLocaleString()} with`);
   session.free();
+}
+// Drill holes over an area of a 30% slope rising east: rows along the contours (north-south),
+// none closer than the spacing, and nowhere in the area left that a hole would fit.
+{
+  console.log("layout: holes over a 400 x 250 m area of a 30% slope");
+  const g = { x0: 0, y1: 400, res: 5, w: 120, h: 80 };
+  const z = new Float32Array(g.w * g.h);
+  for (let r = 0; r < g.h; r++) for (let c = 0; c < g.w; c++) z[r * g.w + c] = 1000 + 0.3 * (c + 0.5) * g.res;
+  const area: [number, number][] = [[100, 300], [500, 300], [500, 50], [100, 50]];
+  const sp = 61;
+  const out = layoutHoles(z, g, area, sp);
+  let dmin = Infinity;
+  for (let i = 0; i < out.holes.length; i++) for (let j = 0; j < i; j++) {
+    dmin = Math.min(dmin, Math.hypot(out.holes[i][0] - out.holes[j][0], out.holes[i][1] - out.holes[j][1]));
+  }
+  let gap = 0;
+  for (let x = 100; x <= 500; x += 2) for (let y = 50; y <= 300; y += 2) {
+    if (!inside(area, [x, y])) continue;
+    gap = Math.max(gap, Math.min(...out.holes.map((h) => Math.hypot(h[0] - x, h[1] - y))));
+  }
+  // Row holes share their contour's x (elevation) with others in the row.
+  const xs = out.holes.slice(0, out.rows).map((h) => Math.round(h[0]));
+  const rowsAlongContours = new Set(xs).size < xs.length;
+  check(dmin >= sp - 1e-6 && gap < sp && rowsAlongContours && out.holes.length > 10,
+        `${out.holes.length} holes (${out.rows} along rows), closest ${dmin.toFixed(1)} m, largest gap ${gap.toFixed(1)} m`);
 }
 process.exit(failed ? 1 : 0);

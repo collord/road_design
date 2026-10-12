@@ -216,7 +216,9 @@ try {
       const [[sx, sy], [gx, gy]] = box;
       let seed = 7;
       const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
-      // NET_PADS: a CSV of pads (x, y in the page's UTM) instead of the 16 seeded over the box.
+      // NET_AREA: a CSV of a drilling area's corners (x, y in the page's UTM): holes laid out over it
+      // become the pads (NET_SPACING ft, 200 by default). NET_PADS: a CSV of pads instead of the 16
+      // seeded over the box.
       const rows = process.env.NET_PADS ? readFileSync(process.env.NET_PADS, "utf-8").trim().split(String.fromCharCode(10)).map((l) => l.trim()) : ["x,y"];
       for (let i = 0; i < (process.env.NET_PADS ? 0 : 16); i++) {
         rows.push(`${(Math.min(sx, gx) - 500 + rnd() * (Math.abs(gx - sx) + 1000)).toFixed(1)},` +
@@ -293,7 +295,20 @@ try {
       const doc = await send("DOM.getDocument", {});
       const q = await send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: "#pads-file" });
       await send("DOM.setFileInputFiles", { nodeId: q.result.nodeId, files: [csv] });
-      const nPads = rows.length - 1;
+      let nPads = rows.length - 1;
+      if (process.env.NET_AREA) {
+        await evaluate(`document.querySelector("#clear-pads").click()`);
+        if (process.env.NET_SPACING) await evaluate(`document.querySelector("#hole-spacing").value = ${JSON.stringify(process.env.NET_SPACING)}`);
+        const qa = await send("DOM.querySelector", { nodeId: doc.result.root.nodeId, selector: "#area-file" });
+        await send("DOM.setFileInputFiles", { nodeId: qa.result.nodeId, files: [join(process.cwd(), process.env.NET_AREA)] });
+        await until(`!document.querySelector("#layout-holes").disabled`, "the drilling area", 10000);
+        await evaluate(`document.querySelector("#layout-holes").click()`);
+        const laid = await until(`(${hasError}) || [...document.querySelectorAll("#log li")].map((li) => li.textContent)
+          .find((t) => t.startsWith("laid out"))`, "the layout", 120000);
+        if (!String(laid).startsWith("laid out")) throw new Error(String(laid));
+        console.log(`  ${laid}`);
+        nPads = Number(String(laid).match(/laid out (\d+)/)![1]);
+      }
       await until(`/${nPads} pads/.test(document.querySelector("#pads-info").textContent)`, "the pads", 10000);
       // NET_START=x,y: the access point; ROAD_W (m) and G_MAX (%): the road.
       for (const [env, id] of [["NET_START", "start-text"], ["ROAD_W", "w"], ["G_MAX", "g_max"]]) {

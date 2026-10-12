@@ -44,6 +44,13 @@
           <label class="filebtn">Load pads...<input id="pads-file" type="file" accept=".csv,.txt,.geojson,.json"></label>
           <button id="clear-pads" type="button">Clear</button>
         </div>
+        <div class="row">
+          <button id="pick-area" type="button" title="Click the drilling area's corners on the map; click again to finish.">Draw drilling area</button>
+          <label class="filebtn" title="A CSV of corners (x, y or lon, lat) or a GeoJSON polygon.">Load area...<input id="area-file" type="file" accept=".csv,.txt,.geojson,.json"></label>
+          <label title="Holes along contour rows this far apart, rows this far apart across the slope, then infill wherever a hole fits: no two holes closer than this.">Spacing (ft) <input id="hole-spacing" type="number" min="10" step="10" value="200" style="width:5em"></label>
+          <button id="layout-holes" type="button" disabled title="Lay out holes over the drilling area: they replace the pads.">Lay out holes</button>
+        </div>
+        <p id="area-info" class="muted"></p>
         <p id="pads-info" class="muted">No pads yet. While adding, click a pad again to remove it. A CSV needs x and y (or lon and lat) columns; GeoJSON, points.</p>
         <div class="grid2">
           <label title="A rig working on a pad, or stuck there, blocks the road through it: a pad may lie on the way to at most this many other pads (0: every pad ends its own spur).">Pads a pad may block <input id="pad-b" type="number" min="0" step="1" value="2"></label>

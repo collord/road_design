@@ -29,7 +29,9 @@ let base: Params = {};             // the parameter set before the controls (an 
 let info: SourceInfo | null = null;
 let start: [number, number] | null = null;
 let goal: [number, number] | null = null;
-let picking: "start" | "goal" | "pads" | null = null;
+let picking: "start" | "goal" | "pads" | "area" | null = null;
+/** The drilling area's corners (map coordinates) for laying out holes. */
+const drillArea: [number, number][] = [];
 let mode: "route" | "network" = "route";
 /** Pad centers (UTM). */
 const pads: [number, number][] = [];
@@ -96,7 +98,8 @@ function log(text: string, cls = "") {
 // ---------------------------------------------------------------- status: what the worker is doing
 
 const TASK_TEXT = { open: "Opening the DEM", load: "Loading the area", run: "Finding corridors", refine: "Refining corridors",
-                    network: "Building the pad network", refineNetwork: "Refining the pad network" } as const;
+                    network: "Building the pad network", refineNetwork: "Refining the pad network",
+                    layout: "Laying out holes" } as const;
 let busy: keyof typeof TASK_TEXT | null = null;
 let busySince = 0;
 let ticker: ReturnType<typeof setInterval> | undefined;
@@ -355,6 +358,64 @@ $("pick-pads").addEventListener("click", () => {
   $("pick-goal").classList.remove("active");
   drawPads();
 });
+/** The drilling area on the map. */
+const areaOutline = L.layerGroup();
+function drawArea() {
+  areaOutline.clearLayers();
+  if (drillArea.length) {
+    const ll = drillArea.map(([x, y]) => [y, x] as [number, number]);
+    (drillArea.length > 2 ? L.polygon(ll, { color: "#6a1b9a", weight: 2, dashArray: "6 4", fill: false, interactive: false })
+      : L.polyline(ll, { color: "#6a1b9a", weight: 2, dashArray: "6 4", interactive: false })).addTo(areaOutline);
+    for (const p of ll) L.circleMarker(p, { radius: 3, color: "#6a1b9a", weight: 1, fillOpacity: 1 }).addTo(areaOutline);
+    if (!map.hasLayer(areaOutline)) areaOutline.addTo(map);
+  }
+  $<HTMLButtonElement>("layout-holes").disabled = drillArea.length < 3;
+  $("area-info").textContent = drillArea.length
+    ? `drilling area: ${drillArea.length} corners` + (picking === "area" ? " (click to add corners; click Draw area again to finish)" : "")
+    : "";
+}
+$("pick-area").addEventListener("click", () => {
+  if (picking !== "area") drillArea.length = 0;
+  picking = picking === "area" ? null : "area";
+  $("pick-area").classList.toggle("active", picking === "area");
+  $("pick-pads").classList.remove("active");
+  drawArea();
+});
+$<HTMLInputElement>("area-file").addEventListener("change", async (e) => {
+  const f = (e.target as HTMLInputElement).files?.[0];
+  if (!f) return;
+  try {
+    const text = await f.text();
+    let pts: [number, number][];
+    if (/\.(geo)?json$/i.test(f.name) || text.trimStart().startsWith("{")) {
+      // A polygon's outer ring (longitude, latitude).
+      const gj = JSON.parse(text);
+      const geom = gj.type === "FeatureCollection" ? gj.features[0].geometry : gj.type === "Feature" ? gj.geometry : gj;
+      const ring = geom.type === "MultiPolygon" ? geom.coordinates[0][0] : geom.coordinates[0];
+      pts = ring.map((c: number[]) => proj4("WGS84", utmDef(), [c[0], c[1]]) as [number, number]);
+    } else {
+      pts = parsePads(text, f.name);
+    }
+    if (pts.length < 3) throw new Error("an area needs at least three corners");
+    drillArea.length = 0;
+    drillArea.push(...pts);
+    drawArea();
+    log(`${f.name}: drilling area of ${pts.length} corners`);
+  } catch (err) {
+    log(`${f.name}: ${err instanceof Error ? err.message : String(err)}`, "err");
+  }
+  (e.target as HTMLInputElement).value = "";
+});
+$("layout-holes").addEventListener("click", () => {
+  if (drillArea.length < 3) return;
+  picking = null;
+  $("pick-area").classList.remove("active");
+  drawArea();
+  const ft = Number($<HTMLInputElement>("hole-spacing").value);
+  if (!(ft > 0)) return;
+  send({ type: "layout", area: [...drillArea], spacing: ft * 0.3048, zUnits: zUnits() });
+});
+
 $("clear-pads").addEventListener("click", () => {
   pads.length = 0;
   padAxes = null;
@@ -590,6 +651,11 @@ $<HTMLSelectElement>("coord-crs").addEventListener("change", () => {
   if (goal) $<HTMLInputElement>("goal-text").value = formatPoint(goal);
 });
 map.on("click", (e: L.LeafletMouseEvent) => {
+  if (picking === "area") {
+    drillArea.push([e.latlng.lng, e.latlng.lat]);
+    drawArea();
+    return;
+  }
   if (picking === "pads") {
     pads.push([e.latlng.lng, e.latlng.lat]);
     padStatus = null;
@@ -1008,6 +1074,19 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       padAxes = m.angles;
       drawPads();
       break;
+    case "holes": {
+      // The holes become the pads.
+      pads.length = 0;
+      pads.push(...m.holes);
+      padAxes = null;
+      padStatus = null;
+      drawPads();
+      const ft = $<HTMLInputElement>("hole-spacing").value;
+      log(`laid out ${m.holes.length} holes at ${ft} ft: ${m.rows} along contour rows (${m.dz.toFixed(1)} m apart in ` +
+          `elevation, slope ${(100 * m.slope).toFixed(0)}% at the center), ${m.holes.length - m.rows} infill` +
+          (m.holes.length > 50 ? "; more than 50 pads make for a slow network search" : ""));
+      break;
+    }
     case "graph": {
       const g = m.grid;
       lastGraph = { grid: g, rows: m.rows, cols: m.cols };

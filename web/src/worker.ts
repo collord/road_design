@@ -3,6 +3,7 @@
 // progress within the long ones, and "busy" when a task starts and ends. "stop" ends a task at
 // its next checkpoint (between bands of a read, slices of the edges, and corridors).
 import init, * as wasm from "./wasm/roadsearch_wasm.js";
+import { layoutHoles, smooth } from "./layout";
 import { Source, Z_UNIT_SCALE, type Grid } from "./source";
 import { get, hairpinAllowance, maxCatchAtMask, roughK, roughR0, sectionTable, sigmaM, sMask, TABLE_NS,
          type Params } from "./params";
@@ -173,6 +174,26 @@ function roughNote(rough: Float32Array): string {
 /** The DEM on a fine grid, with its roughness when the parameters use it. */
 const readFine = (fg: Grid, p: Params, zScale: number, onBand: (done: number, total: number) => Promise<void>) =>
   readDem(fg, roughR0(p) > 0, zScale, onBand);
+
+/** Drill holes over an area (map coordinates): the DEM read over it and a margin at 5 m,
+ *  smoothed (sigma 25 m), then rows along the contours and infill (layout.ts). */
+async function layout(m: Extract<ToWorker, { type: "layout" }>) {
+  if (!source) throw new Error("open a DEM first");
+  if (m.area.length < 3) throw new Error("the drilling area needs at least three corners");
+  const res = 5, pad = 2 * m.spacing;
+  const xs = m.area.map((p) => p[0]), ys = m.area.map((p) => p[1]);
+  const x0 = Math.floor((Math.min(...xs) - pad) / res) * res, y1 = Math.ceil((Math.max(...ys) + pad) / res) * res;
+  const g: Grid = { x0, y1, res, w: Math.ceil((Math.max(...xs) + pad - x0) / res), h: Math.ceil((y1 - Math.min(...ys) + pad) / res) };
+  if (g.w * g.h > 4e6) throw new Error("the drilling area is too large to lay out at 5 m");
+  const z = await timedAsync("layout: read the DEM at 5 m", () =>
+    source!.resampleBands(g, wasm.resample, Z_UNIT_SCALE[m.zUnits] ?? 1, -1, async (done, total) => {
+      progress("layout: read the DEM", done, total);
+      await checkpoint();
+    }));
+  const zs = timed("layout: smooth", () => smooth(z, g.w, g.h, 25 / res));
+  const out = timed("layout: rows along the contours, then infill", () => layoutHoles(zs, g, m.area, m.spacing));
+  post({ type: "holes", holes: out.holes, rows: out.rows, dz: out.dz, slope: out.slope });
+}
 
 // --- the fine search's helpers -----------------------------------------------------------------
 
@@ -742,6 +763,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
         await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad, m.approach, m.padOrder);
       }
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
+      else if (m.type === "layout") await layout(m);
       else if (m.type === "channels" && area?.acc) {
         const ch = channelRgba(area.acc, m.aMin);
         post({ type: "raster", layer: "channels", grid: area.grid, rgba: ch }, [ch.buffer]);
