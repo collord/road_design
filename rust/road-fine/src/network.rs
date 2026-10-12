@@ -352,6 +352,72 @@ impl FineNetwork {
         (0..k).map(|i| snake[i * n / k..(i + 1) * n / k].to_vec()).collect()
     }
 
+    /// The pads as rows along the contours, for a network built along the rows: grouped by
+    /// elevation (a row ends where the next pad up is more than half the typical step between rows
+    /// higher: the spacing times the slope), each ordered along its contour by chaining nearest
+    /// neighbors from one end; rows from the one nearest the access point's elevation outward,
+    /// as a snake (each starts at the end nearer where the one before finished).
+    pub fn row_runs(&self, prob: &Problem) -> Vec<Vec<usize>> {
+        let n = self.pads.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let res = prob.res;
+        let cell = |r: f64, c: f64| (r.round().clamp(0.0, (prob.nr - 1) as f64) as usize) * prob.nc
+            + c.round().clamp(0.0, (prob.nc - 1) as f64) as usize;
+        let z: Vec<f64> = self.pads.iter().map(|p| prob.zs[cell(p.center.0, p.center.1)]).collect();
+        let xy: Vec<(f64, f64)> = self.pads.iter().map(|p| (p.center.1 * res, -p.center.0 * res)).collect();
+        let dist = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).hypot(a.1 - b.1);
+        // Typical spacing (nearest neighbors) and step between rows.
+        let mut nn: Vec<f64> = (0..n)
+            .map(|i| (0..n).filter(|&j| j != i).map(|j| dist(xy[i], xy[j])).fold(f64::INFINITY, f64::min))
+            .filter(|d| d.is_finite())
+            .collect();
+        nn.sort_by(f64::total_cmp);
+        let spacing = nn.get(nn.len() / 2).copied().unwrap_or(1.0);
+        let mut steps: Vec<f64> = self.pads.iter().map(|p| {
+            let k = cell(p.center.0, p.center.1);
+            spacing * prob.gx[k].hypot(prob.gy[k])
+        }).collect();
+        steps.sort_by(f64::total_cmp);
+        let step = steps[steps.len() / 2].max(1e-6);
+        let mut by_z: Vec<usize> = (0..n).collect();
+        by_z.sort_by(|&a, &b| z[a].total_cmp(&z[b]));
+        let mut rows: Vec<Vec<usize>> = vec![vec![by_z[0]]];
+        for w in by_z.windows(2) {
+            if z[w[1]] - z[w[0]] > 0.5 * step {
+                rows.push(Vec::new());
+            }
+            rows.last_mut().unwrap().push(w[1]);
+        }
+        // Rows outward from the access point's elevation.
+        let root = (self.root.1 as f64 * res, -(self.root.0 as f64) * res);
+        let z_root = prob.zs[cell(self.root.0 as f64, self.root.1 as f64)];
+        let mean_z = |r: &Vec<usize>| r.iter().map(|&i| z[i]).sum::<f64>() / r.len() as f64;
+        rows.sort_by(|a, b| (mean_z(a) - z_root).abs().total_cmp(&(mean_z(b) - z_root).abs()));
+        // Each row a chain of nearest neighbors from one end; the snake.
+        let mut from = root;
+        let mut out = Vec::new();
+        for row in rows {
+            let c = row.iter().fold((0.0, 0.0), |s, &i| (s.0 + xy[i].0, s.1 + xy[i].1));
+            let c = (c.0 / row.len() as f64, c.1 / row.len() as f64);
+            let first = *row.iter().max_by(|&&a, &&b| dist(xy[a], c).total_cmp(&dist(xy[b], c))).unwrap();
+            let mut chain = vec![first];
+            let mut left: Vec<usize> = row.iter().copied().filter(|&i| i != first).collect();
+            while !left.is_empty() {
+                let last = xy[*chain.last().unwrap()];
+                let k = (0..left.len()).min_by(|&a, &b| dist(xy[left[a]], last).total_cmp(&dist(xy[left[b]], last))).unwrap();
+                chain.push(left.swap_remove(k));
+            }
+            if dist(xy[*chain.last().unwrap()], from) < dist(xy[chain[0]], from) {
+                chain.reverse();
+            }
+            from = xy[*chain.last().unwrap()];
+            out.push(chain);
+        }
+        out
+    }
+
     /// Connect pad p by carrying pad `prev`'s branch on (past it, or reversing out of it); if no
     /// such branch reaches it, by the cheapest branch from anywhere. False if none reaches it.
     pub fn connect_after(&mut self, prob: &Problem, p: usize, prev: usize, report: &mut Report) -> bool {
@@ -1088,6 +1154,39 @@ mod tests {
         let (_, contour) = build(false);
         let total = |n: &FineNetwork| { let (c, o) = n.cost(); c + o };
         assert!(total(&net) <= 1.05 * total(&contour), "by road {} vs contour {}", total(&net), total(&contour));
+    }
+
+    #[test]
+    fn a_network_built_along_the_rows() {
+        // Rows along the contour (north-south), 12 cells apart up the slope (east), 4 holes a row.
+        let mut centers = Vec::new();
+        for (j, c) in [40.0, 52.0, 64.0].into_iter().enumerate() {
+            for i in 0..4 {
+                centers.push((30.0 + 12.0 * i as f64 + if j % 2 == 1 { 6.0 } else { 0.0 }, c));
+            }
+        }
+        let mut prob = slope();
+        // (The pad rule allows a whole row's pads beyond a pad, as when pads sit beside the road.)
+        let mut net = FineNetwork::new(&mut prob, (10, 10), &centers, 15.0, 10.0, 12, true);
+        let runs = net.row_runs(&prob);
+        // Three rows by elevation, the lowest first (the access point is below), as a snake from
+        // the end nearer the access point (north).
+        assert_eq!(runs, vec![vec![0, 1, 2, 3], vec![7, 6, 5, 4], vec![8, 9, 10, 11]]);
+        let mut report = |_: &str, _: &FineProgress| true;
+        for row in &runs {
+            assert!(net.connect(&prob, row[0], &mut report));
+            for w in row.windows(2) {
+                assert!(net.connect_after(&prob, w[1], w[0], &mut report), "pad {}", w[1]);
+            }
+        }
+        assert!(net.branches.iter().all(Option::is_some));
+        // Along each row, each pad carries the one before's road on.
+        for row in &runs {
+            for w in row.windows(2) {
+                let from = net.branches[w[1]].as_ref().unwrap().from;
+                assert!(matches!(from, From::Through { pad } | From::Branch { pad, .. } if pad == w[0]), "pad {} from {from:?}", w[1]);
+            }
+        }
     }
 
     #[test]

@@ -513,7 +513,8 @@ async function network(p: Params, b: number, refine: number) {
 const RIG_RUNS = false;
 
 async function refineNetwork(p: Params, res: number, buffer: number, b: number, length: number, width: number,
-                             beside: boolean, rigs: number, byRoad: boolean, approach: number, padOrder: string) {
+                             beside: boolean, rigs: number, byRoad: boolean, approach: number, padOrder: string,
+                             strategy: string) {
   if (!area?.network || !source) throw new Error("find the network first");
   const { network: net, startXY, zScale, padsXY } = area;
   const [bx0, by0, bx1, by1] = source.info.bbox;
@@ -594,7 +595,10 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     // first pad joins where cheapest, the rest carry its branch on). Off: on ground where the rows
     // cross the contours (pads turned to their own contour) it costs more than the coarse
     // network's order. Otherwise the coarse network's order.
-    const runs = rigs > 0 && RIG_RUNS ? Array.from(fs.network_rig_pieces()) : [];
+    // Along the rows: the pads as rows along the contours, a snake; each row's first pad joins where
+    // cheapest, the rest carry the row's road on.
+    const runs = strategy === "rows" ? Array.from(fs.network_row_runs())
+      : rigs > 0 && RIG_RUNS ? Array.from(fs.network_rig_pieces()) : [];
     // Lowest first: lower pads are on the network before the pads above, which may then switch
     // back on them; otherwise cheapest first, the coarse network's order.
     const elev = (q: [number, number]) => {
@@ -760,7 +764,8 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       else if (m.type === "run") await run(m.params);
       else if (m.type === "network") await network(m.params, m.b, m.refine);
       else if (m.type === "refineNetwork") {
-        await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad, m.approach, m.padOrder);
+        await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad, m.approach, m.padOrder,
+                            m.strategy);
       }
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "layout") await layout(m);

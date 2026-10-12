@@ -280,6 +280,14 @@ try {
           document.querySelector("#pad-h").value = ${JSON.stringify(pw)}; })()`);
         console.log(`  pad size: ${process.env.PAD_SIZE} m`);
       }
+      if (process.env.PAD_B) {
+        await evaluate(`document.querySelector("#pad-b").value = ${JSON.stringify(process.env.PAD_B)}`);
+        console.log(`  pads a pad may block: ${process.env.PAD_B}`);
+      }
+      if (process.env.NET_STRATEGY) {
+        await evaluate(`document.querySelector("#net-strategy").value = ${JSON.stringify(process.env.NET_STRATEGY)}`);
+        console.log(`  build network: ${process.env.NET_STRATEGY}`);
+      }
       if (process.env.PAD_ORDER) {
         await evaluate(`document.querySelector("#pad-order").value = ${JSON.stringify(process.env.PAD_ORDER)}`);
         console.log(`  join pads: ${process.env.PAD_ORDER} first`);
@@ -329,7 +337,7 @@ try {
       const rowsOut: string[] = await evaluate(`[...document.querySelectorAll("#corridors tr")].map((r) => [...r.cells].map((c) => c.textContent).join(": "))`);
       console.log(`  network in ${((Date.now() - tNet) / 1000).toFixed(0)} s: ${rowsOut.slice(1).join("; ")}`);
       const most = Number(rowsOut.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
-      if (!(most <= 2)) throw new Error(`a pad has ${most} pads beyond it`);
+      if (!(most <= Number(process.env.PAD_B ?? 2))) throw new Error(`a pad has ${most} pads beyond it`);
       await shot(`${name}-network`);
       // The fine network: the same pads on the lattice at 5 m, within the buffer (default 300 m) of the coarse roads.
       if (process.env.FINE_NETWORK !== "0") {
@@ -353,7 +361,7 @@ try {
           if (!(dead <= Number(process.env.RIGS))) throw new Error(`${dead} dead ends for ${process.env.RIGS} rigs`);
         } else {
           const mostFine = Number(fineRows.find((r) => r.startsWith("most pads beyond"))?.split(": ")[1]);
-          if (!(mostFine <= 2)) throw new Error(`a pad has ${mostFine} pads beyond it`);
+          if (!(mostFine <= Number(process.env.PAD_B ?? 2))) throw new Error(`a pad has ${mostFine} pads beyond it`);
         }
         await shot(`${name}-fine-network`);
         // SAVE_NETWORK=dir: the fine network's GeoJSON (the page's download) saved there.

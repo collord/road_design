@@ -283,6 +283,19 @@ impl FineSession {
         Ok(out)
     }
 
+    /// The pads as rows along the contours (row_runs), -1 between rows.
+    pub fn network_row_runs(&self) -> Result<Vec<i32>, JsValue> {
+        let net = self.network.as_ref().ok_or_else(|| js_err("network_begin() first"))?;
+        let mut out = Vec::new();
+        for (i, row) in net.row_runs(&self.prob).iter().enumerate() {
+            if i > 0 {
+                out.push(-1);
+            }
+            out.extend(row.iter().map(|&p| p as i32));
+        }
+        Ok(out)
+    }
+
     /// Connect pad `p` by carrying pad `prev`'s branch on (else from anywhere); false if no branch
     /// reaches it.
     pub fn network_connect_after(&mut self, p: usize, prev: usize, progress: &js_sys::Function) -> Result<bool, JsValue> {
