@@ -8,7 +8,9 @@ export type ToWorker =
       res: number; maxCells: number; zUnits: string; roughMaxRes: number }
   | { type: "network"; params: Params; b: number; refine: number }
   | { type: "refineNetwork"; params: Params; res: number; buffer: number; b: number; length: number; width: number;
-      beside: boolean; rigs: number; byRoad: boolean; approach: number; padOrder: string; strategy: string }
+      beside: boolean; rigs: number; byRoad: boolean; approach: number; padOrder: string; strategy: string;
+      /** Each pad's row and position along it, from a layout (none if the pads came otherwise). */
+      padRows: { row: number[]; station: number[] } | null }
   | { type: "run"; params: Params }
   | { type: "channels"; aMin: number }
   | { type: "refine"; params: Params; res: number; which: "best" | "all"; apart: number }
@@ -64,7 +66,7 @@ export type FromWorker =
   | { type: "progress"; name: string; done: number; total: number }
   | { type: "busy"; task: "open" | "load" | "run" | "refine" | "network" | "refineNetwork" | "layout" | null }
   /** Drill holes laid out over an area: rows along the contours, then infill. */
-  | { type: "holes"; holes: [number, number][]; rows: number; dz: number; slope: number }
+  | { type: "holes"; holes: [number, number][]; rows: number; row: number[]; station: number[]; dz: number; slope: number }
   | { type: "fine"; route: FineOut }
   /** The pad network on the graph: its edges (graph node pairs) with the pads each serves, and per
    *  pad (in the page's order) whether it is connected or unreachable and how many pads lie beyond. */

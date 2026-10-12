@@ -283,6 +283,22 @@ impl FineSession {
         Ok(out)
     }
 
+    /// Each pad's row (-1: infill) and position along it, from a layout: row_runs then follows them.
+    pub fn network_set_rows(&mut self, row: &[i32], station: &[f64]) -> Result<(), JsValue> {
+        let net = self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?;
+        if row.len() != net.pads.len() || station.len() != net.pads.len() {
+            return Err(js_err("a row and a station per pad"));
+        }
+        net.rows = Some((row.iter().map(|&r| r as i64).collect(), station.to_vec()));
+        Ok(())
+    }
+
+    /// While on, pads connected go beside the road where they can (the road carries on past them).
+    pub fn network_beside_only(&mut self, on: bool) -> Result<(), JsValue> {
+        self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?.beside_only = on;
+        Ok(())
+    }
+
     /// The pads as rows along the contours (row_runs), -1 between rows.
     pub fn network_row_runs(&self) -> Result<Vec<i32>, JsValue> {
         let net = self.network.as_ref().ok_or_else(|| js_err("network_begin() first"))?;
@@ -298,13 +314,14 @@ impl FineSession {
 
     /// Connect pad `p` by carrying pad `prev`'s branch on (else from anywhere); false if no branch
     /// reaches it.
-    pub fn network_connect_after(&mut self, p: usize, prev: usize, progress: &js_sys::Function) -> Result<bool, JsValue> {
+    pub fn network_connect_after(&mut self, p: usize, prev: usize, keep_road: bool, progress: &js_sys::Function)
+                                 -> Result<bool, JsValue> {
         let net = self.network.as_mut().ok_or_else(|| js_err("network_begin() first"))?;
         if p >= net.pads.len() || prev >= net.pads.len() {
             return Err(js_err("no such pad"));
         }
         let mut report = js_report(progress);
-        Ok(net.connect_after(&self.prob, p, prev, &mut report))
+        Ok(net.connect_after(&self.prob, p, prev, keep_road, &mut report))
     }
 
     /// One improvement pass; returns the pads whose branch moved.

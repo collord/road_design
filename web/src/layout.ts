@@ -9,8 +9,11 @@ import type { Grid } from "./source";
 
 export interface Layout {
   holes: [number, number][];
-  /** Holes from the rows; the rest are infill. */
+  /** Holes from the rows (the first `rows` of them); the rest are infill. */
   rows: number;
+  /** Per hole, its row (one contour line; -1: infill) and position along that row's line (m). */
+  row: number[];
+  station: number[];
   /** Elevation step between rows (m) and the slope it came from. */
   dz: number;
   slope: number;
@@ -150,7 +153,8 @@ export function layoutHoles(z: Float32Array, g: Grid, poly: Pt[], spacing: numbe
       if (Number.isFinite(v) && inside(poly, p)) { zmin = Math.min(zmin, v); zmax = Math.max(zmax, v); }
     }
   }
-  const holes: Pt[] = [];
+  const holes: Pt[] = [], row: number[] = [], station: number[] = [];
+  let rowId = 0;
   const tooClose = (p: Pt) => holes.some((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < spacing - 1e-6);
   for (let k = Math.ceil((zmin - dz - z0) / dz); z0 + k * dz <= zmax + dz; k++) {
     for (const line of contours(z, g, z0 + k * dz)) {
@@ -160,6 +164,7 @@ export function layoutHoles(z: Float32Array, g: Grid, poly: Pt[], spacing: numbe
       let k0 = 0;
       line.forEach((p, i) => { if (Math.hypot(p[0] - cx, p[1] - cy) < Math.hypot(line[k0][0] - cx, line[k0][1] - cy)) k0 = i; });
       const off = (k % 2 ? 0.5 : 0) * spacing, end = st[st.length - 1];
+      const before = holes.length;
       for (let n = Math.floor((-st[k0] - off) / spacing); st[k0] + off + n * spacing <= end; n++) {
         const t = st[k0] + off + n * spacing;
         if (t < 0) continue;
@@ -167,8 +172,13 @@ export function layoutHoles(z: Float32Array, g: Grid, poly: Pt[], spacing: numbe
         while (i < st.length - 1 && st[i] < t) i++;
         const f = (t - st[i - 1]) / Math.max(st[i] - st[i - 1], 1e-12);
         const p: Pt = [line[i - 1][0] + f * (line[i][0] - line[i - 1][0]), line[i - 1][1] + f * (line[i][1] - line[i - 1][1])];
-        if (inside(poly, p) && !tooClose(p)) holes.push(p);
+        if (inside(poly, p) && !tooClose(p)) {
+          holes.push(p);
+          row.push(rowId);
+          station.push(t);
+        }
       }
+      if (holes.length > before) rowId++;
     }
   }
   const rows = holes.length;
@@ -186,7 +196,9 @@ export function layoutHoles(z: Float32Array, g: Grid, poly: Pt[], spacing: numbe
     near.forEach((v, i) => { if (best < 0 || v > near[best]) best = i; });
     if (best < 0 || near[best] < spacing - 1e-6) break;
     holes.push(samples[best]);
+    row.push(-1);
+    station.push(0);
     update(samples[best]);
   }
-  return { holes, rows, dz, slope };
+  return { holes, rows, row, station, dz, slope };
 }

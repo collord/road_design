@@ -192,7 +192,7 @@ async function layout(m: Extract<ToWorker, { type: "layout" }>) {
     }));
   const zs = timed("layout: smooth", () => smooth(z, g.w, g.h, 25 / res));
   const out = timed("layout: rows along the contours, then infill", () => layoutHoles(zs, g, m.area, m.spacing));
-  post({ type: "holes", holes: out.holes, rows: out.rows, dz: out.dz, slope: out.slope });
+  post({ type: "holes", holes: out.holes, rows: out.rows, row: out.row, station: out.station, dz: out.dz, slope: out.slope });
 }
 
 // --- the fine search's helpers -----------------------------------------------------------------
@@ -514,7 +514,7 @@ const RIG_RUNS = false;
 
 async function refineNetwork(p: Params, res: number, buffer: number, b: number, length: number, width: number,
                              beside: boolean, rigs: number, byRoad: boolean, approach: number, padOrder: string,
-                             strategy: string) {
+                             strategy: string, padRows: { row: number[]; station: number[] } | null) {
   if (!area?.network || !source) throw new Error("find the network first");
   const { network: net, startXY, zScale, padsXY } = area;
   const [bx0, by0, bx1, by1] = source.info.bbox;
@@ -597,6 +597,7 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     // network's order. Otherwise the coarse network's order.
     // Along the rows: the pads as rows along the contours, a snake; each row's first pad joins where
     // cheapest, the rest carry the row's road on.
+    if (strategy === "rows" && padRows) fs.network_set_rows(new Int32Array(padRows.row), new Float64Array(padRows.station));
     const runs = strategy === "rows" ? Array.from(fs.network_row_runs())
       : rigs > 0 && RIG_RUNS ? Array.from(fs.network_rig_pieces()) : [];
     // Lowest first: lower pads are on the network before the pads above, which may then switch
@@ -609,16 +610,23 @@ async function refineNetwork(p: Params, res: number, buffer: number, b: number, 
     const order: [number, number][] = runs.length
       ? runs.map((p, i) => [p, i > 0 ? runs[i - 1] : -1] as [number, number]).filter(([p]) => p >= 0)
       : coarseOrder.map((p) => [p, -1] as [number, number]);
-    for (const [pad, prev] of order) {
+    for (const [i, [pad, prev]] of order.entries()) {
       progress("network: connect the pads", k, n);
       await checkpoint();
-      if (prev >= 0) fs.network_connect_after(pad, prev, onProgress);
-      else fs.network_connect(pad, onProgress);
+      // Along the rows, a row's road carries on past each pad but its last.
+      const keepRoad = strategy === "rows" && i + 1 < order.length && order[i + 1][1] === pad;
+      if (prev >= 0) fs.network_connect_after(pad, prev, keepRoad, onProgress);
+      else {
+        fs.network_beside_only(keepRoad);
+        fs.network_connect(pad, onProgress);
+        fs.network_beside_only(false);
+      }
       closeStage();
       k++;
       sendState(`${k} of ${n} pads searched`, false);
     }
-    for (let pass = 1; pass <= 3; pass++) {
+    // Along the rows, the passes (pad by pad) would undo the rows.
+    for (let pass = 1; pass <= (strategy === "rows" ? 0 : 3); pass++) {
       await checkpoint();
       const moved = fs.network_improve(onProgress);
       closeStage();
@@ -765,7 +773,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       else if (m.type === "network") await network(m.params, m.b, m.refine);
       else if (m.type === "refineNetwork") {
         await refineNetwork(m.params, m.res, m.buffer, m.b, m.length, m.width, m.beside, m.rigs, m.byRoad, m.approach, m.padOrder,
-                            m.strategy);
+                            m.strategy, m.padRows);
       }
       else if (m.type === "refine") await refine(m.params, m.res, m.which, m.apart);
       else if (m.type === "layout") await layout(m);

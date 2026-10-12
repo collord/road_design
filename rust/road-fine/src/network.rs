@@ -116,6 +116,10 @@ pub struct FineNetwork {
     pub pad_size: (f64, f64),
     /// Straight approach into a pad by road (m; 0: none).
     pub approach: f64,
+    /// Each pad's row and position along it, from a layout (row -1: infill); None: rows by elevation.
+    pub rows: Option<(Vec<i64>, Vec<f64>)>,
+    /// While set, a pad only beside the road (where it can be): the road carries on past it.
+    pub beside_only: bool,
     /// Per pad: its branch, once connected.
     pub branches: Vec<Option<Branch>>,
     pub unreachable: Vec<bool>,
@@ -226,7 +230,8 @@ impl FineNetwork {
         }
         let n = pads.len();
         FineNetwork {
-            root, pads, b, alongside, rigs: 0, only_from: None, by_road: false, pad_size: (0.0, 0.0), approach: 0.0, branches: vec![None; n],
+            root, pads, b, alongside, rigs: 0, only_from: None, by_road: false, pad_size: (0.0, 0.0), approach: 0.0, rows: None,
+            beside_only: false, branches: vec![None; n],
             unreachable: vec![false; n],
         }
     }
@@ -362,6 +367,9 @@ impl FineNetwork {
         if n == 0 {
             return Vec::new();
         }
+        if let Some((row, station)) = &self.rows {
+            return self.layout_runs(prob, row, station);
+        }
         let res = prob.res;
         let cell = |r: f64, c: f64| (r.round().clamp(0.0, (prob.nr - 1) as f64) as usize) * prob.nc
             + c.round().clamp(0.0, (prob.nc - 1) as f64) as usize;
@@ -418,12 +426,52 @@ impl FineNetwork {
         out
     }
 
+    /// The layout's rows (each in order along its contour) as a snake outward from the access
+    /// point's elevation, then each infill pad on its own.
+    fn layout_runs(&self, prob: &Problem, row: &[i64], station: &[f64]) -> Vec<Vec<usize>> {
+        let n = self.pads.len();
+        let res = prob.res;
+        let cell = |r: f64, c: f64| (r.round().clamp(0.0, (prob.nr - 1) as f64) as usize) * prob.nc
+            + c.round().clamp(0.0, (prob.nc - 1) as f64) as usize;
+        let z: Vec<f64> = self.pads.iter().map(|p| prob.zs[cell(p.center.0, p.center.1)]).collect();
+        let xy: Vec<(f64, f64)> = self.pads.iter().map(|p| (p.center.1 * res, -p.center.0 * res)).collect();
+        let dist = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).hypot(a.1 - b.1);
+        let mut ids: Vec<i64> = row.iter().copied().filter(|&r| r >= 0).collect();
+        ids.sort();
+        ids.dedup();
+        let mut rows: Vec<Vec<usize>> = ids
+            .iter()
+            .map(|&id| {
+                let mut r: Vec<usize> = (0..n).filter(|&i| row[i] == id).collect();
+                r.sort_by(|&a, &b| station[a].total_cmp(&station[b]));
+                r
+            })
+            .collect();
+        let z_root = prob.zs[cell(self.root.0 as f64, self.root.1 as f64)];
+        let mean_z = |r: &Vec<usize>| r.iter().map(|&i| z[i]).sum::<f64>() / r.len() as f64;
+        rows.sort_by(|a, b| (mean_z(a) - z_root).abs().total_cmp(&(mean_z(b) - z_root).abs()));
+        let mut from = (self.root.1 as f64 * res, -(self.root.0 as f64) * res);
+        let mut out = Vec::new();
+        for mut r in rows {
+            if dist(xy[*r.last().unwrap()], from) < dist(xy[r[0]], from) {
+                r.reverse();
+            }
+            from = xy[*r.last().unwrap()];
+            out.push(r);
+        }
+        out.extend((0..n).filter(|&i| row[i] < 0).map(|i| vec![i]));
+        out
+    }
+
     /// Connect pad p by carrying pad `prev`'s branch on (past it, or reversing out of it); if no
     /// such branch reaches it, by the cheapest branch from anywhere. False if none reaches it.
-    pub fn connect_after(&mut self, prob: &Problem, p: usize, prev: usize, report: &mut Report) -> bool {
+    /// With `keep_road`, p goes beside the road where it can, so the road carries on past it.
+    pub fn connect_after(&mut self, prob: &Problem, p: usize, prev: usize, keep_road: bool, report: &mut Report) -> bool {
         self.only_from = Some(prev);
+        self.beside_only = keep_road;
         let b = self.search(prob, p, &format!("pad {} after {}", p + 1, prev + 1), report);
         self.only_from = None;
+        self.beside_only = false;
         match b {
             Some(b) => {
                 self.branches[p] = Some(b);
@@ -557,7 +605,8 @@ impl FineNetwork {
                 }
             }
         };
-        if pad.cost_alone.is_finite() {
+        let beside_ok = self.alongside && pad.cost_beside.is_finite() && !pad.sides.is_empty();
+        if pad.cost_alone.is_finite() && !(self.beside_only && beside_ok) {
             consider(self.search_to(prob, p, &ends, None, false, stage, report), self);
         }
         if self.alongside && pad.cost_beside.is_finite() && !pad.sides.is_empty() {
@@ -1089,7 +1138,7 @@ mod tests {
         for piece in &pieces {
             assert!(net.connect(&prob, piece[0], &mut report));
             for w in piece.windows(2) {
-                assert!(net.connect_after(&prob, w[1], w[0], &mut report), "pad {}", w[1]);
+                assert!(net.connect_after(&prob, w[1], w[0], false, &mut report), "pad {}", w[1]);
             }
         }
         assert!(net.branches.iter().all(Option::is_some));
@@ -1176,7 +1225,7 @@ mod tests {
         for row in &runs {
             assert!(net.connect(&prob, row[0], &mut report));
             for w in row.windows(2) {
-                assert!(net.connect_after(&prob, w[1], w[0], &mut report), "pad {}", w[1]);
+                assert!(net.connect_after(&prob, w[1], w[0], false, &mut report), "pad {}", w[1]);
             }
         }
         assert!(net.branches.iter().all(Option::is_some));

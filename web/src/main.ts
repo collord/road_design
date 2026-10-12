@@ -32,6 +32,9 @@ let goal: [number, number] | null = null;
 let picking: "start" | "goal" | "pads" | "area" | null = null;
 /** The drilling area's corners (map coordinates) for laying out holes. */
 const drillArea: [number, number][] = [];
+/** The pads' rows from the last layout (each pad's row, -1 for infill, and position along it);
+ *  null once the pads change otherwise. */
+let padRows: { row: number[]; station: number[] } | null = null;
 let mode: "route" | "network" = "route";
 /** Pad centers (UTM). */
 const pads: [number, number][] = [];
@@ -258,6 +261,7 @@ function drawPads() {
         if (picking !== "pads") return;
         pads.splice(i, 1);
         padStatus = null;
+        padRows = null;
         drawPads();
       })
       .addTo(padLayer);
@@ -418,6 +422,7 @@ $("layout-holes").addEventListener("click", () => {
 
 $("clear-pads").addEventListener("click", () => {
   pads.length = 0;
+  padRows = null;
   padAxes = null;
   padStatus = null;
   drawPads();
@@ -430,6 +435,7 @@ $<HTMLInputElement>("pads-file").addEventListener("change", async (e) => {
     if (!got.length) throw new Error("no points found");
     pads.push(...got);
     padStatus = null;
+    padRows = null;
     drawPads();
     log(`${f.name}: ${got.length} pads`);
   } catch (err) {
@@ -659,6 +665,7 @@ map.on("click", (e: L.LeafletMouseEvent) => {
   if (picking === "pads") {
     pads.push([e.latlng.lng, e.latlng.lat]);
     padStatus = null;
+    padRows = null;
     drawPads();
     return;
   }
@@ -715,6 +722,7 @@ $("refine").addEventListener("click", () => {
            approach: Math.max(0, Number($<HTMLInputElement>("pad-approach").value) || 0),
            padOrder: $<HTMLSelectElement>("pad-order").value,
            strategy: $<HTMLSelectElement>("net-strategy").value,
+           padRows: padRows && padRows.row.length === pads.length ? padRows : null,
            rigs: Math.max(0, Math.round(Number($<HTMLInputElement>("pad-rigs").value) || 0)) });
     return;
   }
@@ -1082,6 +1090,7 @@ worker.onmessage = (e: MessageEvent<FromWorker>) => {
       padAxes = null;
       padStatus = null;
       drawPads();
+      padRows = { row: m.row, station: m.station };
       const ft = $<HTMLInputElement>("hole-spacing").value;
       log(`laid out ${m.holes.length} holes at ${ft} ft: ${m.rows} along contour rows (${m.dz.toFixed(1)} m apart in ` +
           `elevation, slope ${(100 * m.slope).toFixed(0)}% at the center), ${m.holes.length - m.rows} infill` +
