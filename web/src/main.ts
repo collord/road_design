@@ -579,6 +579,8 @@ function params(): Params {
   if (g > 0) p.g_max = g / 100;
   const w = Number($<HTMLInputElement>("w").value);
   if (w > 0) p.w = w;
+  const rMin = Number($<HTMLInputElement>("R_min").value);
+  if (rMin > 0) p.R_min = rMin;
   for (const key of ["A_min", "tin_channel_ha"]) {
     const v = Number($<HTMLInputElement>(key).value);
     if (v > 0) p[key] = v;
@@ -595,6 +597,8 @@ function setControls(p: Params) {
   const road = { g_max: String(+(100 * (p.g_max as number)).toFixed(2)), w: String(p.w) };
   if (mode === "network") routeRoad = road;
   else for (const [id, v] of Object.entries(road)) $<HTMLInputElement>(id).value = v;
+  // The turn radius is the parameter set's in both modes.
+  $<HTMLInputElement>("R_min").value = String(p.R_min);
   $<HTMLInputElement>("res").value = "";
   $<HTMLInputElement>("margin").value = String((p.tin_margin as number ?? 10000) / 1000);
   $<HTMLSelectElement>("z_units").value = String(p.z_units ?? "m");

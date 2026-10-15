@@ -318,8 +318,8 @@ try {
         nPads = Number(String(laid).match(/laid out (\d+)/)![1]);
       }
       await until(`/${nPads} pads/.test(document.querySelector("#pads-info").textContent)`, "the pads", 10000);
-      // NET_START=x,y: the access point; ROAD_W (m) and G_MAX (%): the road.
-      for (const [env, id] of [["NET_START", "start-text"], ["ROAD_W", "w"], ["G_MAX", "g_max"]]) {
+      // NET_START=x,y: the access point; ROAD_W (m), G_MAX (%) and R_MIN (m): the road.
+      for (const [env, id] of [["NET_START", "start-text"], ["ROAD_W", "w"], ["G_MAX", "g_max"], ["R_MIN", "R_min"]]) {
         const v = process.env[env];
         if (!v) continue;
         await evaluate(`(() => { const i = document.querySelector("#${id}"); i.value = ${JSON.stringify(v)};
