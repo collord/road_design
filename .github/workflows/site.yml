@@ -1,27 +1,15 @@
 # Builds the example site from examples.toml: one job per example run (the
 # slowest takes 1-2 hours), then every example's viewer and a landing page,
-# deployed to GitHub Pages. Runs are cached by the code, parameters, examples
+# kept as a downloadable artifact. Runs are cached by the code, parameters, examples
 # and DEMs, so a rebuild with none of those changed only regenerates the viewers.
+# Run it by hand from the Actions tab. GitHub Pages carries the browser app (web.yml).
 name: Site
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - "roadsearch/**"
-      - "params*.toml"
-      - "examples.toml"
-      - "data/**"
-      - "constraints.txt"
-      - ".github/workflows/site.yml"
 
 permissions:
   contents: read
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   plan:
@@ -97,19 +85,8 @@ jobs:
           done
       - name: Build the viewers and landing page (reuses every run)
         run: python -m roadsearch site --dest site --repo-url "${{ github.server_url }}/${{ github.repository }}"
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
+          name: site
           path: site
-
-  deploy:
-    needs: site
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          retention-days: 30

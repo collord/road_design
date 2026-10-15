@@ -1,0 +1,99 @@
+# Builds the browser app (web/) and publishes it to GitHub Pages: the Rust core compiled to
+# WebAssembly, the bundled examples and default parameters from the Python package, then the
+# Vite build. Settings -> Pages -> Source must be "GitHub Actions" (set once).
+name: Web app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "rust/**"
+      - "roadsearch/evaluator.js"
+      - "roadsearch/web.py"
+      - "roadsearch/examples.py"
+      - "roadsearch/params.py"
+      - "params*.toml"
+      - "examples.toml"
+      - "data/**"
+      - ".github/workflows/web.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  WASM_BINDGEN_VERSION: "0.2.129"   # must match the wasm-bindgen crate pinned in rust/roadsearch-wasm/Cargo.toml
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Rust core for the browser (rust/roadsearch-wasm).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install wasm-bindgen
+        run: |
+          curl -sSL "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WASM_BINDGEN_VERSION}/wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar xz
+          install -m 755 "wasm-bindgen-${WASM_BINDGEN_VERSION}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/
+          wasm-bindgen --version
+
+      # The Python package writes the app's default parameters and bundled examples (web/public).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Install roadsearch
+        run: pip install -c constraints.txt -e .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: web
+      - name: Build the WebAssembly core
+        run: npm run wasm
+        working-directory: web
+      - name: Write the examples and default parameters
+        run: npm run data
+        working-directory: web
+      - name: Type-check
+        run: npm run check
+        working-directory: web
+      - name: Smoke test (the pipeline under Node)
+        run: npm run smoke
+        working-directory: web
+      - name: Build
+        run: npm run build
+        working-directory: web
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

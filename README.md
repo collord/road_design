@@ -2,7 +2,9 @@
 
 Finds the cheapest road between two points over a DEM. "Cheapest" covers the cost to build it (cut and fill from the cross slope, hairpins and bends, culverts, crossing fill, retaining walls) and, optionally, the cost of trucks driving it for years. The search runs over a network of short buildable pieces of road. It returns the best route and ranked alternatives, as GeoParquet and GeoTIFF, plus an interactive viewer.
 
-**Example site:** worked examples on two included USGS DEMs, built by GitHub Actions and published to GitHub Pages. It has four tabs: compare runs, watch a search, draw your own route and cost it, and how the search works.
+**Browser app:** https://collord.github.io/road_design/ runs the search in the browser on any GeoTIFF, with the Rust core compiled to WebAssembly. It is built from `web/` and published to GitHub Pages by GitHub Actions on every push that touches it.
+
+**Example site:** worked examples on two included USGS DEMs, built by GitHub Actions on request. It has four tabs: compare runs, watch a search, draw your own route and cost it, and how the search works.
 
 The method is explained from first principles in [roadsearch/reference.md](roadsearch/reference.md), which is also the site's "How the search works" tab. [road-search-brief.md](road-search-brief.md) is the original specification. Where this implementation departs from it, the departures are listed below.
 
@@ -38,13 +40,19 @@ Finished runs are reused, so `site` only runs what is missing. Opening `index.ht
 
 The Red Mountain example uses US 550 over Red Mountain Pass as its reference. The DEM shows that highway already built, so the ground along it is the finished bench rather than the original hillside, and its earthwork cost is a lower bound.
 
-## Building the site on GitHub
+## Publishing the browser app
 
-`.github/workflows/site.yml` reads `examples.toml` and runs each example run as its own job, in parallel. It then merges each example's runs (`python -m roadsearch merge`), builds the site (`python -m roadsearch site`) and deploys it to GitHub Pages.
+`.github/workflows/web.yml` builds `web/` and deploys it to GitHub Pages: the Rust core to WebAssembly (`npm run wasm`, with a `wasm-bindgen` matching the crate pinned in `rust/roadsearch-wasm/Cargo.toml`), the bundled examples and default parameters from the Python package (`npm run data`), the type check and the Node smoke test, then the Vite build.
+- **Triggers:** pushes to `main` that change `web/`, `rust/`, the shared evaluator, the parameter or example files or the DEMs, or by hand from the Actions tab.
+- **Time:** about 10 minutes; the Rust build is cached between runs.
+- **Setup:** set Settings → Pages → Source to "GitHub Actions" once (done for this repository).
+
+## Building the example site on GitHub
+
+`.github/workflows/site.yml` reads `examples.toml` and runs each example run as its own job, in parallel. It then merges each example's runs (`python -m roadsearch merge`), builds the site (`python -m roadsearch site`) and keeps it as a workflow artifact (`site`, 30 days). It no longer deploys to Pages, which carries the browser app.
 - **Time:** the slowest job takes 1 to 2 hours on a standard runner.
 - **Caching:** finished runs are cached under a key built from the code, the parameter files, `examples.toml` and the DEMs. A rebuild with none of those changed only regenerates the viewers.
-- **Triggers:** the workflow runs on pushes that change those files, or by hand from the Actions tab.
-- **Setup:** set Settings → Pages → Source to "GitHub Actions" once.
+- **Triggers:** by hand from the Actions tab.
 
 `.github/workflows/tests.yml` runs the test suite on every push and pull request.
 
